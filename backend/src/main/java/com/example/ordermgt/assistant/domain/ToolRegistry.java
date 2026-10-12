@@ -6,11 +6,11 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * The whitelist. Anything the model returns that is not registered here is rejected --
- * we never reflect on a tool name or fall back to running it.
+ * The whitelist. Anything the model returns that is not registered here is rejected -- we never
+ * reflect on a tool name or fall back to running it.
  *
- * Framework-free on purpose (this is the domain ring): it is built from the injected
- * {@link ToolSpec} list and wired as a bean by the infrastructure layer, not annotated here.
+ * <p>Framework-free on purpose (this is the domain ring): it is built from the injected {@link
+ * ToolSpec} list and wired as a bean by the infrastructure layer, not annotated here.
  */
 public class ToolRegistry {
 

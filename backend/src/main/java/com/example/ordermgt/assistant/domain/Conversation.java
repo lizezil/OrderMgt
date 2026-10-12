@@ -1,12 +1,11 @@
 package com.example.ordermgt.assistant.domain;
 
+import java.time.Instant;
 import lombok.Getter;
 
-import java.time.Instant;
-
 /**
- * Aggregate root for memory. "New conversation" is nothing more than starting one of
- * these: memory never crosses conversations.
+ * Aggregate root for memory. "New conversation" is nothing more than starting one of these: memory
+ * never crosses conversations.
  */
 @Getter
 public class Conversation {
@@ -21,8 +20,13 @@ public class Conversation {
     private Instant updatedAt;
     private Instant lastMessageAt;
 
-    private Conversation(Long id, Long customerId, String title,
-                         Instant createdAt, Instant updatedAt, Instant lastMessageAt) {
+    private Conversation(
+            Long id,
+            Long customerId,
+            String title,
+            Instant createdAt,
+            Instant updatedAt,
+            Instant lastMessageAt) {
         this.id = id;
         this.customerId = customerId;
         this.title = title;
@@ -39,8 +43,13 @@ public class Conversation {
         return new Conversation(null, customerId, null, now, now, now);
     }
 
-    public static Conversation rehydrate(Long id, Long customerId, String title,
-                                        Instant createdAt, Instant updatedAt, Instant lastMessageAt) {
+    public static Conversation rehydrate(
+            Long id,
+            Long customerId,
+            String title,
+            Instant createdAt,
+            Instant updatedAt,
+            Instant lastMessageAt) {
         return new Conversation(id, customerId, title, createdAt, updatedAt, lastMessageAt);
     }
 

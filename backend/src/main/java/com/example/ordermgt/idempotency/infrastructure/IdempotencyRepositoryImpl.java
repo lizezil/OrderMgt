@@ -4,12 +4,11 @@ import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.example.ordermgt.idempotency.domain.IdempotencyRecord;
 import com.example.ordermgt.idempotency.domain.IdempotencyRepository;
 import com.example.ordermgt.idempotency.domain.IdempotencyStatus;
+import java.time.Instant;
+import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Repository;
-
-import java.time.Instant;
-import java.util.Optional;
 
 @RequiredArgsConstructor
 @Repository
@@ -18,11 +17,16 @@ public class IdempotencyRepositoryImpl implements IdempotencyRepository {
     private final IdempotencyRecordMapper mapper;
 
     @Override
-    public Optional<IdempotencyRecord> find(Long customerId, String operation, String idempotencyKey) {
-        return Optional.ofNullable(mapper.selectOne(Wrappers.<IdempotencyRecordPO>lambdaQuery()
-                        .eq(IdempotencyRecordPO::getCustomerId, customerId)
-                        .eq(IdempotencyRecordPO::getOperation, operation)
-                        .eq(IdempotencyRecordPO::getIdempotencyKey, idempotencyKey)))
+    public Optional<IdempotencyRecord> find(
+            Long customerId, String operation, String idempotencyKey) {
+        return Optional.ofNullable(
+                        mapper.selectOne(
+                                Wrappers.<IdempotencyRecordPO>lambdaQuery()
+                                        .eq(IdempotencyRecordPO::getCustomerId, customerId)
+                                        .eq(IdempotencyRecordPO::getOperation, operation)
+                                        .eq(
+                                                IdempotencyRecordPO::getIdempotencyKey,
+                                                idempotencyKey)))
                 .map(this::toDomain);
     }
 
@@ -84,9 +88,17 @@ public class IdempotencyRepositoryImpl implements IdempotencyRepository {
     }
 
     private IdempotencyRecord toDomain(IdempotencyRecordPO po) {
-        return new IdempotencyRecord(po.getId(), po.getCustomerId(), po.getOperation(),
-                po.getIdempotencyKey(), po.getRequestHash(), IdempotencyStatus.valueOf(po.getStatus()),
-                po.getResultRef(), po.getResponseJson(), po.getCreatedAt(), po.getCompletedAt(),
+        return new IdempotencyRecord(
+                po.getId(),
+                po.getCustomerId(),
+                po.getOperation(),
+                po.getIdempotencyKey(),
+                po.getRequestHash(),
+                IdempotencyStatus.valueOf(po.getStatus()),
+                po.getResultRef(),
+                po.getResponseJson(),
+                po.getCreatedAt(),
+                po.getCompletedAt(),
                 po.getExpiresAt());
     }
 }

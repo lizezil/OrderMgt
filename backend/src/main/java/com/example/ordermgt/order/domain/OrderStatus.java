@@ -1,7 +1,6 @@
 package com.example.ordermgt.order.domain;
 
 public enum OrderStatus {
-
     CREATED,
     COMPLETED,
     CANCELLED;

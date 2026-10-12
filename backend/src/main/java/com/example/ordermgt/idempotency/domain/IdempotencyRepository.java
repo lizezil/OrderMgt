@@ -7,9 +7,9 @@ public interface IdempotencyRepository {
     Optional<IdempotencyRecord> find(Long customerId, String operation, String idempotencyKey);
 
     /**
-     * Claims the key. Returns the stored record (with its generated id) on success, or
-     * {@link Optional#empty()} when the key is already claimed -- the unique constraint
-     * is the arbiter, not a read-then-write check.
+     * Claims the key. Returns the stored record (with its generated id) on success, or {@link
+     * Optional#empty()} when the key is already claimed -- the unique constraint is the arbiter,
+     * not a read-then-write check.
      */
     Optional<IdempotencyRecord> tryClaim(IdempotencyRecord record);
 

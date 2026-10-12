@@ -21,24 +21,31 @@ public class AssistantController {
     private final IdempotencyGuard idempotencyGuard;
 
     /**
-     * Conversation-aware chat. Pass an existing {@code conversationId} to continue it, or
-     * omit it to start a new conversation -- the response always carries back the id to use
-     * next.
+     * Conversation-aware chat. Pass an existing {@code conversationId} to continue it, or omit it
+     * to start a new conversation -- the response always carries back the id to use next.
      *
-     * A retried request with the same {@code Idempotency-Key} replays the stored answer
-     * instead of paying for the model call a second time.
+     * <p>A retried request with the same {@code Idempotency-Key} replays the stored answer instead
+     * of paying for the model call a second time.
      */
     @PostMapping("/chat")
     public ApiResponse<ChatResponse> chat(
             @RequestHeader("X-Customer-Id") Long customerId,
             @RequestParam(required = false) Long conversationId,
-            @RequestHeader(value = IdempotencyGuard.KEY_HEADER, required = false) String idempotencyKey,
+            @RequestHeader(value = IdempotencyGuard.KEY_HEADER, required = false)
+                    String idempotencyKey,
             @Valid @RequestBody ChatRequest request) {
 
-        ChatResponse response = idempotencyGuard.execute(customerId, "SEND_MESSAGE", idempotencyKey,
-                IdempotencyGuard.hashOf(String.valueOf(conversationId), request.message()),
-                () -> ChatResponse.from(assistantService.chat(customerId, conversationId, request.message())),
-                ChatResponse.class);
+        ChatResponse response =
+                idempotencyGuard.execute(
+                        customerId,
+                        "SEND_MESSAGE",
+                        idempotencyKey,
+                        IdempotencyGuard.hashOf(String.valueOf(conversationId), request.message()),
+                        () ->
+                                ChatResponse.from(
+                                        assistantService.chat(
+                                                customerId, conversationId, request.message())),
+                        ChatResponse.class);
         return ApiResponse.ok(response);
     }
 }

@@ -10,9 +10,12 @@ public class OpenApiConfig {
 
     @Bean
     public OpenAPI orderMgtOpenApi() {
-        return new OpenAPI().info(new Info()
-                .title("OrderMgt API")
-                .version("1.0.0")
-                .description("Order management where the AI assistant proposes and a customer confirms."));
+        return new OpenAPI()
+                .info(
+                        new Info()
+                                .title("OrderMgt API")
+                                .version("1.0.0")
+                                .description(
+                                        "Order management where the AI assistant proposes and a customer confirms."));
     }
 }

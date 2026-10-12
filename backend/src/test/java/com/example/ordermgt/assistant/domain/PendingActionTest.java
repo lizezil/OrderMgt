@@ -1,14 +1,13 @@
 package com.example.ordermgt.assistant.domain;
 
-import org.junit.jupiter.api.Test;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.Duration;
 import java.time.Instant;
 import java.util.HashSet;
 import java.util.Set;
-
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import org.junit.jupiter.api.Test;
 
 class PendingActionTest {
 
@@ -35,7 +34,8 @@ class PendingActionTest {
         assertThat(action.getStatus()).isEqualTo(PendingActionStatus.CONFIRMED);
         assertThat(action.getResultRef()).isEqualTo("ORD-1");
         // A second confirmation must not be able to execute the action twice.
-        assertThatThrownBy(() -> action.resolve(PendingActionStatus.CONFIRMED, "ORD-2", Instant.now()))
+        assertThatThrownBy(
+                        () -> action.resolve(PendingActionStatus.CONFIRMED, "ORD-2", Instant.now()))
                 .isInstanceOf(IllegalStateException.class);
     }
 
@@ -57,8 +57,8 @@ class PendingActionTest {
 
     @Test
     void expiryIsDecidedByTheDeadline() {
-        PendingAction action = PendingAction.propose(1001L, 7L, "createOrder", "{}", "创建订单",
-                Duration.ZERO);
+        PendingAction action =
+                PendingAction.propose(1001L, 7L, "createOrder", "{}", "创建订单", Duration.ZERO);
 
         assertThat(action.isExpiredAt(Instant.now())).isTrue();
     }
@@ -67,7 +67,8 @@ class PendingActionTest {
     void tokensDoNotRepeat() {
         Set<String> tokens = new HashSet<>();
         for (int i = 0; i < 200; i++) {
-            tokens.add(PendingAction.propose(1001L, 7L, "createOrder", "{}", "创建订单", TTL).getToken());
+            tokens.add(
+                    PendingAction.propose(1001L, 7L, "createOrder", "{}", "创建订单", TTL).getToken());
         }
         assertThat(tokens).hasSize(200);
     }

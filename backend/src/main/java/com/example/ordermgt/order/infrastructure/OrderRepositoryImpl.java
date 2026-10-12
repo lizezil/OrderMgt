@@ -7,11 +7,10 @@ import com.example.ordermgt.order.domain.OrderLine;
 import com.example.ordermgt.order.domain.OrderNumber;
 import com.example.ordermgt.order.domain.OrderRepository;
 import com.example.ordermgt.order.domain.OrderStatus;
-import lombok.RequiredArgsConstructor;
-import org.springframework.stereotype.Repository;
-
 import java.util.List;
 import java.util.Optional;
+import lombok.RequiredArgsConstructor;
+import org.springframework.stereotype.Repository;
 
 @RequiredArgsConstructor
 @Repository
@@ -52,8 +51,10 @@ public class OrderRepositoryImpl implements OrderRepository {
 
     @Override
     public Optional<Order> findByNumber(OrderNumber orderNumber) {
-        return Optional.ofNullable(orderMapper.selectOne(Wrappers.<OrderPO>lambdaQuery()
-                        .eq(OrderPO::getOrderNo, orderNumber.value())))
+        return Optional.ofNullable(
+                        orderMapper.selectOne(
+                                Wrappers.<OrderPO>lambdaQuery()
+                                        .eq(OrderPO::getOrderNo, orderNumber.value())))
                 .map(this::toDomain);
     }
 
@@ -61,27 +62,44 @@ public class OrderRepositoryImpl implements OrderRepository {
     public List<Order> findByCustomer(Long customerId, long offset, long limit) {
         long safeSize = limit > 0 ? limit : 20;
         long current = (offset / safeSize) + 1;
-        Page<OrderPO> page = orderMapper.selectPage(new Page<>(current, safeSize),
-                Wrappers.<OrderPO>lambdaQuery()
-                        .eq(OrderPO::getCustomerId, customerId)
-                        .orderByDesc(OrderPO::getCreatedAt));
+        Page<OrderPO> page =
+                orderMapper.selectPage(
+                        new Page<>(current, safeSize),
+                        Wrappers.<OrderPO>lambdaQuery()
+                                .eq(OrderPO::getCustomerId, customerId)
+                                .orderByDesc(OrderPO::getCreatedAt));
         return page.getRecords().stream().map(this::toDomain).toList();
     }
 
     @Override
     public long countByCustomer(Long customerId) {
-        return orderMapper.selectCount(Wrappers.<OrderPO>lambdaQuery()
-                .eq(OrderPO::getCustomerId, customerId));
+        return orderMapper.selectCount(
+                Wrappers.<OrderPO>lambdaQuery().eq(OrderPO::getCustomerId, customerId));
     }
 
     private Order toDomain(OrderPO po) {
-        List<OrderLine> lines = lineMapper.selectList(Wrappers.<OrderLinePO>lambdaQuery()
-                        .eq(OrderLinePO::getOrderId, po.getId())
-                        .orderByAsc(OrderLinePO::getId))
-                .stream()
-                .map(l -> OrderLine.of(l.getSku(), l.getItemName(), l.getQuantity(), l.getUnitPrice()))
-                .toList();
-        return Order.rehydrate(po.getId(), new OrderNumber(po.getOrderNo()), po.getCustomerId(),
-                OrderStatus.valueOf(po.getStatus()), lines, po.getCreatedAt(), po.getUpdatedAt());
+        List<OrderLine> lines =
+                lineMapper
+                        .selectList(
+                                Wrappers.<OrderLinePO>lambdaQuery()
+                                        .eq(OrderLinePO::getOrderId, po.getId())
+                                        .orderByAsc(OrderLinePO::getId))
+                        .stream()
+                        .map(
+                                l ->
+                                        OrderLine.of(
+                                                l.getSku(),
+                                                l.getItemName(),
+                                                l.getQuantity(),
+                                                l.getUnitPrice()))
+                        .toList();
+        return Order.rehydrate(
+                po.getId(),
+                new OrderNumber(po.getOrderNo()),
+                po.getCustomerId(),
+                OrderStatus.valueOf(po.getStatus()),
+                lines,
+                po.getCreatedAt(),
+                po.getUpdatedAt());
     }
 }

@@ -13,24 +13,22 @@ import com.example.ordermgt.assistant.domain.ToolResult;
 import com.example.ordermgt.assistant.domain.ToolSpec;
 import com.example.ordermgt.shared.api.ErrorCode;
 import com.example.ordermgt.shared.error.BusinessException;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.stereotype.Service;
-
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
 
 /**
  * Orchestration, and the place where the AI/business decision is actually made:
  *
- *  - the model runs OUTSIDE any transaction (ADR-0002); the reads and writes around it are
- *    short transactions of their own,
- *  - the model sees the last N turns of this conversation and nothing else,
- *  - readonly tool calls are executed against the business services,
- *  - mutating tool calls are NOT executed -- each becomes a PendingAction plus the card the
- *    customer has to confirm (ADR-0001). This class has no way to run a mutating handler.
+ * <p>- the model runs OUTSIDE any transaction (ADR-0002); the reads and writes around it are short
+ * transactions of their own, - the model sees the last N turns of this conversation and nothing
+ * else, - readonly tool calls are executed against the business services, - mutating tool calls are
+ * NOT executed -- each becomes a PendingAction plus the card the customer has to confirm
+ * (ADR-0001). This class has no way to run a mutating handler.
  *
- * Deliberately NOT @Transactional: an AI call inside a transaction would hold a database
+ * <p>Deliberately NOT @Transactional: an AI call inside a transaction would hold a database
  * connection across a multi-second network call.
  */
 @Service
@@ -44,13 +42,14 @@ public class AssistantService {
     private final int memoryWindow;
     private final Duration actionTtl;
 
-    public AssistantService(AiAssistantPort aiAssistantPort,
-                            ToolRegistry toolRegistry,
-                            ConversationService conversationService,
-                            PendingActionRepository pendingActionRepository,
-                            ActionCardFactory actionCardFactory,
-                            @Value("${assistant.memory.window:20}") int memoryWindow,
-                            @Value("${assistant.action.ttl-minutes:15}") long actionTtlMinutes) {
+    public AssistantService(
+            AiAssistantPort aiAssistantPort,
+            ToolRegistry toolRegistry,
+            ConversationService conversationService,
+            PendingActionRepository pendingActionRepository,
+            ActionCardFactory actionCardFactory,
+            @Value("${assistant.memory.window:20}") int memoryWindow,
+            @Value("${assistant.action.ttl-minutes:15}") long actionTtlMinutes) {
         this.aiAssistantPort = aiAssistantPort;
         this.toolRegistry = toolRegistry;
         this.conversationService = conversationService;
@@ -70,16 +69,17 @@ public class AssistantService {
     }
 
     /**
-     * The part of a turn that happens before the model is called: pick or start the
-     * conversation, record what the customer said, and assemble the memory window.
+     * The part of a turn that happens before the model is called: pick or start the conversation,
+     * record what the customer said, and assemble the memory window.
      *
-     * Split out for the streaming endpoint, which needs the same setup but obtains the turn
+     * <p>Split out for the streaming endpoint, which needs the same setup but obtains the turn
      * incrementally.
      */
     public TurnContext prepare(Long customerId, Long conversationId, String message) {
-        Conversation conversation = conversationId == null
-                ? conversationService.start(customerId)
-                : conversationService.getOwned(customerId, conversationId);
+        Conversation conversation =
+                conversationId == null
+                        ? conversationService.start(customerId)
+                        : conversationService.getOwned(customerId, conversationId);
 
         conversationService.appendCustomerMessage(customerId, conversation.getId(), message);
         List<ChatMessage> memory = conversationService.memory(conversation.getId(), memoryWindow);
@@ -87,8 +87,8 @@ public class AssistantService {
     }
 
     /**
-     * The part that happens after: classify the tool calls, execute the readonly ones,
-     * turn the mutating ones into confirmable cards, and persist the turn.
+     * The part that happens after: classify the tool calls, execute the readonly ones, turn the
+     * mutating ones into confirmable cards, and persist the turn.
      */
     public AssistantResult complete(TurnContext context, AssistantTurn turn) {
         Conversation conversation = context.conversation();
@@ -98,9 +98,14 @@ public class AssistantService {
         List<PendingAction> proposals = new ArrayList<>();
 
         for (ProposedToolCall call : turn.toolCalls()) {
-            ToolSpec spec = toolRegistry.find(call.name())
-                    .orElseThrow(() -> new BusinessException(ErrorCode.UPSTREAM_AI_ERROR,
-                            "模型调用了未注册的工具: " + call.name()));
+            ToolSpec spec =
+                    toolRegistry
+                            .find(call.name())
+                            .orElseThrow(
+                                    () ->
+                                            new BusinessException(
+                                                    ErrorCode.UPSTREAM_AI_ERROR,
+                                                    "模型调用了未注册的工具: " + call.name()));
             if (spec.mutating()) {
                 proposals.add(propose(customerId, conversation.getId(), spec, call));
             } else {
@@ -117,8 +122,9 @@ public class AssistantService {
         List<ActionCard> cards = new ArrayList<>();
         for (PendingAction proposal : proposals) {
             ActionCard card = actionCardFactory.card(proposal);
-            Message cardMessage = conversationService.appendAssistantMessage(
-                    conversation.getId(), card.summary(), proposal.getId());
+            Message cardMessage =
+                    conversationService.appendAssistantMessage(
+                            conversation.getId(), card.summary(), proposal.getId());
             conversationService.linkActionToMessage(proposal, cardMessage.id());
             cards.add(card);
         }
@@ -127,22 +133,27 @@ public class AssistantService {
     }
 
     /** A prepared turn: the conversation is known and the model has not been called yet. */
-    public record TurnContext(Conversation conversation, List<ChatMessage> memory) {
-    }
+    public record TurnContext(Conversation conversation, List<ChatMessage> memory) {}
 
     /**
-     * Records the proposal. Nothing about it is executed here -- the handler is only
-     * reachable from ActionConfirmationService, once the customer confirms.
+     * Records the proposal. Nothing about it is executed here -- the handler is only reachable from
+     * ActionConfirmationService, once the customer confirms.
      */
-    private PendingAction propose(Long customerId, Long conversationId, ToolSpec spec, ProposedToolCall call) {
+    private PendingAction propose(
+            Long customerId, Long conversationId, ToolSpec spec, ProposedToolCall call) {
         try {
-            PendingAction action = PendingAction.propose(customerId, conversationId, spec.name(),
-                    call.argumentsJson(), actionCardFactory.summaryOf(spec.name(), call.argumentsJson()),
-                    actionTtl);
+            PendingAction action =
+                    PendingAction.propose(
+                            customerId,
+                            conversationId,
+                            spec.name(),
+                            call.argumentsJson(),
+                            actionCardFactory.summaryOf(spec.name(), call.argumentsJson()),
+                            actionTtl);
             return pendingActionRepository.save(action);
         } catch (IllegalArgumentException ex) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                    "模型给出的操作参数不合法，已拒绝: " + ex.getMessage());
+            throw new BusinessException(
+                    ErrorCode.VALIDATION_FAILED, "模型给出的操作参数不合法，已拒绝: " + ex.getMessage());
         }
     }
 

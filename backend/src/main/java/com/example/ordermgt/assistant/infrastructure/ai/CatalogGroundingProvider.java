@@ -7,8 +7,8 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
 /**
- * Grounds the model in the real catalog. Without this it invents skus ("Widget"
- * instead of "WIDGET-01") and the createOrder call then fails validation.
+ * Grounds the model in the real catalog. Without this it invents skus ("Widget" instead of
+ * "WIDGET-01") and the createOrder call then fails validation.
  */
 @RequiredArgsConstructor
 @Component
@@ -20,9 +20,12 @@ public class CatalogGroundingProvider implements GroundingProvider {
     public String facts() {
         StringBuilder sb = new StringBuilder("可用商品（sku 必须原样取自这里）：\n");
         for (CatalogItem item : catalogRepository.findAllActive()) {
-            sb.append("- ").append(item.sku())
-                    .append(' ').append(item.name())
-                    .append(" 单价 ").append(item.unitPrice())
+            sb.append("- ")
+                    .append(item.sku())
+                    .append(' ')
+                    .append(item.name())
+                    .append(" 单价 ")
+                    .append(item.unitPrice())
                     .append('\n');
         }
         return sb.toString();

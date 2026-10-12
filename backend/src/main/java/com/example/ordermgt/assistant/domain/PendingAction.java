@@ -1,26 +1,25 @@
 package com.example.ordermgt.assistant.domain;
 
-import lombok.Getter;
-
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.HexFormat;
+import lombok.Getter;
 
 /**
- * A mutating operation the model proposed but nobody has executed. It is the only way a
- * mutating tool can ever run (ADR-0001): the model proposes, the customer confirms.
+ * A mutating operation the model proposed but nobody has executed. It is the only way a mutating
+ * tool can ever run (ADR-0001): the model proposes, the customer confirms.
  *
- * The {@code token} is the capability. It is bound to the customer who started it, so
- * knowing a token is not enough -- the caller must also be that customer.
+ * <p>The {@code token} is the capability. It is bound to the customer who started it, so knowing a
+ * token is not enough -- the caller must also be that customer.
  */
 @Getter
 public class PendingAction {
 
     /**
-     * pending_actions.arguments_json is VARCHAR(4000). Tool arguments are small, so an
-     * oversized payload means something is wrong upstream and must be rejected rather
-     * than silently truncated into an executable-but-wrong action.
+     * pending_actions.arguments_json is VARCHAR(4000). Tool arguments are small, so an oversized
+     * payload means something is wrong upstream and must be rejected rather than silently truncated
+     * into an executable-but-wrong action.
      */
     public static final int ARGUMENTS_MAX = 4000;
 
@@ -40,9 +39,20 @@ public class PendingAction {
     private String resultRef;
     private final Instant createdAt;
 
-    private PendingAction(Long id, String token, Long customerId, Long conversationId, Long sourceMessageId,
-                          String toolName, String argumentsJson, String summary, PendingActionStatus status,
-                          Instant expiresAt, Instant resolvedAt, String resultRef, Instant createdAt) {
+    private PendingAction(
+            Long id,
+            String token,
+            Long customerId,
+            Long conversationId,
+            Long sourceMessageId,
+            String toolName,
+            String argumentsJson,
+            String summary,
+            PendingActionStatus status,
+            Instant expiresAt,
+            Instant resolvedAt,
+            String resultRef,
+            Instant createdAt) {
         this.id = id;
         this.token = token;
         this.customerId = customerId;
@@ -58,10 +68,16 @@ public class PendingAction {
         this.createdAt = createdAt;
     }
 
-    public static PendingAction propose(Long customerId, Long conversationId, String toolName,
-                                        String argumentsJson, String summary, Duration ttl) {
+    public static PendingAction propose(
+            Long customerId,
+            Long conversationId,
+            String toolName,
+            String argumentsJson,
+            String summary,
+            Duration ttl) {
         if (customerId == null || conversationId == null) {
-            throw new IllegalArgumentException("a pending action needs a customer and a conversation");
+            throw new IllegalArgumentException(
+                    "a pending action needs a customer and a conversation");
         }
         if (toolName == null || toolName.isBlank()) {
             throw new IllegalArgumentException("toolName is required");
@@ -70,16 +86,50 @@ public class PendingAction {
             throw new IllegalArgumentException("tool arguments exceed " + ARGUMENTS_MAX + " chars");
         }
         Instant now = Instant.now();
-        return new PendingAction(null, newToken(), customerId, conversationId, null, toolName,
-                argumentsJson, summary, PendingActionStatus.PENDING, now.plus(ttl), null, null, now);
+        return new PendingAction(
+                null,
+                newToken(),
+                customerId,
+                conversationId,
+                null,
+                toolName,
+                argumentsJson,
+                summary,
+                PendingActionStatus.PENDING,
+                now.plus(ttl),
+                null,
+                null,
+                now);
     }
 
-    public static PendingAction rehydrate(Long id, String token, Long customerId, Long conversationId,
-                                          Long sourceMessageId, String toolName, String argumentsJson,
-                                          String summary, PendingActionStatus status, Instant expiresAt,
-                                          Instant resolvedAt, String resultRef, Instant createdAt) {
-        return new PendingAction(id, token, customerId, conversationId, sourceMessageId, toolName,
-                argumentsJson, summary, status, expiresAt, resolvedAt, resultRef, createdAt);
+    public static PendingAction rehydrate(
+            Long id,
+            String token,
+            Long customerId,
+            Long conversationId,
+            Long sourceMessageId,
+            String toolName,
+            String argumentsJson,
+            String summary,
+            PendingActionStatus status,
+            Instant expiresAt,
+            Instant resolvedAt,
+            String resultRef,
+            Instant createdAt) {
+        return new PendingAction(
+                id,
+                token,
+                customerId,
+                conversationId,
+                sourceMessageId,
+                toolName,
+                argumentsJson,
+                summary,
+                status,
+                expiresAt,
+                resolvedAt,
+                resultRef,
+                createdAt);
     }
 
     public void assignId(Long id) {

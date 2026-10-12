@@ -1,8 +1,6 @@
 package com.example.ordermgt.shared.api;
 
-/**
- * Uniform response envelope. Every endpoint returns this shape.
- */
+/** Uniform response envelope. Every endpoint returns this shape. */
 public record ApiResponse<T>(String code, String message, T data) {
 
     public static <T> ApiResponse<T> ok(T data) {

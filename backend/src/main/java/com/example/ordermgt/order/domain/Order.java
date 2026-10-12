@@ -1,13 +1,10 @@
 package com.example.ordermgt.order.domain;
 
-import lombok.Getter;
-
 import java.time.Instant;
 import java.util.List;
+import lombok.Getter;
 
-/**
- * Aggregate root. Lines are immutable once created; only the status moves.
- */
+/** Aggregate root. Lines are immutable once created; only the status moves. */
 @Getter
 public class Order {
 
@@ -20,16 +17,21 @@ public class Order {
     private final Instant createdAt;
     private Instant updatedAt;
 
-    private Order(Long id, OrderNumber orderNumber, Long customerId, OrderStatus status,
-                  List<OrderLine> lines, Instant createdAt, Instant updatedAt) {
+    private Order(
+            Long id,
+            OrderNumber orderNumber,
+            Long customerId,
+            OrderStatus status,
+            List<OrderLine> lines,
+            Instant createdAt,
+            Instant updatedAt) {
         this.id = id;
         this.orderNumber = orderNumber;
         this.customerId = customerId;
         this.status = status;
         this.lines = List.copyOf(lines);
-        this.totalAmount = this.lines.stream()
-                .map(OrderLine::lineAmount)
-                .reduce(Money.ZERO, Money::plus);
+        this.totalAmount =
+                this.lines.stream().map(OrderLine::lineAmount).reduce(Money.ZERO, Money::plus);
         this.createdAt = createdAt;
         this.updatedAt = updatedAt;
     }
@@ -42,11 +44,18 @@ public class Order {
             throw new IllegalArgumentException("an order needs at least one line");
         }
         Instant now = Instant.now();
-        return new Order(null, OrderNumber.generate(), customerId, OrderStatus.CREATED, lines, now, now);
+        return new Order(
+                null, OrderNumber.generate(), customerId, OrderStatus.CREATED, lines, now, now);
     }
 
-    public static Order rehydrate(Long id, OrderNumber orderNumber, Long customerId, OrderStatus status,
-                                  List<OrderLine> lines, Instant createdAt, Instant updatedAt) {
+    public static Order rehydrate(
+            Long id,
+            OrderNumber orderNumber,
+            Long customerId,
+            OrderStatus status,
+            List<OrderLine> lines,
+            Instant createdAt,
+            Instant updatedAt) {
         return new Order(id, orderNumber, customerId, status, lines, createdAt, updatedAt);
     }
 

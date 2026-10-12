@@ -13,8 +13,8 @@ import org.springframework.web.bind.annotation.RestController;
 /**
  * The confirmation endpoints. This is the only door through which a mutating tool runs.
  *
- * A token that belongs to somebody else is answered with FORBIDDEN; a token nobody holds
- * with NOT_FOUND; an expired one with GONE.
+ * <p>A token that belongs to somebody else is answered with FORBIDDEN; a token nobody holds with
+ * NOT_FOUND; an expired one with GONE.
  */
 @RequiredArgsConstructor
 @RestController
@@ -24,14 +24,14 @@ public class ActionController {
     private final ActionConfirmationService actionConfirmationService;
 
     @PostMapping("/{token}/confirm")
-    public ApiResponse<ActionResolution> confirm(@RequestHeader("X-Customer-Id") Long customerId,
-                                                 @PathVariable String token) {
+    public ApiResponse<ActionResolution> confirm(
+            @RequestHeader("X-Customer-Id") Long customerId, @PathVariable String token) {
         return ApiResponse.ok(actionConfirmationService.confirm(customerId, token));
     }
 
     @PostMapping("/{token}/reject")
-    public ApiResponse<ActionResolution> reject(@RequestHeader("X-Customer-Id") Long customerId,
-                                                @PathVariable String token) {
+    public ApiResponse<ActionResolution> reject(
+            @RequestHeader("X-Customer-Id") Long customerId, @PathVariable String token) {
         return ApiResponse.ok(actionConfirmationService.reject(customerId, token));
     }
 }

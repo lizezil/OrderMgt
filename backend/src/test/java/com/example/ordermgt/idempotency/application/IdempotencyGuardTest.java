@@ -1,21 +1,5 @@
 package com.example.ordermgt.idempotency.application;
 
-import com.example.ordermgt.idempotency.domain.IdempotencyRecord;
-import com.example.ordermgt.idempotency.domain.IdempotencyRepository;
-import com.example.ordermgt.idempotency.domain.IdempotencyStatus;
-import com.example.ordermgt.shared.api.ErrorCode;
-import com.example.ordermgt.shared.error.BusinessException;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
-
-import java.time.Instant;
-import java.util.Map;
-import java.util.Optional;
-
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
@@ -26,6 +10,21 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.example.ordermgt.idempotency.domain.IdempotencyRecord;
+import com.example.ordermgt.idempotency.domain.IdempotencyRepository;
+import com.example.ordermgt.idempotency.domain.IdempotencyStatus;
+import com.example.ordermgt.shared.api.ErrorCode;
+import com.example.ordermgt.shared.error.BusinessException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.Instant;
+import java.util.Map;
+import java.util.Optional;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+
 @ExtendWith(MockitoExtension.class)
 class IdempotencyGuardTest {
 
@@ -33,8 +32,7 @@ class IdempotencyGuardTest {
     private static final String KEY = "key-1";
     private static final String HASH = "hash-1";
 
-    @Mock
-    private IdempotencyRepository repository;
+    @Mock private IdempotencyRepository repository;
 
     private IdempotencyGuard guard;
 
@@ -45,8 +43,9 @@ class IdempotencyGuardTest {
 
     @Test
     void withoutAKeyTheActionSimplyRuns() {
-        Map<String, Object> result = guard.execute(1L, OPERATION, "  ", HASH,
-                () -> Map.of("orderNo", "ORD-1"), Map.class);
+        Map<String, Object> result =
+                guard.execute(
+                        1L, OPERATION, "  ", HASH, () -> Map.of("orderNo", "ORD-1"), Map.class);
 
         assertThat(result).containsEntry("orderNo", "ORD-1");
         verify(repository, never()).tryClaim(any());
@@ -57,8 +56,9 @@ class IdempotencyGuardTest {
         IdempotencyRecord claim = record(9L, IdempotencyStatus.IN_PROGRESS, null, HASH);
         when(repository.tryClaim(any())).thenReturn(Optional.of(claim));
 
-        Map<String, Object> result = guard.execute(1L, OPERATION, KEY, HASH,
-                () -> Map.of("orderNo", "ORD-1"), Map.class);
+        Map<String, Object> result =
+                guard.execute(
+                        1L, OPERATION, KEY, HASH, () -> Map.of("orderNo", "ORD-1"), Map.class);
 
         assertThat(result).containsEntry("orderNo", "ORD-1");
         verify(repository).complete(eq(9L), anyString());
@@ -69,11 +69,24 @@ class IdempotencyGuardTest {
     void aCompletedKeyReplaysTheStoredResponseWithoutRunningTheAction() {
         when(repository.tryClaim(any())).thenReturn(Optional.empty());
         when(repository.find(1L, OPERATION, KEY))
-                .thenReturn(Optional.of(record(9L, IdempotencyStatus.COMPLETED, "{\"orderNo\":\"ORD-1\"}", HASH)));
+                .thenReturn(
+                        Optional.of(
+                                record(
+                                        9L,
+                                        IdempotencyStatus.COMPLETED,
+                                        "{\"orderNo\":\"ORD-1\"}",
+                                        HASH)));
 
-        Map<String, Object> replayed = guard.execute(1L, OPERATION, KEY, HASH, () -> {
-            throw new AssertionError("the action must not run twice");
-        }, Map.class);
+        Map<String, Object> replayed =
+                guard.execute(
+                        1L,
+                        OPERATION,
+                        KEY,
+                        HASH,
+                        () -> {
+                            throw new AssertionError("the action must not run twice");
+                        },
+                        Map.class);
 
         assertThat(replayed).containsEntry("orderNo", "ORD-1");
         verify(repository, never()).complete(anyLong(), anyString());
@@ -83,7 +96,9 @@ class IdempotencyGuardTest {
     void theSameKeyWithADifferentBodyIsAReusedKeyNotARetry() {
         when(repository.tryClaim(any())).thenReturn(Optional.empty());
         when(repository.find(1L, OPERATION, KEY))
-                .thenReturn(Optional.of(record(9L, IdempotencyStatus.COMPLETED, "{}", "a-different-hash")));
+                .thenReturn(
+                        Optional.of(
+                                record(9L, IdempotencyStatus.COMPLETED, "{}", "a-different-hash")));
 
         assertThatThrownBy(() -> guard.execute(1L, OPERATION, KEY, HASH, () -> Map.of(), Map.class))
                 .isInstanceOf(BusinessException.class)
@@ -109,8 +124,9 @@ class IdempotencyGuardTest {
         when(repository.find(1L, OPERATION, KEY))
                 .thenReturn(Optional.of(record(9L, IdempotencyStatus.FAILED, null, HASH)));
 
-        Map<String, Object> result = guard.execute(1L, OPERATION, KEY, HASH,
-                () -> Map.of("orderNo", "ORD-2"), Map.class);
+        Map<String, Object> result =
+                guard.execute(
+                        1L, OPERATION, KEY, HASH, () -> Map.of("orderNo", "ORD-2"), Map.class);
 
         assertThat(result).containsEntry("orderNo", "ORD-2");
         verify(repository).reclaim(9L);
@@ -119,11 +135,21 @@ class IdempotencyGuardTest {
 
     @Test
     void aFailingActionIsRecordedAndTheErrorSurfaces() {
-        when(repository.tryClaim(any())).thenReturn(Optional.of(record(9L, IdempotencyStatus.IN_PROGRESS, null, HASH)));
+        when(repository.tryClaim(any()))
+                .thenReturn(Optional.of(record(9L, IdempotencyStatus.IN_PROGRESS, null, HASH)));
 
-        assertThatThrownBy(() -> guard.execute(1L, OPERATION, KEY, HASH, () -> {
-            throw new IllegalStateException("upstream said no");
-        }, Map.class)).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(
+                        () ->
+                                guard.execute(
+                                        1L,
+                                        OPERATION,
+                                        KEY,
+                                        HASH,
+                                        () -> {
+                                            throw new IllegalStateException("upstream said no");
+                                        },
+                                        Map.class))
+                .isInstanceOf(IllegalStateException.class);
 
         verify(repository).markFailed(9L);
         verify(repository, never()).complete(anyLong(), anyString());
@@ -133,13 +159,25 @@ class IdempotencyGuardTest {
     void theRequestHashIsStableAndDependsOnEveryPart() {
         assertThat(IdempotencyGuard.hashOf("a", "b")).hasSize(64);
         assertThat(IdempotencyGuard.hashOf("a", "b")).isEqualTo(IdempotencyGuard.hashOf("a", "b"));
-        assertThat(IdempotencyGuard.hashOf("a", "b")).isNotEqualTo(IdempotencyGuard.hashOf("ab", ""));
+        assertThat(IdempotencyGuard.hashOf("a", "b"))
+                .isNotEqualTo(IdempotencyGuard.hashOf("ab", ""));
         assertThat(IdempotencyGuard.hashOf(null, "b")).isEqualTo(IdempotencyGuard.hashOf("", "b"));
     }
 
-    private IdempotencyRecord record(Long id, IdempotencyStatus status, String responseJson, String requestHash) {
+    private IdempotencyRecord record(
+            Long id, IdempotencyStatus status, String responseJson, String requestHash) {
         Instant now = Instant.now();
-        return new IdempotencyRecord(id, 1L, OPERATION, KEY, requestHash, status, null,
-                responseJson, now, now, now.plusSeconds(3600));
+        return new IdempotencyRecord(
+                id,
+                1L,
+                OPERATION,
+                KEY,
+                requestHash,
+                status,
+                null,
+                responseJson,
+                now,
+                now,
+                now.plusSeconds(3600));
     }
 }

@@ -5,9 +5,7 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.UUID;
 
-/**
- * The customer-facing order identifier. Distinct from the internal surrogate id.
- */
+/** The customer-facing order identifier. Distinct from the internal surrogate id. */
 public record OrderNumber(String value) {
 
     private static final DateTimeFormatter STAMP =

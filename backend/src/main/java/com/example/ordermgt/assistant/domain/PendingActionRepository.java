@@ -12,8 +12,8 @@ public interface PendingActionRepository {
     Optional<PendingAction> findByToken(String token);
 
     /**
-     * Same as {@link #findByToken} but takes a row lock, so two concurrent confirmations
-     * of one token cannot both execute. Must be called inside a transaction.
+     * Same as {@link #findByToken} but takes a row lock, so two concurrent confirmations of one
+     * token cannot both execute. Must be called inside a transaction.
      */
     Optional<PendingAction> lockByToken(String token);
 

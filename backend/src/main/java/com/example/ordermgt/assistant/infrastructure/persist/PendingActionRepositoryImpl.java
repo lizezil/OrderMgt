@@ -4,13 +4,12 @@ import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.example.ordermgt.assistant.domain.PendingAction;
 import com.example.ordermgt.assistant.domain.PendingActionRepository;
 import com.example.ordermgt.assistant.domain.PendingActionStatus;
-import lombok.RequiredArgsConstructor;
-import org.springframework.stereotype.Repository;
-
 import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
+import lombok.RequiredArgsConstructor;
+import org.springframework.stereotype.Repository;
 
 @RequiredArgsConstructor
 @Repository
@@ -32,8 +31,10 @@ public class PendingActionRepositoryImpl implements PendingActionRepository {
 
     @Override
     public Optional<PendingAction> findByToken(String token) {
-        return Optional.ofNullable(mapper.selectOne(Wrappers.<PendingActionPO>lambdaQuery()
-                        .eq(PendingActionPO::getToken, token)))
+        return Optional.ofNullable(
+                        mapper.selectOne(
+                                Wrappers.<PendingActionPO>lambdaQuery()
+                                        .eq(PendingActionPO::getToken, token)))
                 .map(this::toDomain);
     }
 
@@ -41,9 +42,11 @@ public class PendingActionRepositoryImpl implements PendingActionRepository {
     public Optional<PendingAction> lockByToken(String token) {
         // `FOR UPDATE` is accepted by both MySQL and H2 in MySQL mode. It is what makes
         // "confirm twice" a no-op instead of a double execution.
-        return Optional.ofNullable(mapper.selectOne(Wrappers.<PendingActionPO>lambdaQuery()
-                        .eq(PendingActionPO::getToken, token)
-                        .last("FOR UPDATE")))
+        return Optional.ofNullable(
+                        mapper.selectOne(
+                                Wrappers.<PendingActionPO>lambdaQuery()
+                                        .eq(PendingActionPO::getToken, token)
+                                        .last("FOR UPDATE")))
                 .map(this::toDomain);
     }
 
@@ -52,9 +55,11 @@ public class PendingActionRepositoryImpl implements PendingActionRepository {
         if (ids == null || ids.isEmpty()) {
             return List.of();
         }
-        return mapper.selectList(Wrappers.<PendingActionPO>lambdaQuery()
-                        .in(PendingActionPO::getId, ids))
-                .stream().map(this::toDomain).toList();
+        return mapper
+                .selectList(Wrappers.<PendingActionPO>lambdaQuery().in(PendingActionPO::getId, ids))
+                .stream()
+                .map(this::toDomain)
+                .toList();
     }
 
     @Override
@@ -62,9 +67,11 @@ public class PendingActionRepositoryImpl implements PendingActionRepository {
         PendingActionPO patch = new PendingActionPO();
         patch.setStatus(PendingActionStatus.EXPIRED.name());
         patch.setResolvedAt(now);
-        return mapper.update(patch, Wrappers.<PendingActionPO>lambdaUpdate()
-                .eq(PendingActionPO::getStatus, PendingActionStatus.PENDING.name())
-                .le(PendingActionPO::getExpiresAt, now));
+        return mapper.update(
+                patch,
+                Wrappers.<PendingActionPO>lambdaUpdate()
+                        .eq(PendingActionPO::getStatus, PendingActionStatus.PENDING.name())
+                        .le(PendingActionPO::getExpiresAt, now));
     }
 
     private PendingActionPO toPo(PendingAction action) {
@@ -86,9 +93,19 @@ public class PendingActionRepositoryImpl implements PendingActionRepository {
     }
 
     private PendingAction toDomain(PendingActionPO po) {
-        return PendingAction.rehydrate(po.getId(), po.getToken(), po.getCustomerId(), po.getConversationId(),
-                po.getSourceMessageId(), po.getToolName(), po.getArgumentsJson(), po.getSummary(),
-                PendingActionStatus.valueOf(po.getStatus()), po.getExpiresAt(), po.getResolvedAt(),
-                po.getResultRef(), po.getCreatedAt());
+        return PendingAction.rehydrate(
+                po.getId(),
+                po.getToken(),
+                po.getCustomerId(),
+                po.getConversationId(),
+                po.getSourceMessageId(),
+                po.getToolName(),
+                po.getArgumentsJson(),
+                po.getSummary(),
+                PendingActionStatus.valueOf(po.getStatus()),
+                po.getExpiresAt(),
+                po.getResolvedAt(),
+                po.getResultRef(),
+                po.getCreatedAt());
     }
 }

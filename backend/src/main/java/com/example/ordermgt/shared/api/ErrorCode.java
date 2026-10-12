@@ -3,11 +3,9 @@ package com.example.ordermgt.shared.api;
 import org.springframework.http.HttpStatus;
 
 /**
- * Business error codes. HTTP status is carried here so the exception handler
- * never has to guess.
+ * Business error codes. HTTP status is carried here so the exception handler never has to guess.
  */
 public enum ErrorCode {
-
     VALIDATION_FAILED(HttpStatus.BAD_REQUEST, "请求参数校验失败"),
     NOT_FOUND(HttpStatus.NOT_FOUND, "资源不存在"),
     FORBIDDEN(HttpStatus.FORBIDDEN, "无权访问该资源"),

@@ -5,13 +5,12 @@ import com.example.ordermgt.assistant.domain.Conversation;
 import com.example.ordermgt.assistant.domain.ConversationRepository;
 import com.example.ordermgt.assistant.domain.Message;
 import com.example.ordermgt.assistant.domain.Role;
-import lombok.RequiredArgsConstructor;
-import org.springframework.stereotype.Repository;
-
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
+import lombok.RequiredArgsConstructor;
+import org.springframework.stereotype.Repository;
 
 @RequiredArgsConstructor
 @Repository
@@ -47,11 +46,15 @@ public class ConversationRepositoryImpl implements ConversationRepository {
 
     @Override
     public List<Conversation> findByCustomer(Long customerId) {
-        return conversationMapper.selectList(Wrappers.<ConversationPO>lambdaQuery()
-                        .eq(ConversationPO::getCustomerId, customerId)
-                        .orderByDesc(ConversationPO::getLastMessageAt)
-                        .orderByDesc(ConversationPO::getId))
-                .stream().map(this::toDomain).toList();
+        return conversationMapper
+                .selectList(
+                        Wrappers.<ConversationPO>lambdaQuery()
+                                .eq(ConversationPO::getCustomerId, customerId)
+                                .orderByDesc(ConversationPO::getLastMessageAt)
+                                .orderByDesc(ConversationPO::getId))
+                .stream()
+                .map(this::toDomain)
+                .toList();
     }
 
     @Override
@@ -63,17 +66,24 @@ public class ConversationRepositoryImpl implements ConversationRepository {
         po.setPendingActionId(message.pendingActionId());
         po.setCreatedAt(message.createdAt());
         messageMapper.insert(po);
-        return new Message(po.getId(), message.conversationId(), message.role(),
-                message.content(), message.pendingActionId(), message.createdAt());
+        return new Message(
+                po.getId(),
+                message.conversationId(),
+                message.role(),
+                message.content(),
+                message.pendingActionId(),
+                message.createdAt());
     }
 
     @Override
     public List<Message> findRecentMessages(Long conversationId, int limit) {
         int safeLimit = Math.max(limit, 1);
-        List<MessagePO> newestFirst = messageMapper.selectList(Wrappers.<MessagePO>lambdaQuery()
-                .eq(MessagePO::getConversationId, conversationId)
-                .orderByDesc(MessagePO::getId)
-                .last("LIMIT " + safeLimit));
+        List<MessagePO> newestFirst =
+                messageMapper.selectList(
+                        Wrappers.<MessagePO>lambdaQuery()
+                                .eq(MessagePO::getConversationId, conversationId)
+                                .orderByDesc(MessagePO::getId)
+                                .last("LIMIT " + safeLimit));
         List<Message> ordered = new ArrayList<>(newestFirst.stream().map(this::toDomain).toList());
         Collections.reverse(ordered);
         return ordered;
@@ -81,19 +91,33 @@ public class ConversationRepositoryImpl implements ConversationRepository {
 
     @Override
     public List<Message> findAllMessages(Long conversationId) {
-        return messageMapper.selectList(Wrappers.<MessagePO>lambdaQuery()
-                        .eq(MessagePO::getConversationId, conversationId)
-                        .orderByAsc(MessagePO::getId))
-                .stream().map(this::toDomain).toList();
+        return messageMapper
+                .selectList(
+                        Wrappers.<MessagePO>lambdaQuery()
+                                .eq(MessagePO::getConversationId, conversationId)
+                                .orderByAsc(MessagePO::getId))
+                .stream()
+                .map(this::toDomain)
+                .toList();
     }
 
     private Conversation toDomain(ConversationPO po) {
-        return Conversation.rehydrate(po.getId(), po.getCustomerId(), po.getTitle(),
-                po.getCreatedAt(), po.getUpdatedAt(), po.getLastMessageAt());
+        return Conversation.rehydrate(
+                po.getId(),
+                po.getCustomerId(),
+                po.getTitle(),
+                po.getCreatedAt(),
+                po.getUpdatedAt(),
+                po.getLastMessageAt());
     }
 
     private Message toDomain(MessagePO po) {
-        return new Message(po.getId(), po.getConversationId(), Role.valueOf(po.getRole()),
-                po.getContent(), po.getPendingActionId(), po.getCreatedAt());
+        return new Message(
+                po.getId(),
+                po.getConversationId(),
+                Role.valueOf(po.getRole()),
+                po.getContent(),
+                po.getPendingActionId(),
+                po.getCreatedAt());
     }
 }

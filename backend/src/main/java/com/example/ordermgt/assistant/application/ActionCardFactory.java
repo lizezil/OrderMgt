@@ -5,22 +5,20 @@ import com.example.ordermgt.assistant.domain.ToolRegistry;
 import com.example.ordermgt.assistant.domain.ToolSpec;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.RequiredArgsConstructor;
-import org.springframework.stereotype.Component;
-
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import lombok.RequiredArgsConstructor;
+import org.springframework.stereotype.Component;
 
 /**
  * Assembles the confirmation card for a PendingAction.
  *
- * All tool-specific knowledge -- the title, the one-line summary and the labelled rows --
- * comes from the tool's own card ({@code ToolSpec.card()}), so this class holds no switch on
- * the tool name. What stays here is the envelope (token, endpoints, expiry, status) and the
- * fallback: a proposal we cannot describe must still become a card the customer can reject,
- * not a 500.
+ * <p>All tool-specific knowledge -- the title, the one-line summary and the labelled rows -- comes
+ * from the tool's own card ({@code ToolSpec.card()}), so this class holds no switch on the tool
+ * name. What stays here is the envelope (token, endpoints, expiry, status) and the fallback: a
+ * proposal we cannot describe must still become a card the customer can reject, not a 500.
  */
 @RequiredArgsConstructor
 @Component
@@ -46,23 +44,26 @@ public class ActionCardFactory {
     }
 
     /**
-     * Safe to call on anything the model produced: a proposal we cannot describe must still
-     * become a card the customer can reject, not a 500.
+     * Safe to call on anything the model produced: a proposal we cannot describe must still become
+     * a card the customer can reject, not a 500.
      */
     public String summaryOf(String toolName, String argumentsJson) {
-        return toolRegistry.find(toolName)
-                .map(spec -> {
-                    try {
-                        return spec.summarise(argumentsJson);
-                    } catch (RuntimeException ex) {
-                        return toolName;
-                    }
-                })
+        return toolRegistry
+                .find(toolName)
+                .map(
+                        spec -> {
+                            try {
+                                return spec.summarise(argumentsJson);
+                            } catch (RuntimeException ex) {
+                                return toolName;
+                            }
+                        })
                 .orElse(toolName);
     }
 
     private String titleOf(String toolName) {
-        return toolRegistry.find(toolName)
+        return toolRegistry
+                .find(toolName)
                 .filter(spec -> spec.card() != null)
                 .map(spec -> spec.card().title())
                 .orElse(toolName);
@@ -70,10 +71,12 @@ public class ActionCardFactory {
 
     /** The tool's own rows when it has a card and can read the arguments; raw keys otherwise. */
     private List<ActionCard.Field> fields(String toolName, String argumentsJson) {
-        List<ActionCard.Field> presented = toolRegistry.find(toolName)
-                .filter(spec -> spec.card() != null)
-                .map(spec -> presentedFields(spec, argumentsJson))
-                .orElse(List.of());
+        List<ActionCard.Field> presented =
+                toolRegistry
+                        .find(toolName)
+                        .filter(spec -> spec.card() != null)
+                        .map(spec -> presentedFields(spec, argumentsJson))
+                        .orElse(List.of());
         return presented.isEmpty() ? rawFields(argumentsJson) : presented;
     }
 
@@ -105,8 +108,10 @@ public class ActionCardFactory {
         while (entries.hasNext()) {
             Map.Entry<String, JsonNode> entry = entries.next();
             JsonNode value = entry.getValue();
-            fields.add(new ActionCard.Field(entry.getKey(),
-                    value.isValueNode() ? value.asText() : value.toString()));
+            fields.add(
+                    new ActionCard.Field(
+                            entry.getKey(),
+                            value.isValueNode() ? value.asText() : value.toString()));
         }
         return fields;
     }
