@@ -1,0 +1,18 @@
+# Keep the build context small and make sure the image builds the app from source,
+# not from whatever happens to be lying around locally.
+.git
+.gitignore
+docs
+*.md
+.data
+target
+**/target
+node_modules
+**/node_modules
+frontend/dist
+# The SPA is built inside the image (stage 1), so never ship a local build into the jar.
+backend/src/main/resources/static
+.idea
+.vscode
+*.log
+.env

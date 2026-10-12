@@ -1,0 +1,56 @@
+# Two containers: MySQL 8 (the real target database) and the app, which waits for MySQL to
+# report healthy before it starts -- otherwise Flyway races the server's first-boot init and
+# the app dies on connect.
+#
+# `version` is kept so this file also works with the docker-compose 1.29 that ships with some
+# packagers; Compose v2 just prints an "obsolete attribute" warning and moves on.
+version: "3.9"
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: ordermgt-mysql
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-ordermgt}
+      MYSQL_USER: ${MYSQL_USER:-ordermgt}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-ordermgt}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      # -h 127.0.0.1 forces TCP: during init the server only listens on a unix socket,
+      # so a plain `mysqladmin ping` would report healthy far too early.
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ordermgt-app
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: mysql
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-ordermgt}
+      MYSQL_USER: ${MYSQL_USER:-ordermgt}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-ordermgt}
+      # No default: a missing key must fail loudly rather than silently calling the model
+      # with a placeholder. Put it in .env (git-ignored) or the shell environment.
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:?set DASHSCOPE_API_KEY in .env or the environment}
+    ports:
+      - "${APP_PORT:-8081}:8081"
+
+volumes:
+  mysql-data:

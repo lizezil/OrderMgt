@@ -1,0 +1,35 @@
+# build output
+target/
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.project
+.classpath
+
+# OS
+.DS_Store
+
+# secrets
+.env
+*.local.yml
+
+# frontend
+node_modules/
+frontend/dist/
+
+# built frontend copied into backend static (produced by the build)
+backend/src/main/resources/static/*
+!backend/src/main/resources/static/.gitkeep
+
+# logs
+*.log
+
+# local H2 data
+.data/

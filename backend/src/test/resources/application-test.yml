@@ -1,0 +1,25 @@
+# Test profile: in-memory H2 so tests need no infrastructure and leave no file behind.
+# Same Flyway script as production (it is deliberately dialect-portable).
+spring:
+  config:
+    activate:
+      on-profile: test
+  datasource:
+    url: jdbc:h2:mem:ordermgt-test;MODE=MySQL;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  ai:
+    openai:
+      # The real adapter is a bean the tests replace. The key only has to exist so the
+      # OpenAI auto-configuration can construct its client; no request is ever made.
+      api-key: test-key-never-used
+
+assistant:
+  action:
+    # Keep the expiry sweeper out of the way: tests drive expiry explicitly.
+    sweep-interval-ms: 3600000
+
+logging:
+  level:
+    com.example.ordermgt: INFO

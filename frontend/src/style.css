@@ -1,0 +1,830 @@
+/* Order Assistant — a working docket on a clerk's desk.
+   Colour carries the domain's claim: the model *proposes* (plum), the server *decides*
+   (ultramarine), and only the server's price list is truth. Three type voices, each with
+   one job: the system speaks in serif, the customer in sans, machines in mono. */
+
+:root {
+  /* ---- ink & paper ---- */
+  --ink: #1a2130;          /* blue-slate ink, a hued near-black */
+  --ink-soft: #4c5569;
+  --ink-faint: #7d8598;
+  --paper: #f4f5f2;        /* cool ledger white */
+  --surface: #ffffff;
+  --rule: #d9dcd5;
+  --rule-strong: #bcc1b7;
+  --wash: #eceee9;
+
+  /* ---- meaning ---- */
+  --authority: #1e43b8;    /* the server decides: prices, execution, focus */
+  --authority-soft: #e7ecfb;
+  --proposal: #6c3fa6;     /* the model proposes: an unconfirmed action */
+  --proposal-soft: #f1eaf8;
+  --done: #14624a;
+  --done-soft: #e4f0ea;
+  --refused: #a32b20;
+  --refused-soft: #fbeae7;
+
+  /* ---- voices ---- */
+  --serif: Georgia, "Songti SC", "Songti TC", "Noto Serif SC", "Source Han Serif SC",
+    "SimSun", serif;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  --radius: 3px;
+  --shadow-lift: 0 1px 1px rgba(26, 33, 48, 0.05), 0 18px 32px -26px rgba(26, 33, 48, 0.55);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--proposal-soft);
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--authority);
+  outline-offset: 2px;
+}
+
+.data {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+/* ---------- shell ---------- */
+
+.shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.masthead {
+  display: flex;
+  align-items: center;
+  gap: 26px;
+  padding: 0 22px;
+  height: 56px;
+  flex: none;
+  border-bottom: 1px solid var(--ink);
+  background: var(--paper);
+}
+
+.wordmark {
+  font-family: var(--serif);
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.wordmark span {
+  color: var(--authority);
+}
+
+.views {
+  display: flex;
+  gap: 22px;
+  margin-left: 6px;
+}
+
+.view {
+  padding: 4px 0;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--ink-soft);
+  transition: color 0.14s ease, border-color 0.14s ease;
+}
+
+.view:hover {
+  color: var(--ink);
+}
+
+.view.active {
+  color: var(--ink);
+  border-bottom-color: var(--authority);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.identity {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--ink-faint);
+}
+
+.identity input {
+  width: 74px;
+  padding: 3px 8px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.identity input:focus {
+  border-color: var(--authority);
+}
+
+.stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+/* ---------- buttons ---------- */
+
+.btn {
+  padding: 6px 13px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+
+.btn:hover:not(:disabled) {
+  border-color: var(--ink-faint);
+}
+
+.btn.authority {
+  background: var(--authority);
+  border-color: var(--authority);
+  color: #fff;
+  font-weight: 550;
+}
+
+.btn.authority:hover:not(:disabled) {
+  background: #18359a;
+  border-color: #18359a;
+}
+
+.btn.quiet {
+  border-color: transparent;
+  background: none;
+  color: var(--ink-soft);
+}
+
+.btn.quiet:hover:not(:disabled) {
+  background: var(--wash);
+  color: var(--ink);
+}
+
+/* ---------- docket rail ---------- */
+
+.rail {
+  width: 244px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--rule);
+  background: var(--surface);
+}
+
+.rail-head {
+  padding: 14px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.rail-head .btn {
+  width: 100%;
+}
+
+.docket {
+  flex: 1;
+  overflow-y: auto;
+  margin: 0;
+  padding: 8px;
+  list-style: none;
+}
+
+.entry {
+  width: 100%;
+  display: block;
+  text-align: left;
+  padding: 9px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: none;
+}
+
+.entry:hover {
+  background: var(--wash);
+}
+
+.entry.active {
+  border-color: var(--rule-strong);
+  background: var(--surface);
+  box-shadow: inset 3px 0 0 var(--authority);
+}
+
+.entry-title {
+  display: block;
+  font-weight: 550;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.entry-when {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+
+.docket-empty {
+  padding: 20px 12px;
+  color: var(--ink-faint);
+  font-size: 12.5px;
+}
+
+/* ---------- working sheet ---------- */
+
+.sheet {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.sheet-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 30px 0 12px;
+}
+
+.measure {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 0 28px;
+}
+
+.blank {
+  max-width: 46ch;
+  margin: 40px auto;
+  color: var(--ink-faint);
+  font-family: var(--serif);
+  font-size: 15.5px;
+  line-height: 1.8;
+  text-align: center;
+}
+
+.line {
+  margin-bottom: 24px;
+}
+
+.line .speaker {
+  margin: 0 0 6px;
+  font-size: 11.5px;
+  color: var(--ink-faint);
+}
+
+.said {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* The customer speaks plainly; the system speaks in serif, as if printed. */
+.line.customer .said {
+  padding-left: 14px;
+  border-left: 2px solid var(--ink);
+  font-size: 14.5px;
+}
+
+.line.assistant .said {
+  font-family: var(--serif);
+  font-size: 15.5px;
+  line-height: 1.75;
+}
+
+.line.tool .said {
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  background: var(--wash);
+  color: var(--ink-soft);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.said .data {
+  display: block;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  white-space: pre;
+  overflow-x: auto;
+  margin: 6px 0;
+}
+
+.thinking {
+  margin: 0 0 24px;
+  color: var(--ink-faint);
+  font-style: italic;
+}
+
+.composer {
+  flex: none;
+  padding: 14px 0;
+  border-top: 1px solid var(--rule);
+  background: var(--surface);
+}
+
+.composer-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+}
+
+.composer textarea {
+  flex: 1;
+  resize: none;
+  min-height: 42px;
+  max-height: 150px;
+  padding: 10px 12px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius);
+  background: var(--paper);
+}
+
+.composer textarea:focus {
+  border-color: var(--authority);
+  outline: none;
+  box-shadow: 0 0 0 3px var(--authority-soft);
+}
+
+.meter {
+  margin-top: 8px;
+  font-size: 11.5px;
+  color: var(--ink-faint);
+}
+
+/* ---------- authorization slip ---------- */
+
+.slip {
+  position: relative;
+  margin: 14px 0 0;
+  padding: 14px 16px 15px 26px;
+  border: 1px solid var(--rule-strong);
+  border-top: 2px solid var(--proposal);
+  border-radius: var(--radius);
+  /* the one thing awaiting the customer is the one tinted thing on the sheet */
+  background: linear-gradient(180deg, #f8f4fc 0%, var(--surface) 58%);
+  box-shadow: var(--shadow-lift);
+}
+
+/* punched binding edge — this is a tear-off authorisation slip, not a card */
+.slip::before {
+  content: "";
+  position: absolute;
+  left: 9px;
+  top: 14px;
+  bottom: 14px;
+  width: 5px;
+  background-image: radial-gradient(circle, var(--rule-strong) 1.7px, transparent 1.9px);
+  background-size: 5px 12px;
+  background-repeat: repeat-y;
+}
+
+.slip.done,
+.slip.refused {
+  background: var(--surface);
+}
+
+.slip.done {
+  border-top-color: var(--done);
+}
+
+.slip.refused {
+  border-top-color: var(--refused);
+}
+
+.slip-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.slip-kind {
+  font-family: var(--serif);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.slip-state {
+  margin-left: auto;
+  padding: 1px 9px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--proposal);
+}
+
+.slip.done .slip-state,
+.slip.refused .slip-state {
+  display: none;
+}
+
+.slip-fields {
+  margin: 12px 0 0;
+}
+
+.slip-fields .row {
+  display: flex;
+  gap: 12px;
+  padding: 4px 0;
+  border-bottom: 1px dashed var(--rule);
+  font-size: 13px;
+}
+
+.slip-fields .row:last-child {
+  border-bottom: none;
+}
+
+.slip-fields dt {
+  width: 132px;
+  flex: none;
+  color: var(--ink-soft);
+}
+
+.slip-fields dd {
+  margin: 0;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  word-break: break-all;
+}
+
+/* the signature rule: where the customer's authorisation goes */
+.slip-sign {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 13px;
+  border-top: 1px solid var(--ink);
+}
+
+.slip-sign .label {
+  font-size: 11.5px;
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+
+.slip-sign .rule {
+  flex: 1;
+  height: 1px;
+  background: var(--rule-strong);
+}
+
+.slip-sign .clock {
+  font-size: 11.5px;
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+
+.slip.done .slip-sign,
+.slip.refused .slip-sign {
+  border-top-color: var(--rule);
+}
+
+/* the stamp lands when the card resolves — not on every historical card at load */
+.stamp {
+  position: absolute;
+  right: 18px;
+  bottom: 12px;
+  padding: 3px 12px;
+  border: 2px solid currentColor;
+  border-radius: 2px;
+  font-family: var(--serif);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--done);
+  opacity: 0.72;
+  transform: rotate(-7deg);
+}
+
+.stamp.land {
+  animation: stamp-down 0.34s cubic-bezier(0.2, 0.8, 0.3, 1) both;
+}
+
+.stamp.refused {
+  color: var(--refused);
+}
+
+@keyframes stamp-down {
+  from {
+    opacity: 0;
+    transform: rotate(-14deg) scale(1.9);
+  }
+  to {
+    opacity: 0.72;
+    transform: rotate(-7deg) scale(1);
+  }
+}
+
+/* ---------- ledger & panels ---------- */
+
+.panel {
+  flex: 1;
+  overflow-y: auto;
+  padding: 30px 28px 48px;
+}
+
+.panel-inner {
+  max-width: 860px;
+  margin: 0 auto;
+}
+
+h1 {
+  margin: 0 0 6px;
+  font-family: var(--serif);
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.sub {
+  max-width: 62ch;
+  margin: 0 0 24px;
+  color: var(--ink-soft);
+}
+
+.ledger {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--surface);
+  border-top: 1px solid var(--ink);
+  border-bottom: 1px solid var(--ink);
+}
+
+.ledger th,
+.ledger td {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.ledger th {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--ink-faint);
+  border-bottom: 1px solid var(--rule-strong);
+}
+
+.ledger tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.ledger tbody tr.clickable {
+  cursor: pointer;
+}
+
+.ledger tbody tr:hover {
+  background: var(--wash);
+}
+
+.ledger .num {
+  text-align: right;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--authority);
+  font-weight: 550;
+}
+
+.ledger .num .yen {
+  margin-right: 1px;
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+.order-no {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* status reads as a small stamped mark, not a pill */
+.mark {
+  display: inline-block;
+  padding: 1px 7px;
+  border: 1px solid var(--rule-strong);
+  border-radius: 2px;
+  font-size: 11.5px;
+  color: var(--ink-soft);
+  letter-spacing: 0.05em;
+}
+
+.mark.done {
+  border-color: var(--done);
+  color: var(--done);
+  background: var(--done-soft);
+}
+
+.mark.refused {
+  border-color: var(--refused);
+  color: var(--refused);
+  background: var(--refused-soft);
+}
+
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 14px;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+}
+
+.docket-open {
+  margin-top: 22px;
+  padding: 18px 20px;
+  border: 1px solid var(--rule-strong);
+  border-left: 3px solid var(--authority);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.docket-open h2 {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 0 0 12px;
+  font-family: var(--serif);
+  font-size: 17px;
+}
+
+.sub-lines {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sub-lines li {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  padding: 6px 0;
+  border-bottom: 1px dashed var(--rule);
+}
+
+.sub-lines li:last-child {
+  border-bottom: none;
+}
+
+.sub-lines .qty {
+  color: var(--ink-soft);
+}
+
+.sub-lines .amt {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--authority);
+}
+
+.total {
+  margin: 12px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--ink);
+  font-size: 13px;
+}
+
+.total .data {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--authority);
+}
+
+.empty {
+  max-width: 46ch;
+  padding: 40px 0;
+  color: var(--ink-faint);
+  font-family: var(--serif);
+  font-size: 15px;
+  line-height: 1.8;
+}
+
+/* ---------- toast ---------- */
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  max-width: 540px;
+  padding: 10px 18px;
+  border-radius: var(--radius);
+  background: var(--ink);
+  color: var(--paper);
+  box-shadow: var(--shadow-lift);
+  font-size: 13px;
+  z-index: 20;
+}
+
+.toast.error {
+  background: var(--refused);
+}
+
+/* ---------- small screens ---------- */
+
+@media (max-width: 720px) {
+  .masthead {
+    gap: 14px;
+    padding: 0 14px;
+    height: auto;
+    flex-wrap: wrap;
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+
+  .identity {
+    margin-left: auto;
+  }
+
+  .stage {
+    flex-direction: column;
+  }
+
+  .rail {
+    width: auto;
+    max-height: 34%;
+    border-right: none;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  .docket {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .docket li {
+    flex: none;
+  }
+
+  .entry {
+    min-width: 168px;
+  }
+
+  .measure,
+  .panel {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .ledger th:nth-child(3),
+  .ledger td:nth-child(3) {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001s !important;
+    transition-duration: 0.001s !important;
+  }
+}
