@@ -3,19 +3,17 @@ package com.example.ordermgt.catalog.infrastructure;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.example.ordermgt.catalog.domain.CatalogItem;
 import com.example.ordermgt.catalog.domain.CatalogRepository;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
 import java.util.Optional;
 
+@RequiredArgsConstructor
 @Repository
 public class CatalogRepositoryImpl implements CatalogRepository {
 
     private final CatalogItemMapper mapper;
-
-    public CatalogRepositoryImpl(CatalogItemMapper mapper) {
-        this.mapper = mapper;
-    }
 
     @Override
     public Optional<CatalogItem> findBySku(String sku) {

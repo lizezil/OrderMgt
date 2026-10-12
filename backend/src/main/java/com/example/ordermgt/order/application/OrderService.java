@@ -10,6 +10,7 @@ import com.example.ordermgt.order.domain.OrderStatus;
 import com.example.ordermgt.shared.api.ErrorCode;
 import com.example.ordermgt.shared.api.PageResult;
 import com.example.ordermgt.shared.error.BusinessException;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -20,16 +21,12 @@ import java.util.List;
  * Transaction boundary for orders. Note that no external (AI) call ever happens
  * inside these methods — see ADR-0002.
  */
+@RequiredArgsConstructor
 @Service
 public class OrderService {
 
     private final OrderRepository orderRepository;
     private final CatalogRepository catalogRepository;
-
-    public OrderService(OrderRepository orderRepository, CatalogRepository catalogRepository) {
-        this.orderRepository = orderRepository;
-        this.catalogRepository = catalogRepository;
-    }
 
     @Transactional
     public Order createOrder(Long customerId, List<LineCommand> commands) {

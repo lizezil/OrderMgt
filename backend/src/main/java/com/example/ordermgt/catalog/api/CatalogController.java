@@ -2,21 +2,19 @@ package com.example.ordermgt.catalog.api;
 
 import com.example.ordermgt.catalog.domain.CatalogRepository;
 import com.example.ordermgt.shared.api.ApiResponse;
+import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
 
+@RequiredArgsConstructor
 @RestController
 @RequestMapping("/api/catalog")
 public class CatalogController {
 
     private final CatalogRepository catalogRepository;
-
-    public CatalogController(CatalogRepository catalogRepository) {
-        this.catalogRepository = catalogRepository;
-    }
 
     @GetMapping("/items")
     public ApiResponse<List<CatalogItemResponse>> items() {

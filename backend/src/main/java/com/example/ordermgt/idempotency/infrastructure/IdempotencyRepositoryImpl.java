@@ -4,20 +4,18 @@ import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.example.ordermgt.idempotency.domain.IdempotencyRecord;
 import com.example.ordermgt.idempotency.domain.IdempotencyRepository;
 import com.example.ordermgt.idempotency.domain.IdempotencyStatus;
+import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Repository;
 
 import java.time.Instant;
 import java.util.Optional;
 
+@RequiredArgsConstructor
 @Repository
 public class IdempotencyRepositoryImpl implements IdempotencyRepository {
 
     private final IdempotencyRecordMapper mapper;
-
-    public IdempotencyRepositoryImpl(IdempotencyRecordMapper mapper) {
-        this.mapper = mapper;
-    }
 
     @Override
     public Optional<IdempotencyRecord> find(Long customerId, String operation, String idempotencyKey) {

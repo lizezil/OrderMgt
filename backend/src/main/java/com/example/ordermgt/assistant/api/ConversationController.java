@@ -9,8 +9,8 @@ import com.example.ordermgt.idempotency.application.IdempotencyGuard;
 import com.example.ordermgt.shared.api.ApiResponse;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.validation.Valid;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -36,11 +36,11 @@ import java.util.concurrent.Executor;
  * Every route is scoped by X-Customer-Id -- a conversation belonging to someone else is
  * indistinguishable from one that does not exist as far as the caller can tell.
  */
+@Slf4j
+@RequiredArgsConstructor
 @RestController
 @RequestMapping("/api/assistant/conversations")
 public class ConversationController {
-
-    private static final Logger log = LoggerFactory.getLogger(ConversationController.class);
 
     private static final long STREAM_TIMEOUT_MS = 120_000L;
 
@@ -49,21 +49,8 @@ public class ConversationController {
     private final IdempotencyGuard idempotencyGuard;
     private final AiAssistantPort aiAssistantPort;
     private final ObjectMapper objectMapper;
+    @Qualifier("assistantStreamExecutor")
     private final Executor streamExecutor;
-
-    public ConversationController(ConversationService conversationService,
-                                  AssistantService assistantService,
-                                  IdempotencyGuard idempotencyGuard,
-                                  AiAssistantPort aiAssistantPort,
-                                  ObjectMapper objectMapper,
-                                  @Qualifier("assistantStreamExecutor") Executor streamExecutor) {
-        this.conversationService = conversationService;
-        this.assistantService = assistantService;
-        this.idempotencyGuard = idempotencyGuard;
-        this.aiAssistantPort = aiAssistantPort;
-        this.objectMapper = objectMapper;
-        this.streamExecutor = streamExecutor;
-    }
 
     /** 新对话. */
     @PostMapping

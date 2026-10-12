@@ -8,6 +8,7 @@ import com.example.ordermgt.assistant.domain.PendingAction;
 import com.example.ordermgt.assistant.domain.PendingActionRepository;
 import com.example.ordermgt.shared.api.ErrorCode;
 import com.example.ordermgt.shared.error.BusinessException;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -24,20 +25,13 @@ import java.util.stream.Collectors;
  * Every ownership check lives here, so no caller can read or append to a conversation that
  * belongs to someone else.
  */
+@RequiredArgsConstructor
 @Service
 public class ConversationService {
 
     private final ConversationRepository conversationRepository;
     private final PendingActionRepository pendingActionRepository;
     private final ActionCardFactory actionCardFactory;
-
-    public ConversationService(ConversationRepository conversationRepository,
-                               PendingActionRepository pendingActionRepository,
-                               ActionCardFactory actionCardFactory) {
-        this.conversationRepository = conversationRepository;
-        this.pendingActionRepository = pendingActionRepository;
-        this.actionCardFactory = actionCardFactory;
-    }
 
     @Transactional
     public Conversation start(Long customerId) {

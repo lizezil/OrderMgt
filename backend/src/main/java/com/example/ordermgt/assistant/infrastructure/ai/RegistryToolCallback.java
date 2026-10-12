@@ -1,6 +1,7 @@
 package com.example.ordermgt.assistant.infrastructure.ai;
 
 import com.example.ordermgt.assistant.domain.ToolSpec;
+import lombok.RequiredArgsConstructor;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
 
@@ -11,13 +12,10 @@ import org.springframework.ai.tool.definition.ToolDefinition;
  * (see SpringAiAdapter), so this callback only has to describe the schema. Execution
  * happens later, in AssistantService, where the customer id is available.
  */
+@RequiredArgsConstructor
 public class RegistryToolCallback implements ToolCallback {
 
     private final ToolSpec spec;
-
-    public RegistryToolCallback(ToolSpec spec) {
-        this.spec = spec;
-    }
 
     @Override
     public ToolDefinition getToolDefinition() {

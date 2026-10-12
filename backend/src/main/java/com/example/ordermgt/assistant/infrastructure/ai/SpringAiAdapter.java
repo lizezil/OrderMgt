@@ -21,9 +21,8 @@ import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.ai.tool.ToolCallback;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -33,10 +32,9 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
+@Slf4j
 @Component
 public class SpringAiAdapter implements AiAssistantPort {
-
-    private static final Logger log = LoggerFactory.getLogger(SpringAiAdapter.class);
 
     /** Streaming calls are bounded so a stalled upstream cannot pin a thread forever. */
     private static final Duration STREAM_TIMEOUT = Duration.ofMinutes(2);

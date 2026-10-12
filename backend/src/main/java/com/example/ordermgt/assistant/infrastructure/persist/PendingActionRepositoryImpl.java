@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.example.ordermgt.assistant.domain.PendingAction;
 import com.example.ordermgt.assistant.domain.PendingActionRepository;
 import com.example.ordermgt.assistant.domain.PendingActionStatus;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Repository;
 
 import java.time.Instant;
@@ -11,14 +12,11 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
+@RequiredArgsConstructor
 @Repository
 public class PendingActionRepositoryImpl implements PendingActionRepository {
 
     private final PendingActionMapper mapper;
-
-    public PendingActionRepositoryImpl(PendingActionMapper mapper) {
-        this.mapper = mapper;
-    }
 
     @Override
     public PendingAction save(PendingAction action) {

@@ -4,6 +4,7 @@ import com.example.ordermgt.assistant.application.AssistantService;
 import com.example.ordermgt.idempotency.application.IdempotencyGuard;
 import com.example.ordermgt.shared.api.ApiResponse;
 import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -11,17 +12,13 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+@RequiredArgsConstructor
 @RestController
 @RequestMapping("/api/assistant")
 public class AssistantController {
 
     private final AssistantService assistantService;
     private final IdempotencyGuard idempotencyGuard;
-
-    public AssistantController(AssistantService assistantService, IdempotencyGuard idempotencyGuard) {
-        this.assistantService = assistantService;
-        this.idempotencyGuard = idempotencyGuard;
-    }
 
     /**
      * Conversation-aware chat. Pass an existing {@code conversationId} to continue it, or

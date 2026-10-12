@@ -5,6 +5,7 @@ import com.example.ordermgt.assistant.domain.Conversation;
 import com.example.ordermgt.assistant.domain.ConversationRepository;
 import com.example.ordermgt.assistant.domain.Message;
 import com.example.ordermgt.assistant.domain.Role;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Repository;
 
 import java.util.ArrayList;
@@ -12,16 +13,12 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
+@RequiredArgsConstructor
 @Repository
 public class ConversationRepositoryImpl implements ConversationRepository {
 
     private final ConversationMapper conversationMapper;
     private final MessageMapper messageMapper;
-
-    public ConversationRepositoryImpl(ConversationMapper conversationMapper, MessageMapper messageMapper) {
-        this.conversationMapper = conversationMapper;
-        this.messageMapper = messageMapper;
-    }
 
     @Override
     public Conversation save(Conversation conversation) {

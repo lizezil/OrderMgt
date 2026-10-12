@@ -6,6 +6,7 @@ import com.example.ordermgt.order.domain.Order;
 import com.example.ordermgt.shared.api.ApiResponse;
 import com.example.ordermgt.shared.api.PageResult;
 import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -19,6 +20,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.util.stream.Collectors;
 
+@RequiredArgsConstructor
 @RestController
 @RequestMapping("/api/orders")
 public class OrderController {
@@ -28,12 +30,6 @@ public class OrderController {
     private final OrderService orderService;
     private final OrderApiMapper mapper;
     private final IdempotencyGuard idempotencyGuard;
-
-    public OrderController(OrderService orderService, OrderApiMapper mapper, IdempotencyGuard idempotencyGuard) {
-        this.orderService = orderService;
-        this.mapper = mapper;
-        this.idempotencyGuard = idempotencyGuard;
-    }
 
     /**
      * The idempotency boundary is the HTTP request, which is exactly where a client retry

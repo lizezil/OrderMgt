@@ -7,8 +7,7 @@ import com.example.ordermgt.shared.api.ErrorCode;
 import com.example.ordermgt.shared.error.BusinessException;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -38,10 +37,9 @@ import java.util.function.Supplier;
  * the key IN_PROGRESS, and retries are refused until it expires. Sweeping expired
  * IN_PROGRESS records is the fix and is out of scope here.
  */
+@Slf4j
 @Component
 public class IdempotencyGuard {
-
-    private static final Logger log = LoggerFactory.getLogger(IdempotencyGuard.class);
 
     /** The header callers use to supply a key. */
     public static final String KEY_HEADER = "Idempotency-Key";

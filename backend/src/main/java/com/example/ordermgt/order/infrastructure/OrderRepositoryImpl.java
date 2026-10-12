@@ -7,21 +7,18 @@ import com.example.ordermgt.order.domain.OrderLine;
 import com.example.ordermgt.order.domain.OrderNumber;
 import com.example.ordermgt.order.domain.OrderRepository;
 import com.example.ordermgt.order.domain.OrderStatus;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
 import java.util.Optional;
 
+@RequiredArgsConstructor
 @Repository
 public class OrderRepositoryImpl implements OrderRepository {
 
     private final OrderMapper orderMapper;
     private final OrderLineMapper lineMapper;
-
-    public OrderRepositoryImpl(OrderMapper orderMapper, OrderLineMapper lineMapper) {
-        this.orderMapper = orderMapper;
-        this.lineMapper = lineMapper;
-    }
 
     @Override
     public Order save(Order order) {

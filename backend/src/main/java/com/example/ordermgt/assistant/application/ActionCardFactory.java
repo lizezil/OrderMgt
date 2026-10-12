@@ -5,6 +5,7 @@ import com.example.ordermgt.assistant.domain.ToolRegistry;
 import com.example.ordermgt.assistant.domain.ToolSpec;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -21,16 +22,12 @@ import java.util.Map;
  * fallback: a proposal we cannot describe must still become a card the customer can reject,
  * not a 500.
  */
+@RequiredArgsConstructor
 @Component
 public class ActionCardFactory {
 
     private final ToolRegistry toolRegistry;
     private final ObjectMapper objectMapper;
-
-    public ActionCardFactory(ToolRegistry toolRegistry, ObjectMapper objectMapper) {
-        this.toolRegistry = toolRegistry;
-        this.objectMapper = objectMapper;
-    }
 
     public ActionCard card(PendingAction action) {
         String toolName = action.getToolName();

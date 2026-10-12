@@ -8,6 +8,7 @@ import com.example.ordermgt.assistant.domain.ToolResult;
 import com.example.ordermgt.assistant.domain.ToolSpec;
 import com.example.ordermgt.shared.api.ErrorCode;
 import com.example.ordermgt.shared.error.BusinessException;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -25,17 +26,12 @@ import java.time.Instant;
  * database-only mutation (create/cancel an order) plus the state change, and those must
  * commit together.
  */
+@RequiredArgsConstructor
 @Service
 public class ActionConfirmationService {
 
     private final PendingActionRepository pendingActionRepository;
     private final ToolRegistry toolRegistry;
-
-    public ActionConfirmationService(PendingActionRepository pendingActionRepository,
-                                     ToolRegistry toolRegistry) {
-        this.pendingActionRepository = pendingActionRepository;
-        this.toolRegistry = toolRegistry;
-    }
 
     @Transactional
     public ActionResolution confirm(Long customerId, String token) {
