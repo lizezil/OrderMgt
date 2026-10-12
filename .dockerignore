@@ -4,7 +4,6 @@
 .gitignore
 docs
 *.md
-.data
 target
 **/target
 node_modules

@@ -24,6 +24,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.flyway.FlywayMigrationStrategy;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
@@ -86,6 +87,24 @@ class AssistantFlowTest {
                     onTextDelta.accept(turn.text());
                     return turn;
                 }
+            };
+        }
+    }
+
+    /**
+     * Rebuilds the schema for every run. The suite runs against a resident MySQL, so rows would
+     * otherwise accumulate: the assertions below count exact rows (a customer has exactly one
+     * order) and reuse fixed idempotency keys, which a leftover row from an earlier run would
+     * break. clean() drops everything, migrate() replays V1 -- so each run starts from the seed.
+     */
+    @TestConfiguration
+    static class CleanSchemaConfiguration {
+
+        @Bean
+        FlywayMigrationStrategy cleanMigrate() {
+            return flyway -> {
+                flyway.clean();
+                flyway.migrate();
             };
         }
     }

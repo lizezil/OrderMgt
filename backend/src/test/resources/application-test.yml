@@ -1,14 +1,21 @@
-# Test profile: in-memory H2 so tests need no infrastructure and leave no file behind.
-# Same Flyway script as production (it is deliberately dialect-portable).
+# Test profile: the suite runs against a real MySQL 8 -- the resident container from
+# docker-compose.yml (localhost:3306 by default). A dedicated schema, `ordermgt_test`, keeps
+# test data away from the dev/demo database in `ordermgt`; createDatabaseIfNotExist lets the
+# root user create it on first run. No H2: the point is to exercise the real target dialect.
 spring:
   config:
     activate:
       on-profile: test
   datasource:
-    url: jdbc:h2:mem:ordermgt-test;MODE=MySQL;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE;DB_CLOSE_DELAY=-1
-    driver-class-name: org.h2.Driver
-    username: sa
-    password: ""
+    url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/ordermgt_test?createDatabaseIfNotExist=true&useSSL=false&allowPublicKeyRetrieval=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    username: ${MYSQL_ROOT_USER:root}
+    password: ${MYSQL_ROOT_PASSWORD:root}
+  flyway:
+    # The suite counts exact rows and reuses fixed idempotency keys, so it needs a pristine
+    # schema each run: the FlywayMigrationStrategy in AssistantFlowTest does clean + migrate.
+    # Spring Boot disables `clean` by default; re-enable it for this profile only.
+    clean-disabled: false
   ai:
     openai:
       # The real adapter is a bean the tests replace. The key only has to exist so the

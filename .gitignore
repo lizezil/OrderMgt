@@ -30,6 +30,3 @@ backend/src/main/resources/static/*
 
 # logs
 *.log
-
-# local H2 data
-.data/

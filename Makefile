@@ -1,8 +1,8 @@
 # Order Assistant -- one entry point for the tasks you actually run.
 #
 #   make            same as `make help`
-#   make dev        backend on :8081 with the embedded H2 database
-#   make test       backend test suite
+#   make dev        backend on :8081 against the resident MySQL
+#   make test       backend test suite (needs the resident MySQL)
 #
 # Maven is always invoked through the wrapper, so the checked-in version is what runs.
 # `JAVA_HOME=/path/to/jdk17 make ...` overrides the JDK if the default is not 17.
@@ -15,7 +15,7 @@ PNPM       := pnpm
 BACKEND    := -pl backend -am
 
 .PHONY: help dev dev-frontend install build build-backend build-frontend \
-        test format check smoke docker-up docker-down docker-logs clean clean-data
+        test format check smoke db-up docker-up docker-down docker-logs clean
 
 help: ## List the available targets
 	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -23,7 +23,7 @@ help: ## List the available targets
 
 # --- local development -------------------------------------------------------
 
-dev: ## Run the backend with the embedded H2 database (http://localhost:8081)
+dev: ## Run the backend against the resident MySQL (http://localhost:8081)
 	$(MVNW) $(BACKEND) spring-boot:run
 
 dev-frontend: ## Run the Vite dev server (http://localhost:5173, proxies /api to :8081)
@@ -45,7 +45,7 @@ build-frontend: ## Build the SPA into backend/src/main/resources/static
 
 # --- verify ------------------------------------------------------------------
 
-test: ## Run the backend test suite (skips the MySQL tests without Docker)
+test: ## Run the backend test suite (needs the resident MySQL running)
 	$(MVNW) $(BACKEND) test
 
 format: ## Rewrite formatting: Spotless for Java, Prettier for the frontend
@@ -60,6 +60,9 @@ smoke: ## End-to-end smoke test against a running app on :8081
 	./scripts/smoke-demo.sh
 
 # --- containers --------------------------------------------------------------
+
+db-up: ## Start just the resident MySQL container (localhost:3306); dev and tests need it
+	docker compose up -d mysql
 
 docker-up: ## Build and start MySQL + app via Compose
 	docker compose up --build
@@ -76,6 +79,3 @@ clean: ## Remove build output (target/ and the built SPA assets)
 	$(MVNW) clean
 	rm -rf frontend/dist backend/src/main/resources/static/assets \
 		backend/src/main/resources/static/index.html
-
-clean-data: ## Delete the local H2 databases (loses local history)
-	rm -rf .data backend/.data
