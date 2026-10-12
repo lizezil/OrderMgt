@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Used only by the container build (see Dockerfile). Routes every repository through Aliyun's
+  public mirror: the direct https://repo.maven.apache.org is flaky from this network and drops
+  TLS handshakes mid-build. Everything this project needs is a released Spring/Maven Central
+  artifact, which Aliyun's public repo proxies, so mirroring all repositories (`*`) is safe.
+  Local `./mvnw` runs are untouched: they keep whatever ~/.m2/settings.xml the developer has.
+-->
+<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 https://maven.apache.org/xsd/settings-1.0.0.xsd">
+  <mirrors>
+    <mirror>
+      <id>aliyun-public</id>
+      <name>Aliyun Public</name>
+      <url>https://maven.aliyun.com/repository/public</url>
+      <mirrorOf>*</mirrorOf>
+    </mirror>
+  </mirrors>
+</settings>

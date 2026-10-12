@@ -24,17 +24,22 @@ RUN mkdir -p /build/backend/src/main/resources/static && cd frontend && pnpm bui
 FROM maven:3.9-eclipse-temurin-17 AS backend
 WORKDIR /build
 
+# Point Maven at Aliyun; see docker/maven-settings.xml for why. The image's entrypoint (which
+# would seed ~/.m2 from /usr/share/maven/ref) does not run during a build, so this is the only
+# settings file Maven sees here.
+COPY docker/maven-settings.xml /root/.m2/settings.xml
+
 # Poms first: dependency resolution is the slow part, so it gets its own layer.
 COPY pom.xml ./
 COPY backend/pom.xml ./backend/
-# The local repository is a cache mount: a pom change re-resolves against what is already
-# downloaded instead of re-fetching the whole dependency tree.
-RUN --mount=type=cache,target=/root/.m2 \
+# Cache the repository only, never all of /root/.m2: a cache mount on the parent path would
+# shadow the settings.xml copied above and silently send every request back to default Central.
+RUN --mount=type=cache,target=/root/.m2/repository \
     mvn -B -pl backend -am -DskipTests dependency:resolve
 
 COPY backend/src ./backend/src
 COPY --from=frontend /build/backend/src/main/resources/static ./backend/src/main/resources/static
-RUN --mount=type=cache,target=/root/.m2 \
+RUN --mount=type=cache,target=/root/.m2/repository \
     mvn -B -pl backend -am -DskipTests package
 
 # ---------- 3. runtime ----------
