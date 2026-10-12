@@ -6,7 +6,6 @@ import com.example.ordermgt.order.domain.Order;
 import com.example.ordermgt.order.domain.OrderLine;
 import com.example.ordermgt.order.domain.OrderNumber;
 import com.example.ordermgt.order.domain.OrderRepository;
-import com.example.ordermgt.order.domain.OrderStatus;
 import java.util.List;
 import java.util.Optional;
 import lombok.RequiredArgsConstructor;
@@ -18,29 +17,18 @@ public class OrderRepositoryImpl implements OrderRepository {
 
     private final OrderMapper orderMapper;
     private final OrderLineMapper lineMapper;
+    private final OrderPersistenceMapper persistenceMapper;
 
     @Override
     public Order save(Order order) {
-        OrderPO po = new OrderPO();
-        po.setId(order.getId());
-        po.setOrderNo(order.getOrderNumber().value());
-        po.setCustomerId(order.getCustomerId());
-        po.setStatus(order.getStatus().name());
-        po.setTotalAmount(order.getTotalAmount().amount());
-        po.setCreatedAt(order.getCreatedAt());
-        po.setUpdatedAt(order.getUpdatedAt());
+        OrderPO po = persistenceMapper.toPo(order);
 
         if (order.getId() == null) {
             orderMapper.insert(po);
             order.assignId(po.getId());
             for (OrderLine line : order.getLines()) {
-                OrderLinePO lpo = new OrderLinePO();
+                OrderLinePO lpo = persistenceMapper.toPo(line);
                 lpo.setOrderId(po.getId());
-                lpo.setSku(line.sku());
-                lpo.setItemName(line.itemName());
-                lpo.setQuantity(line.quantity());
-                lpo.setUnitPrice(line.unitPrice().amount());
-                lpo.setLineAmount(line.lineAmount().amount());
                 lineMapper.insert(lpo);
             }
         } else {
@@ -85,21 +73,8 @@ public class OrderRepositoryImpl implements OrderRepository {
                                         .eq(OrderLinePO::getOrderId, po.getId())
                                         .orderByAsc(OrderLinePO::getId))
                         .stream()
-                        .map(
-                                l ->
-                                        OrderLine.of(
-                                                l.getSku(),
-                                                l.getItemName(),
-                                                l.getQuantity(),
-                                                l.getUnitPrice()))
+                        .map(persistenceMapper::toDomain)
                         .toList();
-        return Order.rehydrate(
-                po.getId(),
-                new OrderNumber(po.getOrderNo()),
-                po.getCustomerId(),
-                OrderStatus.valueOf(po.getStatus()),
-                lines,
-                po.getCreatedAt(),
-                po.getUpdatedAt());
+        return persistenceMapper.toDomain(po, lines);
     }
 }

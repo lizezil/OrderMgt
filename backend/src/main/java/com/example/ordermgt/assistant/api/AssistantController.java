@@ -19,6 +19,7 @@ public class AssistantController {
 
     private final AssistantService assistantService;
     private final IdempotencyGuard idempotencyGuard;
+    private final AssistantApiMapper mapper;
 
     /**
      * Conversation-aware chat. Pass an existing {@code conversationId} to continue it, or omit it
@@ -42,7 +43,7 @@ public class AssistantController {
                         idempotencyKey,
                         IdempotencyGuard.hashOf(String.valueOf(conversationId), request.message()),
                         () ->
-                                ChatResponse.from(
+                                mapper.toResponse(
                                         assistantService.chat(
                                                 customerId, conversationId, request.message())),
                         ChatResponse.class);

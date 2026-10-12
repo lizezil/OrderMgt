@@ -15,6 +15,7 @@ import org.springframework.stereotype.Repository;
 public class IdempotencyRepositoryImpl implements IdempotencyRepository {
 
     private final IdempotencyRecordMapper mapper;
+    private final IdempotencyPersistenceMapper persistenceMapper;
 
     @Override
     public Optional<IdempotencyRecord> find(
@@ -27,15 +28,15 @@ public class IdempotencyRepositoryImpl implements IdempotencyRepository {
                                         .eq(
                                                 IdempotencyRecordPO::getIdempotencyKey,
                                                 idempotencyKey)))
-                .map(this::toDomain);
+                .map(persistenceMapper::toDomain);
     }
 
     @Override
     public Optional<IdempotencyRecord> tryClaim(IdempotencyRecord record) {
-        IdempotencyRecordPO po = toPo(record);
+        IdempotencyRecordPO po = persistenceMapper.toPo(record);
         try {
             mapper.insert(po);
-            return Optional.of(toDomain(po));
+            return Optional.of(persistenceMapper.toDomain(po));
         } catch (DataIntegrityViolationException duplicate) {
             // Someone else holds this key. The DB unique constraint is what makes this
             // safe under concurrency -- two threads cannot both win the insert.
@@ -69,36 +70,5 @@ public class IdempotencyRepositoryImpl implements IdempotencyRepository {
         patch.setStatus(IdempotencyStatus.IN_PROGRESS.name());
         patch.setCompletedAt(null);
         mapper.updateById(patch);
-    }
-
-    private IdempotencyRecordPO toPo(IdempotencyRecord record) {
-        IdempotencyRecordPO po = new IdempotencyRecordPO();
-        po.setId(record.id());
-        po.setCustomerId(record.customerId());
-        po.setOperation(record.operation());
-        po.setIdempotencyKey(record.idempotencyKey());
-        po.setRequestHash(record.requestHash());
-        po.setStatus(record.status().name());
-        po.setResultRef(record.resultRef());
-        po.setResponseJson(record.responseJson());
-        po.setCreatedAt(record.createdAt());
-        po.setCompletedAt(record.completedAt());
-        po.setExpiresAt(record.expiresAt());
-        return po;
-    }
-
-    private IdempotencyRecord toDomain(IdempotencyRecordPO po) {
-        return new IdempotencyRecord(
-                po.getId(),
-                po.getCustomerId(),
-                po.getOperation(),
-                po.getIdempotencyKey(),
-                po.getRequestHash(),
-                IdempotencyStatus.valueOf(po.getStatus()),
-                po.getResultRef(),
-                po.getResponseJson(),
-                po.getCreatedAt(),
-                po.getCompletedAt(),
-                po.getExpiresAt());
     }
 }

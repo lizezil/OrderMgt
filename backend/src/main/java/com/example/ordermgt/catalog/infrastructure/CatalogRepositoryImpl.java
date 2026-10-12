@@ -13,6 +13,7 @@ import org.springframework.stereotype.Repository;
 public class CatalogRepositoryImpl implements CatalogRepository {
 
     private final CatalogItemMapper mapper;
+    private final CatalogPersistenceMapper persistenceMapper;
 
     @Override
     public Optional<CatalogItem> findBySku(String sku) {
@@ -20,7 +21,7 @@ public class CatalogRepositoryImpl implements CatalogRepository {
                         mapper.selectOne(
                                 Wrappers.<CatalogItemPO>lambdaQuery()
                                         .eq(CatalogItemPO::getSku, sku)))
-                .map(this::toDomain);
+                .map(persistenceMapper::toDomain);
     }
 
     @Override
@@ -31,16 +32,7 @@ public class CatalogRepositoryImpl implements CatalogRepository {
                                 .eq(CatalogItemPO::getActive, true)
                                 .orderByAsc(CatalogItemPO::getId))
                 .stream()
-                .map(this::toDomain)
+                .map(persistenceMapper::toDomain)
                 .toList();
-    }
-
-    private CatalogItem toDomain(CatalogItemPO po) {
-        return new CatalogItem(
-                po.getId(),
-                po.getSku(),
-                po.getName(),
-                po.getUnitPrice(),
-                Boolean.TRUE.equals(po.getActive()));
     }
 }

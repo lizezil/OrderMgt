@@ -14,13 +14,13 @@ import org.springframework.web.bind.annotation.RestController;
 public class CatalogController {
 
     private final CatalogRepository catalogRepository;
+    private final CatalogApiMapper catalogApiMapper;
 
     @GetMapping("/items")
     public ApiResponse<List<CatalogItemResponse>> items() {
-        List<CatalogItemResponse> items =
+        return ApiResponse.ok(
                 catalogRepository.findAllActive().stream()
-                        .map(i -> new CatalogItemResponse(i.sku(), i.name(), i.unitPrice()))
-                        .toList();
-        return ApiResponse.ok(items);
+                        .map(catalogApiMapper::toResponse)
+                        .toList());
     }
 }

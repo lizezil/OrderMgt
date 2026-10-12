@@ -48,6 +48,7 @@ public class ConversationController {
     private final IdempotencyGuard idempotencyGuard;
     private final AiAssistantPort aiAssistantPort;
     private final ObjectMapper objectMapper;
+    private final AssistantApiMapper mapper;
 
     @Qualifier("assistantStreamExecutor")
     private final Executor streamExecutor;
@@ -57,16 +58,14 @@ public class ConversationController {
     @ResponseStatus(HttpStatus.CREATED)
     public ApiResponse<ConversationResponse> start(
             @RequestHeader("X-Customer-Id") Long customerId) {
-        return ApiResponse.ok(ConversationResponse.from(conversationService.start(customerId)));
+        return ApiResponse.ok(mapper.toResponse(conversationService.start(customerId)));
     }
 
     @GetMapping
     public ApiResponse<List<ConversationResponse>> list(
             @RequestHeader("X-Customer-Id") Long customerId) {
         return ApiResponse.ok(
-                conversationService.listFor(customerId).stream()
-                        .map(ConversationResponse::from)
-                        .toList());
+                conversationService.listFor(customerId).stream().map(mapper::toResponse).toList());
     }
 
     /** Full history, with each message's card resolved to its current state. */
@@ -75,7 +74,7 @@ public class ConversationController {
             @RequestHeader("X-Customer-Id") Long customerId, @PathVariable Long conversationId) {
         return ApiResponse.ok(
                 conversationService.history(customerId, conversationId).stream()
-                        .map(MessageResponse::from)
+                        .map(mapper::toResponse)
                         .toList());
     }
 
@@ -94,7 +93,7 @@ public class ConversationController {
                         idempotencyKey,
                         IdempotencyGuard.hashOf(String.valueOf(conversationId), request.message()),
                         () ->
-                                ChatResponse.from(
+                                mapper.toResponse(
                                         assistantService.chat(
                                                 customerId, conversationId, request.message())),
                         ChatResponse.class);
@@ -132,7 +131,7 @@ public class ConversationController {
                             customerId, context.memory(), delta -> emit(emitter, "token", delta));
 
             AssistantResult result = assistantService.complete(context, turn);
-            emit(emitter, "done", objectMapper.writeValueAsString(ChatResponse.from(result)));
+            emit(emitter, "done", objectMapper.writeValueAsString(mapper.toResponse(result)));
             emitter.complete();
         } catch (Exception ex) {
             log.warn(

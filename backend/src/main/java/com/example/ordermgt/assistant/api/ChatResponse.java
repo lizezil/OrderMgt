@@ -1,7 +1,6 @@
 package com.example.ordermgt.assistant.api;
 
 import com.example.ordermgt.assistant.application.ActionCard;
-import com.example.ordermgt.assistant.application.AssistantResult;
 import java.util.List;
 
 /**
@@ -17,16 +16,4 @@ public record ChatResponse(
         int completionTokens) {
 
     public record ToolCallView(String name, String resultJson) {}
-
-    public static ChatResponse from(AssistantResult result) {
-        return new ChatResponse(
-                result.conversationId(),
-                result.reply(),
-                result.executed().stream()
-                        .map(e -> new ToolCallView(e.name(), e.resultJson()))
-                        .toList(),
-                result.actions(),
-                result.usage().promptTokens(),
-                result.usage().completionTokens());
-    }
 }

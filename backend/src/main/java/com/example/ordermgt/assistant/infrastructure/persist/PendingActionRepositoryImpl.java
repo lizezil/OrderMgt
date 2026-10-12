@@ -16,10 +16,11 @@ import org.springframework.stereotype.Repository;
 public class PendingActionRepositoryImpl implements PendingActionRepository {
 
     private final PendingActionMapper mapper;
+    private final PendingActionPersistenceMapper persistenceMapper;
 
     @Override
     public PendingAction save(PendingAction action) {
-        PendingActionPO po = toPo(action);
+        PendingActionPO po = persistenceMapper.toPo(action);
         if (action.getId() == null) {
             mapper.insert(po);
             action.assignId(po.getId());
@@ -35,7 +36,7 @@ public class PendingActionRepositoryImpl implements PendingActionRepository {
                         mapper.selectOne(
                                 Wrappers.<PendingActionPO>lambdaQuery()
                                         .eq(PendingActionPO::getToken, token)))
-                .map(this::toDomain);
+                .map(persistenceMapper::toDomain);
     }
 
     @Override
@@ -47,7 +48,7 @@ public class PendingActionRepositoryImpl implements PendingActionRepository {
                                 Wrappers.<PendingActionPO>lambdaQuery()
                                         .eq(PendingActionPO::getToken, token)
                                         .last("FOR UPDATE")))
-                .map(this::toDomain);
+                .map(persistenceMapper::toDomain);
     }
 
     @Override
@@ -58,7 +59,7 @@ public class PendingActionRepositoryImpl implements PendingActionRepository {
         return mapper
                 .selectList(Wrappers.<PendingActionPO>lambdaQuery().in(PendingActionPO::getId, ids))
                 .stream()
-                .map(this::toDomain)
+                .map(persistenceMapper::toDomain)
                 .toList();
     }
 
@@ -72,40 +73,5 @@ public class PendingActionRepositoryImpl implements PendingActionRepository {
                 Wrappers.<PendingActionPO>lambdaUpdate()
                         .eq(PendingActionPO::getStatus, PendingActionStatus.PENDING.name())
                         .le(PendingActionPO::getExpiresAt, now));
-    }
-
-    private PendingActionPO toPo(PendingAction action) {
-        PendingActionPO po = new PendingActionPO();
-        po.setId(action.getId());
-        po.setToken(action.getToken());
-        po.setCustomerId(action.getCustomerId());
-        po.setConversationId(action.getConversationId());
-        po.setSourceMessageId(action.getSourceMessageId());
-        po.setToolName(action.getToolName());
-        po.setArgumentsJson(action.getArgumentsJson());
-        po.setSummary(action.getSummary());
-        po.setStatus(action.getStatus().name());
-        po.setExpiresAt(action.getExpiresAt());
-        po.setResolvedAt(action.getResolvedAt());
-        po.setResultRef(action.getResultRef());
-        po.setCreatedAt(action.getCreatedAt());
-        return po;
-    }
-
-    private PendingAction toDomain(PendingActionPO po) {
-        return PendingAction.rehydrate(
-                po.getId(),
-                po.getToken(),
-                po.getCustomerId(),
-                po.getConversationId(),
-                po.getSourceMessageId(),
-                po.getToolName(),
-                po.getArgumentsJson(),
-                po.getSummary(),
-                PendingActionStatus.valueOf(po.getStatus()),
-                po.getExpiresAt(),
-                po.getResolvedAt(),
-                po.getResultRef(),
-                po.getCreatedAt());
     }
 }
