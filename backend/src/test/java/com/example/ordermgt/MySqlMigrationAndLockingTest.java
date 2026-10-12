@@ -37,7 +37,12 @@ class MySqlMigrationAndLockingTest {
             new MySQLContainer<>("mysql:8.0")
                     .withDatabaseName("ordermgt")
                     .withUsername("ordermgt")
-                    .withPassword("ordermgt");
+                    .withPassword("ordermgt")
+                    // JdbcDatabaseContainer keeps its own 120s budget for the first successful
+                    // connection (separate from GenericContainer's startup timeout). MySQL
+                    // initialises a fresh data directory twice on first boot, which on a slow or
+                    // emulated Docker VM (e.g. Colima) exceeds 120s, so give it room.
+                    .withStartupTimeoutSeconds(300);
 
     @BeforeAll
     static void migrate() {
