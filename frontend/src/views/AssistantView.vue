@@ -153,7 +153,9 @@ onMounted(async () => {
       <button class="btn authority" @click="newConversation">＋ 新对话</button>
     </div>
     <ol class="docket">
-      <li v-if="!conversations.length" class="docket-empty">还没有对话。新建一段，问问你的订单。</li>
+      <li v-if="!conversations.length" class="docket-empty">
+        还没有对话。新建一段，问问你的订单。
+      </li>
       <li v-for="conversation in conversations" :key="conversation.id">
         <button
           class="entry"
@@ -175,7 +177,12 @@ onMounted(async () => {
           <span class="data">帮我下单 2 个 GADGET-02</span>
         </p>
 
-        <article v-for="message in messages" :key="message.id" class="line" :class="message.role.toLowerCase()">
+        <article
+          v-for="message in messages"
+          :key="message.id"
+          class="line"
+          :class="message.role.toLowerCase()"
+        >
           <p class="speaker">{{ message.role === 'CUSTOMER' ? '你' : '助手' }}</p>
           <div class="said">
             <template v-for="(line, index) in (message.content || '').split('\n')" :key="index">
@@ -204,7 +211,9 @@ onMounted(async () => {
             placeholder="说点什么…（Enter 发送）"
             @keydown.enter.exact.prevent="send"
           />
-          <button class="btn authority" :disabled="sending || !draft.trim()" @click="send">发送</button>
+          <button class="btn authority" :disabled="sending || !draft.trim()" @click="send">
+            发送
+          </button>
         </div>
         <div v-if="usage" class="meter">
           本轮 prompt {{ usage.prompt }} / completion {{ usage.completion }} tokens，记忆窗口

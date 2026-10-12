@@ -97,6 +97,8 @@ async function resolve(kind: 'confirm' | 'reject'): Promise<void> {
       <span class="clock data">{{ expiryLabel }}</span>
     </div>
 
-    <span v-if="stampText" class="stamp" :class="{ refused, land: justResolved }">{{ stampText }}</span>
+    <span v-if="stampText" class="stamp" :class="{ refused, land: justResolved }">{{
+      stampText
+    }}</span>
   </figure>
 </template>

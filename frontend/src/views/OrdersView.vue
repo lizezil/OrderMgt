@@ -26,6 +26,11 @@ function pages(): number {
   return Math.max(1, Math.ceil(total.value / size))
 }
 
+function changePage(delta: number): void {
+  page.value += delta
+  void load()
+}
+
 /** A state is a stamped mark: executed reads green, cancelled reads red, open stays plain. */
 function markClass(status: Order['status']): string {
   if (status === 'COMPLETED') return 'mark done'
@@ -68,7 +73,9 @@ onMounted(load)
               @click="selected = selected?.orderNo === order.orderNo ? null : order"
             >
               <td class="order-no">{{ order.orderNo }}</td>
-              <td><span :class="markClass(order.status)">{{ order.status }}</span></td>
+              <td>
+                <span :class="markClass(order.status)">{{ order.status }}</span>
+              </td>
               <td>{{ order.lines.length }} 行</td>
               <td class="num"><span class="yen">¥</span>{{ order.totalAmount.toFixed(2) }}</td>
             </tr>
@@ -76,9 +83,9 @@ onMounted(load)
         </table>
 
         <div class="pager">
-          <button class="btn" :disabled="page <= 1" @click="page -= 1; load()">上一页</button>
+          <button class="btn" :disabled="page <= 1" @click="changePage(-1)">上一页</button>
           <span class="data">{{ page }} / {{ pages() }} · 共 {{ total }} 单</span>
-          <button class="btn" :disabled="page >= pages()" @click="page += 1; load()">下一页</button>
+          <button class="btn" :disabled="page >= pages()" @click="changePage(1)">下一页</button>
         </div>
 
         <section v-if="selected" class="docket-open">
@@ -100,7 +107,10 @@ onMounted(load)
             </li>
           </ul>
           <p class="total">
-            合计 <span class="data"><span class="yen">¥</span>{{ selected.totalAmount.toFixed(2) }}</span>
+            合计
+            <span class="data"
+              ><span class="yen">¥</span>{{ selected.totalAmount.toFixed(2) }}</span
+            >
           </p>
         </section>
       </template>

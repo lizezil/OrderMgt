@@ -44,7 +44,12 @@ const { current: toastText, isError: toastIsError, push: pushToast } = useToast(
       <div class="spacer" />
       <label class="identity">
         当前客户
-        <input v-model="customer" class="data" @change="applyCustomer" @keyup.enter="applyCustomer" />
+        <input
+          v-model="customer"
+          class="data"
+          @change="applyCustomer"
+          @keyup.enter="applyCustomer"
+        />
       </label>
     </header>
 
