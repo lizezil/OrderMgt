@@ -11,7 +11,10 @@ WORKDIR /build
 RUN corepack enable
 
 COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml ./frontend/
-RUN cd frontend && pnpm install --frozen-lockfile
+# The store is a cache mount so a lockfile change re-downloads nothing. --store-dir pins the
+# path: pnpm would otherwise derive it from HOME/XDG, and the mount target must match exactly.
+RUN --mount=type=cache,target=/pnpm/store \
+    cd frontend && pnpm install --frozen-lockfile --store-dir=/pnpm/store
 
 COPY frontend/ ./frontend/
 # vite.config.ts writes to ../backend/src/main/resources/static, so that path must exist.
@@ -24,11 +27,15 @@ WORKDIR /build
 # Poms first: dependency resolution is the slow part, so it gets its own layer.
 COPY pom.xml ./
 COPY backend/pom.xml ./backend/
-RUN mvn -B -pl backend -am -DskipTests dependency:resolve
+# The local repository is a cache mount: a pom change re-resolves against what is already
+# downloaded instead of re-fetching the whole dependency tree.
+RUN --mount=type=cache,target=/root/.m2 \
+    mvn -B -pl backend -am -DskipTests dependency:resolve
 
 COPY backend/src ./backend/src
 COPY --from=frontend /build/backend/src/main/resources/static ./backend/src/main/resources/static
-RUN mvn -B -pl backend -am -DskipTests package
+RUN --mount=type=cache,target=/root/.m2 \
+    mvn -B -pl backend -am -DskipTests package
 
 # ---------- 3. runtime ----------
 FROM eclipse-temurin:17-jre-alpine
