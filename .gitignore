@@ -13,6 +13,9 @@ target/
 .project
 .classpath
 
+# editor / agent workspace
+.zcode/
+
 # OS
 .DS_Store
 
