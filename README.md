@@ -69,7 +69,7 @@ docker compose up --build
 
 `mysql` 容器带 `healthcheck`，`app` 等它 `service_healthy` 后才启动——否则 Flyway 会和 MySQL 首次初始化抢跑。
 
-✅ **这套流程已在本机实跑验证过**：镜像构建成功；MySQL 8 首次初始化 → Flyway 建表成功 → `/actuator/health=UP`；商品、下单、幂等重放、幂等冲突与 SPA 全部走**真 MySQL**通过。`MySqlMigrationAndLockingTest` 也随之真正执行（不再跳过）。
+✅ **这套流程已在本机实跑验证过**：镜像构建成功；MySQL 8 首次初始化 → Flyway 建表成功 → `/actuator/health=UP`；商品、下单、幂等重放、幂等冲突与 SPA 全部走**真 MySQL**通过。
 
 > 本机网络下有两处需要绕，都属于**环境问题而非代码问题**，遇到同样报错可照抄：
 >
@@ -127,7 +127,6 @@ curl -s localhost:8081/api/orders -H 'X-Customer-Id: 2002'
 | 领域单测 | `PendingAction`（归属/一次性流转/过期/超长参数）、`Conversation`（标题派生） |
 | 应用单测 | `IdempotencyGuard`（重放、键挪用、并发重复、失败重试）、`ActionConfirmationService`（执行一次、重放、越权、过期） |
 | 集成（H2，不烧 Key） | `AssistantFlowTest`：真库 + 桩模型，跑通"提议→不执行→确认→落单→重复确认不重复落单→越权 403"，以及幂等键重放 |
-| 集成（MySQL，需 Docker） | `MySqlMigrationAndLockingTest`：同一份 Flyway 脚本建 MySQL 库；唯一约束仲裁幂等键竞争；`SELECT ... FOR UPDATE` 串行化两次确认。**无 Docker 时自动跳过**（本机已在 Docker 下实跑通过） |
 
 前端：`cd frontend && pnpm typecheck && pnpm build`（`build` 会先跑 Prettier，再交给 Vite）。
 
