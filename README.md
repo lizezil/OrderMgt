@@ -16,43 +16,43 @@
 
 ## 技术栈
 
-Java 17 · Spring Boot 3.5.16 · Spring AI 1.1.8（DashScope OpenAI 兼容模式，`qwen-max`）· MyBatis-Plus 3.5.17 · MapStruct 1.6 · Flyway · MySQL 8（目标库）/ H2（本地零依赖）· Vue 3 + Vite + TypeScript。
+Java 17 · Spring Boot 3.5.16 · Spring AI 1.1.8（DashScope OpenAI 兼容模式，`qwen-max`）· MyBatis-Plus 3.5.17 · MapStruct 1.6 · Flyway · MySQL 8（唯一数据库，本地与测试都直连常驻容器）· Vue 3 + Vite + TypeScript。
 
 ## 常用命令（Makefile）
 
 根目录的 `Makefile` 把常用动作收成一组目标，`make`（不带参数）即列出全部：
 
 ```bash
-make dev            # 起后端（H2 本地库，http://localhost:8081）
+make dev            # 起后端（连常驻 MySQL，http://localhost:8081）
 make dev-frontend   # 起 Vite 开发服务器（:5173，/api 代理到 :8081）
-make test           # 后端测试（无 Docker 时自动跳过 MySQL 用例）
+make test           # 后端测试（需常驻 MySQL）
 make build          # 打包「带前端界面」的 jar（-Pfrontend，需要 Node/pnpm）
 make build-backend  # 只打后端 jar（不需要 Node）
 make format         # 格式化：后端 Spotless、前端 Prettier
 make check          # 只校验格式化、不改写（CI 用）
 make smoke          # 对 :8081 跑一遍端到端冒烟脚本
+make db-up          # 只起常驻 MySQL 容器（:3306），dev 和 test 都依赖它
 make docker-up      # Compose 起 MySQL + 应用
 make clean          # 清掉 target/ 与构建出的前端产物
 ```
 
-`make help` 打印同一份清单（含 docker-logs、clean-data 等）。命令都是对 `./mvnw` / `pnpm` 的薄封装，直接敲原始命令同样可行。
+`make help` 打印同一份清单（含 db-up、docker-logs 等）。命令都是对 `./mvnw` / `pnpm` 的薄封装，直接敲原始命令同样可行。
 
 ## 快速开始
 
-### 方式一：本地跑（无需任何数据库和容器）
+### 方式一：本地跑（需要常驻 MySQL）
+
+只有一种数据库：真实 MySQL 8，就是 `docker-compose.yml` 里那个常驻容器（默认 `localhost:3306`）。先把它起起来，再跑后端：
 
 ```bash
+make db-up                                                  # 或 docker compose up -d mysql
 export JAVA_HOME="$HOME/.jdks/temurin-17/Contents/Home"     # 或任意 JDK 17
 export DASHSCOPE_API_KEY=sk-...                             # 缺省时应用仍能启动，只是调用模型会失败
 cd frontend && pnpm install && pnpm build && cd ..          # 可选：把界面也构建进去
 ./mvnw -pl backend spring-boot:run
 ```
 
-打开 <http://localhost:8081>。数据落在文件库 `./.data/ordermgt`（H2，`MODE=MySQL`），Flyway 会自动建表并写入 5 条商品种子数据。没有 Key 也能启动，只是助手功能不可用。
-
-> ⚠️ H2 文件路径是**相对工作目录**的：`./mvnw -pl backend spring-boot:run` 的工作目录是 `backend/`，`java -jar` 从仓库根跑就是仓库根。两者会各自建一个 `.data/`，看起来像"数据丢了"，其实只是两个库。
-
-> ⚠️ 若本地已有 `.data/`、启动却报 `Migration checksum mismatch for migration version 1`：那是文件库建于 `V1__init.sql` 修 `CURRENT_TIMESTAMP(3)` 之前（[ADR-0008](docs/adr/0008-pin-timestamp-precision-in-migrations.md)），Flyway 校验对不上。删掉那个 `.data/` 让 Flyway 重建，代价是本地历史数据没了。
+打开 <http://localhost:8081>。数据落在容器里的 `ordermgt` 库（compose 的 `mysql-data` 卷），Flyway 会自动建表并写入 5 条商品种子数据。默认 profile 就是 `mysql`，连接参数取自 `MYSQL_*` 环境变量（默认值与 compose 一致）；容器没起时应用会直接启动失败，而不是悄悄换一个本地库。没有 Key 也能启动，只是助手功能不可用。
 
 想确认整条链路是否正常，用自带脚本打一遍（真调模型，约 10 秒）：
 
@@ -119,14 +119,17 @@ curl -s localhost:8081/api/orders -H 'X-Customer-Id: 2002'
 ## 测试
 
 ```bash
+make db-up                  # 测试跑在真实 MySQL 上，先把常驻容器起起来
 ./mvnw -pl backend test     # 等价于 make test
 ```
+
+测试连的是常驻 MySQL 里的独立库 `ordermgt_test`（用 `root` + `createDatabaseIfNotExist` 创建），每次运行前由 Flyway `clean` + `migrate` 重建 schema——测试断言精确条数、并复用固定幂等键，必须从干净结构开始。它不碰开发库 `ordermgt`。
 
 | 层次 | 覆盖 |
 |---|---|
 | 领域单测 | `PendingAction`（归属/一次性流转/过期/超长参数）、`Conversation`（标题派生） |
 | 应用单测 | `IdempotencyGuard`（重放、键挪用、并发重复、失败重试）、`ActionConfirmationService`（执行一次、重放、越权、过期） |
-| 集成（H2，不烧 Key） | `AssistantFlowTest`：真库 + 桩模型，跑通"提议→不执行→确认→落单→重复确认不重复落单→越权 403"，以及幂等键重放 |
+| 集成（真 MySQL，不烧 Key） | `AssistantFlowTest`：真库 + 桩模型，跑通"提议→不执行→确认→落单→重复确认不重复落单→越权 403"，以及幂等键重放 |
 
 前端：`cd frontend && pnpm typecheck && pnpm build`（`build` 会先跑 Prettier，再交给 Vite）。
 

@@ -41,8 +41,8 @@ public class PendingActionRepositoryImpl implements PendingActionRepository {
 
     @Override
     public Optional<PendingAction> lockByToken(String token) {
-        // `FOR UPDATE` is accepted by both MySQL and H2 in MySQL mode. It is what makes
-        // "confirm twice" a no-op instead of a double execution.
+        // The row lock is what makes "confirm twice" a no-op instead of a double
+        // execution: the second transaction blocks here until the first commits.
         return Optional.ofNullable(
                         mapper.selectOne(
                                 Wrappers.<PendingActionPO>lambdaQuery()

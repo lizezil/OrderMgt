@@ -11,8 +11,8 @@ public class MyBatisPlusConfig {
     @Bean
     public MybatisPlusInterceptor mybatisPlusInterceptor() {
         MybatisPlusInterceptor interceptor = new MybatisPlusInterceptor();
-        // DbType left unset on purpose: it is detected per-connection, so the same
-        // build paginates correctly on both H2 (local) and MySQL (docker).
+        // DbType left unset on purpose: it is detected per-connection, so the pagination
+        // dialect follows whichever MySQL the app is pointed at.
         interceptor.addInnerInterceptor(new PaginationInnerInterceptor());
         return interceptor;
     }
