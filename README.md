@@ -9,13 +9,33 @@
 3. **业务代码不依赖 Spring AI。** 业务只依赖 `AiAssistantPort`，Spring AI 藏在适配器后面，测试/离线用桩替换。见 [ADR-0003](docs/adr/0003-ai-behind-own-port.md)。
 4. **价格只有一个来源。** 模型只填 sku 和数量，金额由服务端从 `catalog_items` 解析（[ADR-0006](docs/adr/0006-ground-model-with-catalog.md) 记录了一次真实的 sku 幻觉与修法）。
 
-设计定稿（决策表、表结构、接口契约、里程碑与实测记录）见 [面试作业-设计定稿.md](面试作业-设计定稿.md)；
-领域词汇表见 [CONTEXT.md](CONTEXT.md)；所有架构决策见 [docs/adr/](docs/adr/)；
-直播演示的逐步脚本与讲解要点见 [面试作业-演示脚本与讲解要点.md](面试作业-演示脚本与讲解要点.md)。
+项目文档都收在 [`docs/`](docs/)：设计定稿（决策表、表结构、接口契约、里程碑与实测记录）见 [面试作业-设计定稿.md](docs/面试作业-设计定稿.md)，
+需求梳理与坑位分析见 [面试作业-需求梳理与坑位分析.md](docs/面试作业-需求梳理与坑位分析.md)，
+直播演示的逐步脚本与讲解要点见 [面试作业-演示脚本与讲解要点.md](docs/面试作业-演示脚本与讲解要点.md)；
+领域词汇表见 [CONTEXT.md](CONTEXT.md)，所有架构决策见 [docs/adr/](docs/adr/)。
 
 ## 技术栈
 
-Java 17 · Spring Boot 3.5.16 · Spring AI 1.1.8（DashScope OpenAI 兼容模式，`qwen-max`）· MyBatis-Plus 3.5.17 · Flyway · MySQL 8（目标库）/ H2（本地零依赖）· Vue 3 + Vite + TypeScript。
+Java 17 · Spring Boot 3.5.16 · Spring AI 1.1.8（DashScope OpenAI 兼容模式，`qwen-max`）· MyBatis-Plus 3.5.17 · MapStruct 1.6 · Flyway · MySQL 8（目标库）/ H2（本地零依赖）· Vue 3 + Vite + TypeScript。
+
+## 常用命令（Makefile）
+
+根目录的 `Makefile` 把常用动作收成一组目标，`make`（不带参数）即列出全部：
+
+```bash
+make dev            # 起后端（H2 本地库，http://localhost:8081）
+make dev-frontend   # 起 Vite 开发服务器（:5173，/api 代理到 :8081）
+make test           # 后端测试（无 Docker 时自动跳过 MySQL 用例）
+make build          # 打包「带前端界面」的 jar（-Pfrontend，需要 Node/pnpm）
+make build-backend  # 只打后端 jar（不需要 Node）
+make format         # 格式化：后端 Spotless、前端 Prettier
+make check          # 只校验格式化、不改写（CI 用）
+make smoke          # 对 :8081 跑一遍端到端冒烟脚本
+make docker-up      # Compose 起 MySQL + 应用
+make clean          # 清掉 target/ 与构建出的前端产物
+```
+
+`make help` 打印同一份清单（含 docker-logs、clean-data 等）。命令都是对 `./mvnw` / `pnpm` 的薄封装，直接敲原始命令同样可行。
 
 ## 快速开始
 
@@ -99,7 +119,7 @@ curl -s localhost:8081/api/orders -H 'X-Customer-Id: 2002'
 ## 测试
 
 ```bash
-./mvnw -pl backend test
+./mvnw -pl backend test     # 等价于 make test
 ```
 
 | 层次 | 覆盖 |
@@ -109,16 +129,18 @@ curl -s localhost:8081/api/orders -H 'X-Customer-Id: 2002'
 | 集成（H2，不烧 Key） | `AssistantFlowTest`：真库 + 桩模型，跑通"提议→不执行→确认→落单→重复确认不重复落单→越权 403"，以及幂等键重放 |
 | 集成（MySQL，需 Docker） | `MySqlMigrationAndLockingTest`：同一份 Flyway 脚本建 MySQL 库；唯一约束仲裁幂等键竞争；`SELECT ... FOR UPDATE` 串行化两次确认。**无 Docker 时自动跳过**（本机已在 Docker 下实跑通过） |
 
-前端：`cd frontend && pnpm typecheck && pnpm build`。
+前端：`cd frontend && pnpm typecheck && pnpm build`（`build` 会先跑 Prettier，再交给 Vite）。
 
 ## 代码风格
 
-- **格式化**：后端用 Spotless（`google-java-format`，AOSP 风格，与既有 4 空格缩进一致）。`apply` 绑定在 `process-sources` 阶段，所以任何构建（如 `./mvnw -pl backend test`）都会**先自动格式化再编译**，不需要手动跑。CI 里可用 `./mvnw -pl backend spotless:check` 只校验、不改写。
+- **格式化**：后端用 Spotless（`google-java-format`，AOSP 风格，与既有 4 空格缩进一致）。`apply` 绑定在 `process-sources` 阶段，所以任何构建（如 `./mvnw -pl backend test`）都会**先自动格式化再编译**，不需要手动跑。前端用 Prettier（`frontend/.prettierrc.json`），`pnpm build` 同样会**先 `prettier --write` 再构建**。手动跑用 `make format`；只校验、不改写（CI）用 `make check`（即 `spotless:check` + `prettier --check`）。
+- **对象映射**：PO/DTO/领域对象之间的转换统一交给 **MapStruct**（`*ApiMapper` / `*PersistenceMapper`，`componentModel = "spring"`），不再手写逐字段拷贝。注解处理器已在父 POM 配好（`mapstruct-processor` + `lombok-mapstruct-binding`，与 Lombok 共存）。少数 MapStruct 生成不了的地方——聚合根构造器私有、只能经 `rehydrate` 工厂重建（`Order`/`Conversation`/`PendingAction`）——保留为同一 mapper 接口里的 `default` 方法，调用点仍然统一。
 - **样板代码**：统一用 Lombok —— PO/DTO 用 `@Data`，构造器注入用 `@RequiredArgsConstructor`，日志用 `@Slf4j`。注入相关注解（如 `@Qualifier`）由根目录的 `lombok.config` 保留到生成的构造器参数上。
 
 ## 目录结构
 
 ```
+Makefile          常用命令入口（`make help` 看全部）
 backend/src/main/java/com/example/ordermgt/
 ├── shared/       统一响应体、错误码、全局异常处理
 ├── config/       MyBatis-Plus、OpenAPI、流式线程池
@@ -129,9 +151,12 @@ backend/src/main/java/com/example/ordermgt/
     ├── domain/         无框架依赖：Conversation、Message、PendingAction、ToolSpec、ToolCard、ToolResult、AiAssistantPort
     ├── application/    AssistantService（编排）、ConversationService、ActionConfirmationService
     ├── infrastructure/ Spring AI 适配器、MyBatis-Plus 持久化、过期清理任务
-    └── api/            控制器与 DTO
+    └── api/            控制器、DTO 与 MapStruct 的 ApiMapper
 frontend/         Vue 3 SPA（产物直接构建进 backend/src/main/resources/static）
-docs/adr/         架构决策记录
+scripts/          smoke-demo.sh 等运维脚本
+docs/             项目文档
+├── adr/          架构决策记录
+└── 面试作业-*.md  需求梳理 / 设计定稿 / 演示脚本
 ```
 
 依赖方向：`api → application → domain`，`infrastructure → domain`（实现端口）。**domain 不依赖任何框架。**
