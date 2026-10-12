@@ -1,0 +1,81 @@
+# Order Assistant -- one entry point for the tasks you actually run.
+#
+#   make            same as `make help`
+#   make dev        backend on :8081 with the embedded H2 database
+#   make test       backend test suite
+#
+# Maven is always invoked through the wrapper, so the checked-in version is what runs.
+# `JAVA_HOME=/path/to/jdk17 make ...` overrides the JDK if the default is not 17.
+
+SHELL := /bin/bash
+.DEFAULT_GOAL := help
+
+MVNW       := ./mvnw
+PNPM       := pnpm
+BACKEND    := -pl backend -am
+
+.PHONY: help dev dev-frontend install build build-backend build-frontend \
+        test format check smoke docker-up docker-down docker-logs clean clean-data
+
+help: ## List the available targets
+	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) \
+		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
+
+# --- local development -------------------------------------------------------
+
+dev: ## Run the backend with the embedded H2 database (http://localhost:8081)
+	$(MVNW) $(BACKEND) spring-boot:run
+
+dev-frontend: ## Run the Vite dev server (http://localhost:5173, proxies /api to :8081)
+	cd frontend && $(PNPM) dev
+
+install: ## Install the frontend dependencies
+	cd frontend && $(PNPM) install
+
+# --- build -------------------------------------------------------------------
+
+build: ## Package the jar with the SPA baked in (requires Node/pnpm)
+	$(MVNW) -Pfrontend package
+
+build-backend: ## Package the backend jar only (no Node needed)
+	$(MVNW) $(BACKEND) package
+
+build-frontend: ## Build the SPA into backend/src/main/resources/static
+	cd frontend && $(PNPM) build
+
+# --- verify ------------------------------------------------------------------
+
+test: ## Run the backend test suite (skips the MySQL tests without Docker)
+	$(MVNW) $(BACKEND) test
+
+format: ## Rewrite formatting: Spotless for Java, Prettier for the frontend
+	$(MVNW) $(BACKEND) spotless:apply
+	cd frontend && $(PNPM) format
+
+check: ## Verify formatting without rewriting anything (CI-friendly)
+	$(MVNW) $(BACKEND) spotless:check
+	cd frontend && $(PNPM) format:check
+
+smoke: ## End-to-end smoke test against a running app on :8081
+	./scripts/smoke-demo.sh
+
+# --- containers --------------------------------------------------------------
+
+docker-up: ## Build and start MySQL + app via Compose
+	docker compose up --build
+
+docker-down: ## Stop and remove the Compose stack
+	docker compose down
+
+docker-logs: ## Follow the app container's logs
+	docker compose logs -f app
+
+# --- housekeeping ------------------------------------------------------------
+
+clean: ## Remove build output (target/ and the built SPA assets)
+	$(MVNW) clean
+	rm -rf frontend/dist backend/src/main/resources/static/assets \
+		backend/src/main/resources/static/index.html
+
+clean-data: ## Delete the local H2 databases (loses local history)
+	rm -rf .data backend/.data
