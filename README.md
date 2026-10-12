@@ -111,6 +111,11 @@ curl -s localhost:8081/api/orders -H 'X-Customer-Id: 2002'
 
 前端：`cd frontend && pnpm typecheck && pnpm build`。
 
+## 代码风格
+
+- **格式化**：后端用 Spotless（`google-java-format`，AOSP 风格，与既有 4 空格缩进一致）。`apply` 绑定在 `process-sources` 阶段，所以任何构建（如 `./mvnw -pl backend test`）都会**先自动格式化再编译**，不需要手动跑。CI 里可用 `./mvnw -pl backend spotless:check` 只校验、不改写。
+- **样板代码**：统一用 Lombok —— PO/DTO 用 `@Data`，构造器注入用 `@RequiredArgsConstructor`，日志用 `@Slf4j`。注入相关注解（如 `@Qualifier`）由根目录的 `lombok.config` 保留到生成的构造器参数上。
+
 ## 目录结构
 
 ```
