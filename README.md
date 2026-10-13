@@ -185,6 +185,7 @@ docs/             项目文档
 ```
 
 依赖方向：`api → application → domain`，`infrastructure → domain`（实现端口）。**domain 不依赖任何框架。**
+全仓有一处刻意的例外：`assistant/infrastructure/ai/tools/OrderToolDefinitions` 把只读工具接到 `order.application.OrderService` 上——工具定义本质是装配代码（哪个工具名对应哪个业务用例），这条 `infrastructure → application` 的边是单向的，`order` 侧不反向依赖 `assistant`，不构成环。
 
 ## 模型的超时、重试与审计
 
