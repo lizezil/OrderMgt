@@ -48,7 +48,7 @@ test.describe('按客户隔离', () => {
 
     const chat = await request.post('/api/assistant/chat', {
       headers: { 'X-Customer-Id': stranger },
-      data: { message: '我有哪些订单？' },
+      data: { message: 'what orders do I have?' },
     })
     expect(chat.ok()).toBe(true)
     const executed = (await chat.json()).data.executed as { name: string; resultJson: string }[]
@@ -60,7 +60,7 @@ test.describe('按客户隔离', () => {
     // The owner's own read does see it, so the emptiness above is scoping and not an empty table.
     const ownerChat = await request.post('/api/assistant/chat', {
       headers: { 'X-Customer-Id': owner },
-      data: { message: '我有哪些订单？' },
+      data: { message: 'what orders do I have?' },
     })
     const ownerTools = (await ownerChat.json()).data.executed as { resultJson: string }[]
     expect(ownerTools[0].resultJson).toContain(orderNo)
