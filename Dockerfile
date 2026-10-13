@@ -38,6 +38,11 @@ RUN --mount=type=cache,target=/root/.m2/repository \
     mvn -B -pl backend -am -DskipTests dependency:resolve
 
 COPY backend/src ./backend/src
+# Lombok reads lombok.config from the source tree's parent, and without the repo-root copy the
+# copyableAnnotations (@Value / @Qualifier) are lost: the generated constructors drop those
+# parameters' injection annotations and the app fails to boot with "no qualifying bean of
+# java.lang.String". Locally the file is always there; in the image nothing else would bring it.
+COPY lombok.config ./
 COPY --from=frontend /build/backend/src/main/resources/static ./backend/src/main/resources/static
 RUN --mount=type=cache,target=/root/.m2/repository \
     mvn -B -pl backend -am -DskipTests package
