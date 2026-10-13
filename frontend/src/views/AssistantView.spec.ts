@@ -174,6 +174,70 @@ describe('侧栏状态徽标', () => {
   })
 })
 
+describe('有问无答的回合', () => {
+  function unanswered(): Message {
+    return {
+      id: 1,
+      role: 'CUSTOMER',
+      content: '帮我下单 1 个 GIZMO-03',
+      createdAt: '',
+      action: null,
+    }
+  }
+
+  it('历史停在一条没有回复的客户话上：看得见「有问无答」，并给出重试入口', async () => {
+    listConversationsMock.mockResolvedValue([conversation(7, '下单')])
+    historyMock.mockResolvedValue([unanswered()])
+
+    const wrapper = await mountView()
+
+    expect(wrapper.get('article.customer').text()).toContain('帮我下单 1 个 GIZMO-03')
+    expect(wrapper.get('.retry').text()).toContain('没有收到回复')
+  })
+
+  it('重试把那句话作为全新的一轮重发', async () => {
+    listConversationsMock.mockResolvedValue([conversation(7, '下单')])
+    historyMock.mockResolvedValue([unanswered()])
+    chatStreamMock.mockResolvedValue({
+      conversationId: 7,
+      reply: '好的',
+      executed: [],
+      actions: [],
+      promptTokens: 1,
+      completionTokens: 1,
+      model: 'offline-mock',
+      latencyMs: 10,
+    })
+
+    const wrapper = await mountView()
+    await wrapper.get('.retry button').trigger('click')
+    await flushPromises()
+
+    expect(chatStreamMock).toHaveBeenCalledWith('帮我下单 1 个 GIZMO-03', 7, expect.any(Function))
+  })
+
+  it('回合还在跑（RUNNING）时不给重试：回复也许只是迟到，重发会多开一个 Run', async () => {
+    listConversationsMock.mockResolvedValue([conversation(7, '下单', 'RUNNING')])
+    historyMock.mockResolvedValue([unanswered()])
+
+    const wrapper = await mountView()
+
+    expect(wrapper.find('.retry').exists()).toBe(false)
+  })
+
+  it('已经有回复的回合不给重试入口', async () => {
+    listConversationsMock.mockResolvedValue([conversation(7, '下单')])
+    historyMock.mockResolvedValue([
+      unanswered(),
+      { id: 2, role: 'ASSISTANT', content: '好的', createdAt: '', action: null },
+    ])
+
+    const wrapper = await mountView()
+
+    expect(wrapper.find('.retry').exists()).toBe(false)
+  })
+})
+
 describe('流式回复', () => {
   it('回复边到边渲染，落定后换成服务端持久化的那一轮并附上卡片', async () => {
     listConversationsMock.mockResolvedValue([])

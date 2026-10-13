@@ -400,6 +400,21 @@ textarea {
   max-width: 100%;
 }
 
+/* A question with no answer: the turn ends on the customer's line and the only way forward is
+   another turn. Quiet on purpose -- an offer, not an alarm. */
+.retry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 0 2px;
+}
+
+.retry-note {
+  font-size: 11.5px;
+  color: var(--ink-faint);
+}
+
 /* ---------- markdown inside a turn ---------- */
 
 .said > :first-child {

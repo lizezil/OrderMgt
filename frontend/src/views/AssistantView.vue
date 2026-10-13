@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { api } from '../api'
 import { LOCAL_MESSAGE_ID_START, RECONCILE_ATTEMPTS, RECONCILE_DELAY_MS } from '../constants'
 import { errorMessage } from '../errors'
@@ -51,6 +51,37 @@ function stateLabel(state: ConversationState): string {
   if (state === 'RUNNING') return '生成中…'
   if (state === 'WAITING_APPROVAL') return '待确认'
   return ''
+}
+
+/**
+ * Where the thread ends on a question with no answer. That is the shape an interrupted Run leaves
+ * behind -- its customer message was committed in `prepare`, its reply never arrived -- and a failed
+ * or empty turn leaves the same shape; the customer sees the same thing either way ("没有收到回复"),
+ * and the server deliberately keeps the reason out of the conversation state (ADR-0011). What
+ * matters here is only that the question went unanswered.
+ *
+ * <p>A conversation whose Run is still going (state RUNNING) is excluded on purpose: there the reply
+ * may merely be late, and resending would open a second Run for a turn that is still alive.
+ */
+const retryIndex = computed(() => {
+  if (sending.value) return -1
+  const last = messages.value.length - 1
+  if (last < 0 || messages.value[last]!.role !== 'CUSTOMER') return -1
+  const active = conversations.value.find((conversation) => conversation.id === activeId.value)
+  if (active?.state === 'RUNNING') return -1
+  return last
+})
+
+/**
+ * Resends an unanswered question as a brand new turn: the interrupted Run is history, and the only
+ * honest fix is another one -- a half-delivered reply is never resumed (ADR-0009). Going through
+ * `send` keeps the retry on exactly the same path as any other send: the optimistic bubble, the
+ * reconcile when the stream dies, the server-truth reconciliation.
+ */
+function retry(message: Message): void {
+  if (sending.value) return
+  draft.value = message.content ?? ''
+  void send()
 }
 
 async function loadConversations(): Promise<void> {
@@ -339,13 +370,17 @@ onMounted(async () => {
         <!-- Markdown, rendered by `renderMarkdown`: it escapes its input first, so the HTML below
              is only ever the tags that module wrote. -->
         <article
-          v-for="message in messages"
+          v-for="(message, index) in messages"
           :key="message.id"
           class="line"
           :class="message.role.toLowerCase()"
         >
           <p class="speaker">{{ message.role === 'CUSTOMER' ? '你' : '助手' }}</p>
           <div class="said" v-html="renderMarkdown(message.content || '')" />
+          <div v-if="index === retryIndex" class="retry">
+            <span class="retry-note">没有收到回复</span>
+            <button class="btn" @click="retry(message)">重试</button>
+          </div>
           <ActionCardPanel
             v-if="message.action"
             :card="message.action"
