@@ -44,18 +44,25 @@ public class ConversationService {
     }
 
     /**
-     * The sidebar read: every conversation of the customer, each with the state derived for it on
-     * this read (ADR-0011). The whole page costs two extra queries -- running Runs and live cards
-     * -- never one per row.
+     * The sidebar read: the customer's conversations, archived ones included only when asked for
+     * (ADR-0013), each with the state derived for it on this read and the id of its live Run if it
+     * has one (ADR-0011). The whole page costs two extra queries -- running Runs and live cards --
+     * never one per row.
      */
     @Transactional(readOnly = true)
     public List<ConversationView> listFor(Long customerId) {
-        List<Conversation> conversations = conversationRepository.findByCustomer(customerId);
+        return listFor(customerId, false);
+    }
+
+    @Transactional(readOnly = true)
+    public List<ConversationView> listFor(Long customerId, boolean includeArchived) {
+        List<Conversation> conversations =
+                conversationRepository.findByCustomer(customerId, includeArchived);
         if (conversations.isEmpty()) {
             return List.of();
         }
         List<Long> ids = conversations.stream().map(Conversation::getId).toList();
-        Set<Long> running = runRepository.runningConversationIds(ids);
+        Map<Long, Long> runningRuns = runRepository.runningRunIds(ids);
         Set<Long> livePending =
                 pendingActionRepository.livePendingConversationIds(ids, Instant.now());
         return conversations.stream()
@@ -64,8 +71,9 @@ public class ConversationService {
                                 new ConversationView(
                                         conversation,
                                         ConversationState.derive(
-                                                running.contains(conversation.getId()),
-                                                livePending.contains(conversation.getId()))))
+                                                runningRuns.containsKey(conversation.getId()),
+                                                livePending.contains(conversation.getId())),
+                                        runningRuns.get(conversation.getId())))
                 .toList();
     }
 
@@ -86,14 +94,67 @@ public class ConversationService {
         return conversation;
     }
 
+    /** One conversation with its derived state and live Run id, for a single-row response. */
+    @Transactional(readOnly = true)
+    public ConversationView view(Long customerId, Long conversationId) {
+        Conversation conversation = getOwned(customerId, conversationId);
+        List<Long> single = List.of(conversationId);
+        Map<Long, Long> running = runRepository.runningRunIds(single);
+        Set<Long> livePending =
+                pendingActionRepository.livePendingConversationIds(single, Instant.now());
+        return new ConversationView(
+                conversation,
+                ConversationState.derive(
+                        running.containsKey(conversationId), livePending.contains(conversationId)),
+                running.get(conversationId));
+    }
+
     @Transactional
     public Message appendCustomerMessage(Long customerId, Long conversationId, String text) {
         Conversation conversation = getOwned(customerId, conversationId);
         Instant now = Instant.now();
+        // Speaking to an archived conversation is an explicit intent to resume it, so it comes back
+        // on its own -- the one write that changes visibility as a side effect (ADR-0013).
+        conversation.restore();
         conversation.titleFrom(text);
         conversation.touch(now);
         conversationRepository.save(conversation);
         return conversationRepository.append(Message.customer(conversationId, text, now));
+    }
+
+    /**
+     * Hides a conversation from the default list (ADR-0013). Only a quiescent conversation may be
+     * archived: a Run in flight or a live confirmation card makes it non-quiescent and the request
+     * a 409. Archiving is about visibility, not termination -- stopping a Run is its own action
+     * (ADR-0012) -- and this rule makes "can a card in an archived conversation still be
+     * confirmed?" moot: there is never a live card in one.
+     */
+    @Transactional
+    public Conversation archive(Long customerId, Long conversationId) {
+        Conversation conversation = getOwned(customerId, conversationId);
+        if (!isQuiescent(conversationId)) {
+            throw new BusinessException(
+                    ErrorCode.CONFLICT,
+                    "a conversation with a run in flight or a live card cannot be archived");
+        }
+        conversation.archive();
+        return conversationRepository.save(conversation);
+    }
+
+    /** Restores an archived conversation to the default list. Idempotent. */
+    @Transactional
+    public Conversation restore(Long customerId, Long conversationId) {
+        Conversation conversation = getOwned(customerId, conversationId);
+        conversation.restore();
+        return conversationRepository.save(conversation);
+    }
+
+    private boolean isQuiescent(Long conversationId) {
+        List<Long> single = List.of(conversationId);
+        return runRepository.runningConversationIds(single).isEmpty()
+                && pendingActionRepository
+                        .livePendingConversationIds(single, Instant.now())
+                        .isEmpty();
     }
 
     @Transactional

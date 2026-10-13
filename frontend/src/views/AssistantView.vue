@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from 'vue'
-import { api, ApiError, QUEUE_DROPPED } from '../api'
+import { api, ApiError, QUEUE_DROPPED, RUN_CANCELLED } from '../api'
 import {
   LOCAL_MESSAGE_ID_START,
   MAX_QUEUE_DEPTH,
@@ -54,6 +54,33 @@ const activeQueue = computed(() =>
 )
 
 const queueFull = computed(() => activeQueue.value.length >= MAX_QUEUE_DEPTH)
+
+/** The Run the customer can stop right now: live only while one of this screen's turns is running. */
+interface LiveRun {
+  conversationId: number
+  runId: number
+}
+const liveRun = ref<LiveRun | null>(null)
+
+/** The stop button shows only for a run on the conversation on screen (a stop changes no queue). */
+const canStop = computed(
+  () => liveRun.value !== null && liveRun.value.conversationId === activeId.value,
+)
+
+/**
+ * Stops the running turn (ADR-0012). The server aborts the model stream and closes the turn's
+ * stream with a `cancelled` frame, which is what actually retracts the placeholder; this call only
+ * expresses the intent. A failure here (e.g. the run already finished) is reported like any other.
+ */
+async function stopRun(): Promise<void> {
+  const run = liveRun.value
+  if (!run) return
+  try {
+    await api.stopRun(run.conversationId, run.runId)
+  } catch (error) {
+    fail(error)
+  }
+}
 
 function fail(error: unknown): void {
   emit('error', errorMessage(error, '请求失败'))
@@ -127,6 +154,11 @@ function forgetQueued(messageId: number): void {
 /** Whether a failed send was one the customer deleted from the line, rather than a real error. */
 function isQueueDropped(error: unknown): boolean {
   return error instanceof ApiError && error.code === QUEUE_DROPPED
+}
+
+/** Whether a send ended because the customer stopped it -- a decision, not a failure. */
+function isRunCancelled(error: unknown): boolean {
+  return error instanceof ApiError && error.code === RUN_CANCELLED
 }
 
 /**
@@ -329,6 +361,9 @@ async function send(): Promise<void> {
   // Hoisted so the catch can reconcile the conversation this message went to, even if the customer
   // opened another one while the stream was dying.
   let conversationId = activeId.value
+  // Set by the stream: the run this send opened, and the half reply a stop leaves behind.
+  let myRunId: number | null = null
+  let cancelledReply: string | null = null
   await scrollToEnd()
 
   try {
@@ -364,6 +399,15 @@ async function send(): Promise<void> {
       // The turn is out of the line now; the server says so before its first token, so the count
       // never keeps calling a running turn "waiting".
       onStarted: () => forgetQueued(sent.id),
+      // The run exists now: this is the handle the stop button targets.
+      onRun: (runId) => {
+        myRunId = runId
+        liveRun.value = { conversationId: target, runId }
+      },
+      // The customer stopped it; keep the half reply the server persisted.
+      onCancelled: (reply) => {
+        cancelledReply = reply
+      },
     })
 
     forgetQueued(sent.id)
@@ -384,6 +428,13 @@ async function send(): Promise<void> {
     // the server's answer to "did this send actually land?" -- the stream dying says nothing
     // either way, because the backend finishes and persists the turn even with nobody listening.
     forgetQueued(sent.id)
+    if (isRunCancelled(error)) {
+      // The customer stopped it: the half reply is already in the placeholder (the tokens that
+      // arrived) and is now an ordinary ASSISTANT message on the server. Keep the bubble; the stop
+      // was the point, so there is nothing to report.
+      if (placeholder && cancelledReply !== null) placeholder.content = cancelledReply
+      return
+    }
     messages.value = messages.value.filter((message) => message !== placeholder)
     if (isQueueDropped(error)) {
       // The customer deleted it from the line, so nothing was ever asked. Retract the bubble and
@@ -400,6 +451,8 @@ async function send(): Promise<void> {
     if (outcome !== 'recovered') fail(error)
   } finally {
     inFlight.value--
+    // This turn's run is over -- done, failed, stopped or dropped -- so there is nothing to stop.
+    if (myRunId !== null && liveRun.value?.runId === myRunId) liveRun.value = null
     await scrollToEnd()
   }
 }
@@ -481,7 +534,12 @@ onMounted(async () => {
           />
         </article>
 
-        <p v-if="sending" class="thinking">助手正在拟…</p>
+        <p v-if="sending" class="thinking">
+          <span>助手正在拟…</span>
+          <!-- Stopping is its own action: it aborts the running turn only, and never touches the
+               queue behind it (that is the queue strip's 删除 above). -->
+          <button v-if="canStop" class="btn quiet" @click="stopRun">停止</button>
+        </p>
       </div>
     </div>
 

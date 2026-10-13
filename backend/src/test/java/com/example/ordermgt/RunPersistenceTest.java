@@ -9,12 +9,20 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.example.ordermgt.assistant.application.AssistantResult;
 import com.example.ordermgt.assistant.application.AssistantService;
+import com.example.ordermgt.assistant.application.ConversationService;
+import com.example.ordermgt.assistant.application.MessageView;
 import com.example.ordermgt.assistant.application.RunReconciler;
 import com.example.ordermgt.assistant.domain.AiAssistantPort;
+import com.example.ordermgt.assistant.domain.AiInvocation;
 import com.example.ordermgt.assistant.domain.AiInvocationOutcome;
+import com.example.ordermgt.assistant.domain.AiInvocationRepository;
 import com.example.ordermgt.assistant.domain.AiUpstreamException;
+import com.example.ordermgt.assistant.domain.AiUsage;
 import com.example.ordermgt.assistant.domain.AssistantTurn;
 import com.example.ordermgt.assistant.domain.ChatMessage;
+import com.example.ordermgt.assistant.domain.Role;
+import com.example.ordermgt.assistant.domain.RunCancellation;
+import com.example.ordermgt.assistant.domain.RunCancelledException;
 import com.example.ordermgt.assistant.infrastructure.ai.MockAiAdapter;
 import com.example.ordermgt.assistant.infrastructure.persist.RunMapper;
 import com.example.ordermgt.assistant.infrastructure.persist.RunPO;
@@ -73,9 +81,12 @@ class RunPersistenceTest {
 
                 @Override
                 public AssistantTurn respondStreaming(
-                        Long customerId, List<ChatMessage> memory, Consumer<String> onTextDelta) {
+                        Long customerId,
+                        List<ChatMessage> memory,
+                        Consumer<String> onTextDelta,
+                        RunCancellation cancellation) {
                     failIfDoomed(customerId);
-                    return DELEGATE.respondStreaming(customerId, memory, onTextDelta);
+                    return DELEGATE.respondStreaming(customerId, memory, onTextDelta, cancellation);
                 }
 
                 private void failIfDoomed(Long customerId) {
@@ -94,6 +105,10 @@ class RunPersistenceTest {
     }
 
     @Autowired private AssistantService assistantService;
+
+    @Autowired private ConversationService conversationService;
+
+    @Autowired private AiInvocationRepository aiInvocationRepository;
 
     @Autowired private AiAssistantPort aiAssistantPort;
 
@@ -125,7 +140,9 @@ class RunPersistenceTest {
 
         assistantService.executeTurn(
                 context,
-                () -> aiAssistantPort.respondStreaming(customer, context.memory(), deltas::add));
+                () ->
+                        aiAssistantPort.respondStreaming(
+                                customer, context.memory(), deltas::add, RunCancellation.NEVER));
 
         List<RunPO> runs = runsOf(context.conversation().getId());
         assertThat(runs).hasSize(1);
@@ -150,6 +167,47 @@ class RunPersistenceTest {
         assertThat(runs.get(0).getStatus()).isEqualTo("FAILED");
         assertThat(runs.get(0).getError()).isNotNull();
         assertThat(runs.get(0).getEndedAt()).isNotNull();
+    }
+
+    /**
+     * 客户停止了一个流式回合（ADR-0012）：Run 收 CANCELLED；已经收到的半截文本作为一条**普通的 ASSISTANT 消息**落库（不写 Message 状态，守
+     * ADR-0009）；审计记一行 CANCELLED。这里直接驱动 executeTurn the cancel branch of executeTurn (the upstream
+     * abort lives in SpringAiAdapter, pinned by its own unit tests); what is verified here is the
+     * persistence side.
+     */
+    @Test
+    void aStoppedStreamingTurnKeepsTheHalfTextAndClosesTheRunCancelled() {
+        Long customer = CUSTOMER + 30;
+        AssistantService.TurnContext context =
+                assistantService.prepare(customer, null, "帮我下单 3 个 GIZMO-03");
+        AssistantTurn partial = AssistantTurn.of("我先说半句，", List.of(), AiUsage.EMPTY);
+
+        assertThatThrownBy(
+                        () ->
+                                assistantService.executeTurn(
+                                        context,
+                                        run -> {},
+                                        () -> {
+                                            throw new RunCancelledException(partial);
+                                        }))
+                .isInstanceOf(RunCancelledException.class);
+
+        List<RunPO> runs = runsOf(context.conversation().getId());
+        assertThat(runs).hasSize(1);
+        assertThat(runs.get(0).getStatus()).isEqualTo("CANCELLED");
+        assertThat(runs.get(0).getEndedAt()).isNotNull();
+
+        List<MessageView> history =
+                conversationService.history(customer, context.conversation().getId());
+        MessageView last = history.get(history.size() - 1);
+        assertThat(last.message().role()).isEqualTo(Role.ASSISTANT);
+        assertThat(last.message().content()).isEqualTo("我先说半句，");
+
+        List<AiInvocation> audits =
+                aiInvocationRepository.findByConversationId(context.conversation().getId());
+        assertThat(audits)
+                .extracting(AiInvocation::outcome)
+                .containsExactly(AiInvocationOutcome.CANCELLED);
     }
 
     @Test

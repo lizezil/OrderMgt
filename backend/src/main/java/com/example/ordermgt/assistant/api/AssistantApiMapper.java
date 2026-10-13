@@ -28,6 +28,7 @@ public interface AssistantApiMapper {
     @Mapping(target = "lastMessageAt", source = "conversation.lastMessageAt")
     @Mapping(target = "status", source = "conversation.status")
     @Mapping(target = "state", source = "state")
+    @Mapping(target = "runId", source = "runId")
     ConversationResponse toResponse(ConversationView view);
 
     @Mapping(target = "id", source = "message.id")

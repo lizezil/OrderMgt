@@ -13,6 +13,7 @@ import com.example.ordermgt.assistant.domain.PendingAction;
 import com.example.ordermgt.assistant.domain.PendingActionRepository;
 import com.example.ordermgt.assistant.domain.ProposedToolCall;
 import com.example.ordermgt.assistant.domain.Run;
+import com.example.ordermgt.assistant.domain.RunCancelledException;
 import com.example.ordermgt.assistant.domain.RunRepository;
 import com.example.ordermgt.assistant.domain.RunStatus;
 import com.example.ordermgt.assistant.domain.ToolRegistry;
@@ -26,6 +27,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -88,12 +90,31 @@ public class AssistantService {
      * committed there, before the call this row now guards.
      */
     public AssistantResult executeTurn(TurnContext context, Supplier<AssistantTurn> modelCall) {
+        return executeTurn(context, run -> {}, modelCall);
+    }
+
+    /**
+     * The same turn, but the caller is handed the RUNNING Run the moment it exists -- before the
+     * model is called. The streaming transport uses this to register the run it can later stop
+     * (ADR-0012) and to tell the client the run id it will need for that.
+     *
+     * <p>A stop is not a failure (ADR-0012): the half text becomes an ordinary ASSISTANT message,
+     * the Run closes CANCELLED, the call is audited CANCELLED, and the exception travels on so the
+     * transport can close its stream with a {@code cancelled} frame instead of an error.
+     */
+    public AssistantResult executeTurn(
+            TurnContext context, Consumer<Run> onRunOpen, Supplier<AssistantTurn> modelCall) {
         Run run = runRepository.save(Run.start(context.conversation().getId()));
+        onRunOpen.accept(run);
         AssistantTurn turn = null;
         AssistantResult result;
         try {
             turn = modelCall.get();
             result = complete(context, turn);
+        } catch (RunCancelledException ex) {
+            persistHalfTurn(context, ex.partial());
+            runRepository.save(run.finish(RunStatus.CANCELLED, CANCELLED_REASON, Instant.now()));
+            throw ex;
         } catch (RuntimeException ex) {
             // The model call may never have happened (null turn) or may have answered and been
             // billed before the turn could not be completed -- recordFailure tells the two apart.
@@ -106,6 +127,33 @@ public class AssistantService {
         // did land. If this throws, the Run is left RUNNING for the startup reconciliation.
         runRepository.save(run.finish(RunStatus.COMPLETED, null, Instant.now()));
         return result;
+    }
+
+    /** Recorded on a Run the customer stopped, so the row explains itself. */
+    public static final String CANCELLED_REASON = "stopped by the customer";
+
+    /**
+     * A stopped turn still owes the transcript the half reply and the audit its CANCELLED row
+     * (ADR-0012). What is deliberately NOT done is anything the turn had not yet reached: no tool
+     * results, no confirmation cards -- those are only ever produced by {@link #complete}, which a
+     * stop never reaches.
+     */
+    private void persistHalfTurn(TurnContext context, AssistantTurn partial) {
+        String half = partial == null ? "" : partial.text();
+        if (!half.isBlank()) {
+            conversationService.appendAssistantMessage(context.conversation().getId(), half);
+        }
+        recordInvocation(
+                AiInvocation.record(
+                        context.conversation().getId(),
+                        context.conversation().getCustomerId(),
+                        partial == null ? null : partial.model(),
+                        partial == null ? null : partial.usage().promptTokens(),
+                        partial == null ? null : partial.usage().completionTokens(),
+                        partial == null ? null : partial.latencyMs(),
+                        AiInvocationOutcome.CANCELLED,
+                        CANCELLED_REASON,
+                        null));
     }
 
     /** A failure with no message still owes the Run a reason: the exception's own name. */

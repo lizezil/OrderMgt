@@ -25,6 +25,7 @@ import com.example.ordermgt.assistant.domain.Conversation;
 import com.example.ordermgt.assistant.domain.PendingAction;
 import com.example.ordermgt.assistant.domain.PendingActionRepository;
 import com.example.ordermgt.assistant.domain.ProposedToolCall;
+import com.example.ordermgt.assistant.domain.RunCancellation;
 import com.example.ordermgt.assistant.infrastructure.ai.MockAiAdapter;
 import com.example.ordermgt.assistant.infrastructure.persist.AiInvocationMapper;
 import com.example.ordermgt.assistant.infrastructure.persist.AiInvocationPO;
@@ -107,7 +108,10 @@ class OrderAssistantBusinessFlowTest {
 
                 @Override
                 public AssistantTurn respondStreaming(
-                        Long customerId, List<ChatMessage> memory, Consumer<String> onTextDelta) {
+                        Long customerId,
+                        List<ChatMessage> memory,
+                        Consumer<String> onTextDelta,
+                        RunCancellation cancellation) {
                     AssistantTurn turn = current(customerId, memory);
                     for (int i = 0; i < turn.text().length(); i += 6) {
                         onTextDelta.accept(

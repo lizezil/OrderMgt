@@ -71,13 +71,13 @@ class ConversationServiceTest {
     /** 侧栏三值全靠派生：有活 Run 就 RUNNING（压过待确认），否则有未过期卡片就 WAITING_APPROVAL，否则 IDLE。 */
     @Test
     void sidebarStateIsDerivedFromRunsThenLiveCardsThenIdle() {
-        when(conversationRepository.findByCustomer(OWNER))
+        when(conversationRepository.findByCustomer(OWNER, false))
                 .thenReturn(
                         List.of(
                                 conversation(OWNER, 5L),
                                 conversation(OWNER, 6L),
                                 conversation(OWNER, 7L)));
-        when(runRepository.runningConversationIds(any())).thenReturn(Set.of(5L));
+        when(runRepository.runningRunIds(any())).thenReturn(java.util.Map.of(5L, 500L));
         when(pendingActionRepository.livePendingConversationIds(any(), any()))
                 .thenReturn(Set.of(5L, 6L));
 
@@ -93,7 +93,7 @@ class ConversationServiceTest {
 
     @Test
     void anEmptySidebarCostsNoStateQueries() {
-        when(conversationRepository.findByCustomer(OWNER)).thenReturn(List.of());
+        when(conversationRepository.findByCustomer(OWNER, false)).thenReturn(List.of());
 
         assertThat(service.listFor(OWNER)).isEmpty();
         verifyNoInteractions(runRepository, pendingActionRepository);

@@ -14,6 +14,8 @@ import com.example.ordermgt.assistant.application.AssistantResult;
 import com.example.ordermgt.assistant.application.AssistantService;
 import com.example.ordermgt.assistant.application.ConversationRunQueue;
 import com.example.ordermgt.assistant.application.ConversationService;
+import com.example.ordermgt.assistant.application.RunRegistry;
+import com.example.ordermgt.assistant.application.RunService;
 import com.example.ordermgt.assistant.domain.AiAssistantPort;
 import com.example.ordermgt.assistant.domain.AiUsage;
 import com.example.ordermgt.assistant.domain.AssistantTurn;
@@ -57,6 +59,8 @@ class ConversationControllerTest {
     @Mock private AssistantService assistantService;
     @Mock private ChatSender chatSender;
     @Mock private ConversationRunQueue runQueue;
+    @Mock private RunRegistry runRegistry;
+    @Mock private RunService runService;
     @Mock private AiAssistantPort aiAssistantPort;
     @Mock private AssistantApiMapper mapper;
     @Mock private SseEmitter emitter;
@@ -74,6 +78,8 @@ class ConversationControllerTest {
                         assistantService,
                         chatSender,
                         runQueue,
+                        runRegistry,
+                        runService,
                         aiAssistantPort,
                         new ObjectMapper(),
                         mapper);
@@ -103,7 +109,7 @@ class ConversationControllerTest {
     @Test
     void clientGoneMidStreamStillHandsTheTurnToExecuteTurn() throws Exception {
         when(assistantService.prepare(CUSTOMER, CONVERSATION, QUESTION)).thenReturn(context);
-        when(aiAssistantPort.respondStreaming(eq(CUSTOMER), anyList(), any()))
+        when(aiAssistantPort.respondStreaming(eq(CUSTOMER), anyList(), any(), any()))
                 .thenAnswer(
                         invocation -> {
                             Consumer<String> onDelta = invocation.getArgument(2);
@@ -111,10 +117,10 @@ class ConversationControllerTest {
                             onDelta.accept("3 张订单。"); // 断线之后不再投递
                             return turn;
                         });
-        when(assistantService.executeTurn(eq(context), any()))
+        when(assistantService.executeTurn(eq(context), any(), any()))
                 .thenAnswer(
                         invocation -> {
-                            Supplier<AssistantTurn> modelCall = invocation.getArgument(1);
+                            Supplier<AssistantTurn> modelCall = invocation.getArgument(2);
                             modelCall.get(); // 断线只停投递，不停模型
                             return result;
                         });
@@ -123,7 +129,7 @@ class ConversationControllerTest {
         controller.streamTurn(emitter, new AtomicBoolean(false), CUSTOMER, CONVERSATION, QUESTION);
 
         verify(emitter, times(1)).send(any(SseEventBuilder.class)); // 断线后不再尝试投递
-        verify(assistantService).executeTurn(eq(context), any()); // 回合照样走完
+        verify(assistantService).executeTurn(eq(context), any(), any()); // 回合照样走完
         verify(assistantService, never()).recordFailure(any(), any(), any());
         verify(emitter).complete();
         // 会话的执行位是这一轮占的，收尾时无论成功失败都要交出去，否则这条会话就再也没人服务。
@@ -134,17 +140,17 @@ class ConversationControllerTest {
     @Test
     void containerDetectedDisconnectSkipsDeliveryButStillRunsTheTurn() throws Exception {
         when(assistantService.prepare(CUSTOMER, CONVERSATION, QUESTION)).thenReturn(context);
-        when(aiAssistantPort.respondStreaming(eq(CUSTOMER), anyList(), any()))
+        when(aiAssistantPort.respondStreaming(eq(CUSTOMER), anyList(), any(), any()))
                 .thenAnswer(
                         invocation -> {
                             Consumer<String> onDelta = invocation.getArgument(2);
                             onDelta.accept("你有 3 张订单。");
                             return turn;
                         });
-        when(assistantService.executeTurn(eq(context), any()))
+        when(assistantService.executeTurn(eq(context), any(), any()))
                 .thenAnswer(
                         invocation -> {
-                            Supplier<AssistantTurn> modelCall = invocation.getArgument(1);
+                            Supplier<AssistantTurn> modelCall = invocation.getArgument(2);
                             modelCall.get();
                             return result;
                         });
@@ -152,7 +158,7 @@ class ConversationControllerTest {
         controller.streamTurn(emitter, new AtomicBoolean(true), CUSTOMER, CONVERSATION, QUESTION);
 
         verify(emitter, never()).send(any(SseEventBuilder.class));
-        verify(assistantService).executeTurn(eq(context), any());
+        verify(assistantService).executeTurn(eq(context), any(), any());
         verify(assistantService, never()).recordFailure(any(), any(), any());
     }
 
@@ -161,7 +167,7 @@ class ConversationControllerTest {
     void upstreamFailureStillEmitsErrorOnTheWire() throws Exception {
         when(assistantService.prepare(CUSTOMER, CONVERSATION, QUESTION)).thenReturn(context);
         RuntimeException boom = new IllegalStateException("上游模型超时");
-        when(assistantService.executeTurn(eq(context), any())).thenThrow(boom);
+        when(assistantService.executeTurn(eq(context), any(), any())).thenThrow(boom);
 
         controller.streamTurn(emitter, new AtomicBoolean(false), CUSTOMER, CONVERSATION, QUESTION);
 

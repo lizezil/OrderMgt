@@ -72,6 +72,9 @@ const FRAME_END = /\r\n\r\n|\n\n|\r\r/
 /** Error code for a queued turn the customer deleted before it ever ran (see `dropped` below). */
 export const QUEUE_DROPPED = 'QUEUE_DROPPED'
 
+/** Error code for a turn the customer stopped (see `cancelled` below). Not a failure. */
+export const RUN_CANCELLED = 'RUN_CANCELLED'
+
 /** What a streaming turn reports as it goes: prose deltas, and its place in line if it has one. */
 export interface ChatStreamHandlers {
   onToken: (delta: string) => void
@@ -79,6 +82,10 @@ export interface ChatStreamHandlers {
   onQueued?: (queued: QueuedTurn) => void
   /** Called when a queued turn leaves the line and starts running -- before its first token. */
   onStarted?: () => void
+  /** Called once the turn has opened its Run, with the run id a stop needs (ADR-0012). */
+  onRun?: (runId: number) => void
+  /** Called if the customer stopped the turn; carries the half reply the server persisted. */
+  onCancelled?: (reply: string) => void
 }
 
 /**
@@ -87,12 +94,13 @@ export interface ChatStreamHandlers {
  * ReadableStream rather than EventSource: EventSource cannot set request headers.
  *
  * <p>The contract mirrors the JSON endpoint: `token` events carry prose deltas, then one `done`
- * event carries the same ChatResponse (cards included). Three frames exist only here, because only
- * a stream can wait: `queued` says the turn is behind another one and hands back the id its DELETE
- * needs, `started` says it now has the conversation to itself, and `dropped` says the customer
- * removed it from the line, so it will never run. An `error` event fails the promise; a `dropped`
- * one rejects with {@link QUEUE_DROPPED}, which is a decision rather than a failure and is handled
- * without a toast.
+ * event carries the same ChatResponse (cards included). Four frames exist only here, because only a
+ * stream can be waited on and stopped: `queued` says the turn is behind another one and hands back
+ * the id its DELETE needs, `started` says it now has the conversation to itself, `run` names the Run
+ * it opened (what a stop targets), and `dropped` says the customer removed it from the line, so it
+ * will never run. An `error` event fails the promise; a `dropped` one rejects with {@link
+ * QUEUE_DROPPED}, and a `cancelled` one with {@link RUN_CANCELLED} -- both decisions rather than
+ * failures, handled without a toast.
  */
 export async function chatStream(
   message: string,
@@ -117,6 +125,7 @@ export async function chatStream(
   let result: ChatResponse | null = null
   let failure: string | null = null
   let dropped = false
+  let cancelled = false
 
   for (;;) {
     const { value, done } = await reader.read()
@@ -133,13 +142,22 @@ export async function chatStream(
       if (event?.name === 'token') handlers.onToken(event.data)
       else if (event?.name === 'queued') reportQueued(event.data, handlers)
       else if (event?.name === 'started') handlers.onStarted?.()
-      else if (event?.name === 'done') result = JSON.parse(event.data) as ChatResponse
+      else if (event?.name === 'run') reportRun(event.data, handlers)
+      else if (event?.name === 'cancelled') {
+        cancelled = true
+        reportCancelled(event.data, handlers)
+      } else if (event?.name === 'done') result = JSON.parse(event.data) as ChatResponse
       else if (event?.name === 'dropped') dropped = true
       else if (event?.name === 'error') failure = event.data
       boundary = FRAME_END.exec(buffer)
     }
   }
 
+  if (cancelled) {
+    // The customer stopped this turn: the half reply is on screen and on the server. A decision,
+    // not a failure, so it is reported with the response's own status.
+    throw new ApiError(RUN_CANCELLED, '本轮已停止', 200)
+  }
   if (dropped) {
     // Not a failure: the customer deleted this turn from the line, so nothing was ever asked. The
     // transport was fine, which is why the status is the response's own.
@@ -148,6 +166,26 @@ export async function chatStream(
   if (failure) throw new ApiError('STREAM_ERROR', failure, 502)
   if (!result) throw new ApiError('STREAM_ERROR', '流式响应未返回结果', 502)
   return result
+}
+
+/** Reports a `run` frame: the run id a stop targets, ignored if the frame carries none. */
+function reportRun(data: string, handlers: ChatStreamHandlers): void {
+  try {
+    const frame = JSON.parse(data) as { runId?: number }
+    if (typeof frame.runId === 'number') handlers.onRun?.(frame.runId)
+  } catch {
+    // A malformed frame must not take the turn down with it; the stop button simply stays hidden.
+  }
+}
+
+/** Reports a `cancelled` frame: the half reply the server persisted as an ASSISTANT message. */
+function reportCancelled(data: string, handlers: ChatStreamHandlers): void {
+  try {
+    const frame = JSON.parse(data) as { reply?: string }
+    handlers.onCancelled?.(typeof frame.reply === 'string' ? frame.reply : '')
+  } catch {
+    handlers.onCancelled?.('')
+  }
 }
 
 /** Reports a `queued` frame, ignoring one that carries no usable id (then it is only visible). */
@@ -199,6 +237,15 @@ export const api = {
       `/api/assistant/conversations/${conversationId}/queue/${encodeURIComponent(itemId)}`,
       { method: 'DELETE' },
     ),
+
+  /**
+   * Stops a running turn: the server aborts the model stream, keeps the half reply, and closes the
+   * stream with a `cancelled` frame. Idempotent -- stopping a finished Run is a no-op (ADR-0012).
+   */
+  stopRun: (conversationId: number, runId: number) =>
+    request<null>(`/api/assistant/conversations/${conversationId}/runs/${runId}/stop`, {
+      method: 'POST',
+    }),
 
   confirm: (token: string) =>
     request<ActionResolution>(`/api/assistant/actions/${token}/confirm`, { method: 'POST' }),

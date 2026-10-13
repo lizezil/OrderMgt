@@ -3,6 +3,7 @@ package com.example.ordermgt.assistant.infrastructure.persist;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.example.ordermgt.assistant.domain.Conversation;
 import com.example.ordermgt.assistant.domain.ConversationRepository;
+import com.example.ordermgt.assistant.domain.ConversationStatus;
 import com.example.ordermgt.assistant.domain.Message;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -38,11 +39,15 @@ public class ConversationRepositoryImpl implements ConversationRepository {
     }
 
     @Override
-    public List<Conversation> findByCustomer(Long customerId) {
+    public List<Conversation> findByCustomer(Long customerId, boolean includeArchived) {
         return conversationMapper
                 .selectList(
                         Wrappers.<ConversationPO>lambdaQuery()
                                 .eq(ConversationPO::getCustomerId, customerId)
+                                .eq(
+                                        !includeArchived,
+                                        ConversationPO::getStatus,
+                                        ConversationStatus.ACTIVE.name())
                                 .orderByDesc(ConversationPO::getLastMessageAt)
                                 .orderByDesc(ConversationPO::getId))
                 .stream()

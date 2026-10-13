@@ -11,6 +11,8 @@ import com.example.ordermgt.assistant.api.ConversationController;
 import com.example.ordermgt.assistant.application.AssistantService;
 import com.example.ordermgt.assistant.application.ConversationRunQueue;
 import com.example.ordermgt.assistant.application.ConversationService;
+import com.example.ordermgt.assistant.application.RunRegistry;
+import com.example.ordermgt.assistant.application.RunService;
 import com.example.ordermgt.assistant.domain.AiAssistantPort;
 import com.example.ordermgt.shared.error.GlobalExceptionHandler;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -47,6 +49,8 @@ class StreamSaturationContractTest {
                                         // a turn that cannot get a thread must surface as 503, not
                                         // leave the conversation's slot held.
                                         new ConversationRunQueue(saturated, 5),
+                                        new RunRegistry(),
+                                        mock(RunService.class),
                                         mock(AiAssistantPort.class),
                                         new ObjectMapper(),
                                         Mappers.getMapper(AssistantApiMapper.class)))

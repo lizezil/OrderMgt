@@ -1,7 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { api, ApiError, QUEUE_DROPPED } from '../api'
+import { api, ApiError, QUEUE_DROPPED, RUN_CANCELLED } from '../api'
 import { RECONCILE_DELAY_MS } from '../constants'
 import type {
   ActionCard,
@@ -20,12 +20,14 @@ vi.mock('../api', async () => {
   return {
     ApiError: actual.ApiError,
     QUEUE_DROPPED: actual.QUEUE_DROPPED,
+    RUN_CANCELLED: actual.RUN_CANCELLED,
     api: {
       listConversations: vi.fn(),
       history: vi.fn(),
       startConversation: vi.fn(),
       chatStream: vi.fn(),
       cancelQueued: vi.fn(),
+      stopRun: vi.fn(),
       confirm: vi.fn(),
       reject: vi.fn(),
     },
@@ -37,14 +39,25 @@ const historyMock = vi.mocked(api.history)
 const startConversationMock = vi.mocked(api.startConversation)
 const chatStreamMock = vi.mocked(api.chatStream)
 const cancelQueuedMock = vi.mocked(api.cancelQueued)
+const stopRunMock = vi.mocked(api.stopRun)
 
 function conversation(
   id: number,
   title: string | null,
   state: ConversationState = 'IDLE',
+  runId: number | null = null,
 ): Conversation {
   const at = '2026-01-01T00:00:00'
-  return { id, title, createdAt: at, updatedAt: at, lastMessageAt: at, status: 'ACTIVE', state }
+  return {
+    id,
+    title,
+    createdAt: at,
+    updatedAt: at,
+    lastMessageAt: at,
+    status: 'ACTIVE',
+    state,
+    runId,
+  }
 }
 
 function pendingCard(): ActionCard {
@@ -735,5 +748,99 @@ describe('忙时入队', () => {
     await flushPromises()
 
     expect(wrapper.text()).not.toContain('迟到很久的回复。')
+  })
+})
+
+describe('停止运行中的一轮', () => {
+  /** The callbacks the view hands a stream, plus the settlers to end it deliberately. */
+  interface Handlers {
+    onToken: (delta: string) => void
+    onQueued: (turn: QueuedTurn) => void
+    onStarted: () => void
+    onRun: (runId: number) => void
+    onCancelled: (reply: string) => void
+  }
+
+  function streaming() {
+    const seen: Handlers[] = []
+    const settlers: {
+      resolve: (response: ChatResponse) => void
+      reject: (error: unknown) => void
+    }[] = []
+    chatStreamMock.mockImplementation((_message, _id, handlers) => {
+      seen.push(handlers as Handlers)
+      return new Promise<ChatResponse>((resolve, reject) => {
+        settlers.push({ resolve, reject })
+      })
+    })
+    return {
+      on: (index: number): Handlers => seen[index]!,
+      reject: (index: number, error: unknown): void => settlers[index]!.reject(error),
+    }
+  }
+
+  async function sendLine(wrapper: ReturnType<typeof mount>, text: string): Promise<void> {
+    await wrapper.get('textarea').setValue(text)
+    await sendButton(wrapper).trigger('click')
+    await flushPromises()
+  }
+
+  beforeEach(() => {
+    listConversationsMock.mockResolvedValue([conversation(7, '下单')])
+    historyMock.mockResolvedValue([])
+  })
+
+  it('Run 一开就有了停止入口：点它 POST 到那条 Run 的停止端点', async () => {
+    stopRunMock.mockResolvedValue(null)
+    const stream = streaming()
+    const wrapper = await mountView()
+    await sendLine(wrapper, '帮我下单 2 个 GADGET-02')
+
+    // No Run yet, so nothing to stop.
+    expect(wrapper.find('.thinking button').exists()).toBe(false)
+
+    stream.on(0).onRun(42)
+    await nextTick()
+    await wrapper.get('.thinking button').trigger('click')
+    await flushPromises()
+
+    expect(stopRunMock).toHaveBeenCalledWith(7, 42)
+  })
+
+  it('停止以 cancelled 收尾：保留半截回复、不弹错误，停止入口随之消失', async () => {
+    const stream = streaming()
+    const wrapper = await mountView()
+    await sendLine(wrapper, '帮我下单 2 个 GADGET-02')
+
+    stream.on(0).onRun(42)
+    stream.on(0).onToken('我先说半句')
+    await nextTick()
+    stream.on(0).onCancelled('我先说半句')
+    stream.reject(0, new ApiError(RUN_CANCELLED, '本轮已停止', 200))
+    await flushPromises()
+
+    // The half reply the server persisted stays on screen; the stop was the point, so no toast.
+    expect(wrapper.text()).toContain('我先说半句')
+    expect(wrapper.emitted('error')).toBeUndefined()
+    expect(wrapper.find('.thinking').exists()).toBe(false)
+  })
+
+  it('停止只掐正在跑的那一轮，不动排在后面的队', async () => {
+    const stream = streaming()
+    const wrapper = await mountView()
+    await sendLine(wrapper, '第一句')
+    await sendLine(wrapper, '第二句')
+    stream.on(1).onQueued({ itemId: 'q1', position: 1 })
+    stream.on(0).onRun(42)
+    await nextTick()
+    expect(wrapper.get('.queue-head').text()).toBe('排队中：1 条')
+
+    stream.on(0).onCancelled('半截')
+    stream.reject(0, new ApiError(RUN_CANCELLED, '本轮已停止', 200))
+    await flushPromises()
+
+    // Stopping the running turn is a different action from deleting a queued one.
+    expect(wrapper.get('.queue-head').text()).toBe('排队中：1 条')
+    expect(cancelQueuedMock).not.toHaveBeenCalled()
   })
 })

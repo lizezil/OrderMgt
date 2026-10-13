@@ -10,6 +10,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.example.ordermgt.assistant.domain.AiAssistantPort;
 import com.example.ordermgt.assistant.domain.AssistantTurn;
 import com.example.ordermgt.assistant.domain.ChatMessage;
+import com.example.ordermgt.assistant.domain.RunCancellation;
 import com.example.ordermgt.assistant.infrastructure.ai.MockAiAdapter;
 import com.example.ordermgt.support.CleanSchemaConfiguration;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -69,9 +70,12 @@ class SmokeDemoFlowTest {
 
                 @Override
                 public AssistantTurn respondStreaming(
-                        Long customerId, List<ChatMessage> memory, Consumer<String> onTextDelta) {
+                        Long customerId,
+                        List<ChatMessage> memory,
+                        Consumer<String> onTextDelta,
+                        RunCancellation cancellation) {
                     LAST_MEMORY.set(List.copyOf(memory));
-                    return DELEGATE.respondStreaming(customerId, memory, onTextDelta);
+                    return DELEGATE.respondStreaming(customerId, memory, onTextDelta, cancellation);
                 }
             };
         }

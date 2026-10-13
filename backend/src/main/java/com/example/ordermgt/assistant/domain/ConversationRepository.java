@@ -9,7 +9,11 @@ public interface ConversationRepository {
 
     Optional<Conversation> findById(Long id);
 
-    List<Conversation> findByCustomer(Long customerId);
+    /**
+     * A customer's conversations, newest activity first. Archived ones are excluded unless {@code
+     * includeArchived} (ADR-0013) -- the default sidebar hides them.
+     */
+    List<Conversation> findByCustomer(Long customerId, boolean includeArchived);
 
     Message append(Message message);
 

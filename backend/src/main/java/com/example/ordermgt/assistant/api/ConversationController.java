@@ -6,7 +6,11 @@ import com.example.ordermgt.assistant.application.AssistantService;
 import com.example.ordermgt.assistant.application.ConversationRunQueue;
 import com.example.ordermgt.assistant.application.ConversationService;
 import com.example.ordermgt.assistant.application.ConversationView;
+import com.example.ordermgt.assistant.application.RunRegistry;
+import com.example.ordermgt.assistant.application.RunService;
 import com.example.ordermgt.assistant.domain.AiAssistantPort;
+import com.example.ordermgt.assistant.domain.RunCancellation;
+import com.example.ordermgt.assistant.domain.RunCancelledException;
 import com.example.ordermgt.idempotency.application.IdempotencyGuard;
 import com.example.ordermgt.shared.api.ApiResponse;
 import com.example.ordermgt.shared.api.ErrorCode;
@@ -18,6 +22,7 @@ import java.io.IOException;
 import java.util.List;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
@@ -51,6 +56,8 @@ public class ConversationController {
     private final AssistantService assistantService;
     private final ChatSender chatSender;
     private final ConversationRunQueue runQueue;
+    private final RunRegistry runRegistry;
+    private final RunService runService;
     private final AiAssistantPort aiAssistantPort;
     private final ObjectMapper objectMapper;
     private final AssistantApiMapper mapper;
@@ -66,9 +73,13 @@ public class ConversationController {
 
     @GetMapping
     public ApiResponse<List<ConversationResponse>> list(
-            @RequestHeader("X-Customer-Id") Long customerId) {
+            @RequestHeader("X-Customer-Id") Long customerId,
+            @RequestParam(name = "includeArchived", defaultValue = "false")
+                    boolean includeArchived) {
         return ApiResponse.ok(
-                conversationService.listFor(customerId).stream().map(mapper::toResponse).toList());
+                conversationService.listFor(customerId, includeArchived).stream()
+                        .map(mapper::toResponse)
+                        .toList());
     }
 
     /** Full history, with each message's card resolved to its current state. */
@@ -104,6 +115,44 @@ public class ConversationController {
             @Valid @RequestBody ChatRequest request) {
         return ApiResponse.ok(
                 chatSender.send(customerId, conversationId, idempotencyKey, request.message()));
+    }
+
+    /**
+     * Hides a conversation from the default list without deleting it (ADR-0013). Only a quiescent
+     * conversation can be archived -- a Run in flight or a live card is a 409, because archiving is
+     * visibility, not termination (that is {@link #stopRun}).
+     */
+    @PostMapping("/{conversationId}/archive")
+    public ApiResponse<ConversationResponse> archive(
+            @RequestHeader("X-Customer-Id") Long customerId, @PathVariable Long conversationId) {
+        conversationService.archive(customerId, conversationId);
+        return ApiResponse.ok(
+                mapper.toResponse(conversationService.view(customerId, conversationId)));
+    }
+
+    /** Brings an archived conversation back into the default list. Idempotent. */
+    @PostMapping("/{conversationId}/restore")
+    public ApiResponse<ConversationResponse> restore(
+            @RequestHeader("X-Customer-Id") Long customerId, @PathVariable Long conversationId) {
+        conversationService.restore(customerId, conversationId);
+        return ApiResponse.ok(
+                mapper.toResponse(conversationService.view(customerId, conversationId)));
+    }
+
+    /**
+     * The explicit stop (ADR-0012). Stops a RUNNING Run -- really aborting the upstream model
+     * stream -- leaving the half reply as an ordinary ASSISTANT message and the Run CANCELLED.
+     * Idempotent: stopping an already-finished Run is a no-op, so a second tab or a double click is
+     * harmless. Ownership is checked first, so a stranger cannot stop someone else's run.
+     */
+    @PostMapping("/{conversationId}/runs/{runId}/stop")
+    public ApiResponse<Void> stopRun(
+            @RequestHeader("X-Customer-Id") Long customerId,
+            @PathVariable Long conversationId,
+            @PathVariable Long runId) {
+        conversationService.getOwned(customerId, conversationId);
+        runService.stop(conversationId, runId);
+        return ApiResponse.ok(null);
     }
 
     /**
@@ -240,6 +289,10 @@ public class ConversationController {
             Long customerId,
             Long conversationId,
             String message) {
+        // The live run's handle, opened the moment the Run row exists (inside executeTurn) and
+        // closed when this turn ends. It carries the cancellation signal a stop trips and the text
+        // a reattach replays, and it exists only for as long as the turn does.
+        AtomicReference<RunRegistry.Handle> handle = new AtomicReference<>();
         try {
             AssistantService.TurnContext context =
                     assistantService.prepare(customerId, conversationId, message);
@@ -247,16 +300,34 @@ public class ConversationController {
             AssistantResult result =
                     assistantService.executeTurn(
                             context,
+                            run -> {
+                                handle.set(runRegistry.open(run.id()));
+                                // The run id is minted here, after the stream is open, so it is
+                                // sent on its own frame: it is what the client's stop button needs.
+                                deliver(emitter, clientGone, "run", runPayload(run.id()));
+                            },
                             () ->
                                     aiAssistantPort.respondStreaming(
                                             customerId,
                                             context.memory(),
-                                            delta -> deliver(emitter, clientGone, "token", delta)));
+                                            delta -> {
+                                                RunRegistry.Handle live = handle.get();
+                                                if (live != null) {
+                                                    live.append(delta);
+                                                }
+                                                deliver(emitter, clientGone, "token", delta);
+                                            },
+                                            cancellationOf(handle)));
             deliver(
                     emitter,
                     clientGone,
                     "done",
                     objectMapper.writeValueAsString(mapper.toResponse(result)));
+            completeQuietly(emitter);
+        } catch (RunCancelledException cancelled) {
+            // A stop, not a failure: the half reply is already on screen (the tokens the client
+            // received) and now persisted; close with a frame that says so. No `error`, no toast.
+            deliver(emitter, clientGone, "cancelled", stoppedPayload(cancelled));
             completeQuietly(emitter);
         } catch (Exception ex) {
             // The Run, its audit row and (on the blocking path) the rethrow were handled inside
@@ -272,7 +343,40 @@ public class ConversationController {
                     ex.getMessage() == null ? "streaming response failed" : ex.getMessage());
             completeQuietly(emitter);
         } finally {
+            // Close the handle before handing the slot on: a reattach to this run must find it
+            // already gone, and the next waiter must not see a dead run's text.
+            RunRegistry.Handle live = handle.get();
+            if (live != null) {
+                runRegistry.close(live.runId());
+            }
             runQueue.finished(conversationId);
+        }
+    }
+
+    /** The signal the model call polls, read off the live handle as soon as it exists. */
+    private static RunCancellation cancellationOf(AtomicReference<RunRegistry.Handle> handle) {
+        return () -> {
+            RunRegistry.Handle live = handle.get();
+            return live != null && live.isCancelled();
+        };
+    }
+
+    private String runPayload(Long runId) {
+        try {
+            return objectMapper.writeValueAsString(new RunRefResponse(runId));
+        } catch (JsonProcessingException ex) {
+            log.warn("could not serialize the run frame: {}", ex.getMessage());
+            return "{}";
+        }
+    }
+
+    private String stoppedPayload(RunCancelledException cancelled) {
+        String half = cancelled.partial() == null ? "" : cancelled.partial().text();
+        try {
+            return objectMapper.writeValueAsString(new RunStoppedResponse(half));
+        } catch (JsonProcessingException ex) {
+            log.warn("could not serialize the cancelled frame: {}", ex.getMessage());
+            return "{}";
         }
     }
 

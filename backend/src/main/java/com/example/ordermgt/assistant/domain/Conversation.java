@@ -63,4 +63,20 @@ public class Conversation {
         this.updatedAt = at;
         this.lastMessageAt = at;
     }
+
+    /**
+     * Hides the conversation from the default list; it stays readable and restorable (ADR-0013).
+     */
+    public void archive() {
+        this.status = ConversationStatus.ARCHIVED;
+    }
+
+    /** Brings an archived conversation back into the default list. */
+    public void restore() {
+        this.status = ConversationStatus.ACTIVE;
+    }
+
+    public boolean isArchived() {
+        return status == ConversationStatus.ARCHIVED;
+    }
 }

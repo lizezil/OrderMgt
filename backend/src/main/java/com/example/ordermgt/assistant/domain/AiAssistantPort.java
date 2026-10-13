@@ -22,7 +22,14 @@ public interface AiAssistantPort {
      * Same turn, but text arrives incrementally through {@code onTextDelta}. The returned turn is
      * the finished one -- tool calls included -- so callers can treat it exactly like {@link
      * #respond}.
+     *
+     * <p>{@code cancellation} is polled as chunks arrive; when it flips the upstream stream is
+     * aborted and {@link RunCancelledException} carries the half text produced so far (ADR-0012).
+     * Callers that cannot be stopped pass {@link RunCancellation#NEVER}.
      */
     AssistantTurn respondStreaming(
-            Long customerId, List<ChatMessage> memory, Consumer<String> onTextDelta);
+            Long customerId,
+            List<ChatMessage> memory,
+            Consumer<String> onTextDelta,
+            RunCancellation cancellation);
 }

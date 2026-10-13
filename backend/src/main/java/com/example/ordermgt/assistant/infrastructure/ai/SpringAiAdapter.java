@@ -9,6 +9,8 @@ import com.example.ordermgt.assistant.domain.AssistantTurn;
 import com.example.ordermgt.assistant.domain.ChatMessage;
 import com.example.ordermgt.assistant.domain.GroundingProvider;
 import com.example.ordermgt.assistant.domain.ProposedToolCall;
+import com.example.ordermgt.assistant.domain.RunCancellation;
+import com.example.ordermgt.assistant.domain.RunCancelledException;
 import com.example.ordermgt.assistant.domain.ToolRegistry;
 import com.example.ordermgt.assistant.domain.ToolSpec;
 import com.example.ordermgt.assistant.infrastructure.ai.prompt.AiPrompts;
@@ -69,7 +71,10 @@ public class SpringAiAdapter implements AiAssistantPort {
 
     @Override
     public AssistantTurn respondStreaming(
-            Long customerId, List<ChatMessage> memory, Consumer<String> onTextDelta) {
+            Long customerId,
+            List<ChatMessage> memory,
+            Consumer<String> onTextDelta,
+            RunCancellation cancellation) {
         long start = System.nanoTime();
 
         // A replay is only safe while the client has seen nothing: retrying after the first
@@ -86,19 +91,28 @@ public class SpringAiAdapter implements AiAssistantPort {
         // chunk, so the turn is accumulated while the bytes flow -- never read off the final
         // chunk alone, which would bill the reply (and its history) as nothing.
         StreamedTurn streamed = new StreamedTurn();
+        AssistantTurn turn;
         try {
-            return retryBeforeFirstToken(
-                    () -> {
-                        streamed.reset();
-                        streamOnce(memory, tracked, streamed);
-                        return streamed.toTurn(model, elapsedMs(start));
-                    },
-                    emitted::get,
-                    AiCallPolicy.STREAM_RETRY_ATTEMPTS,
-                    SpringAiAdapter::sleepForRetry);
+            turn =
+                    retryBeforeFirstToken(
+                            () -> {
+                                streamed.reset();
+                                streamOnce(memory, tracked, streamed, cancellation);
+                                return streamed.toTurn(model, elapsedMs(start));
+                            },
+                            emitted::get,
+                            AiCallPolicy.STREAM_RETRY_ATTEMPTS,
+                            SpringAiAdapter::sleepForRetry);
         } catch (RuntimeException ex) {
             throw upstreamFailure("respondStreaming", ex, elapsedMs(start));
         }
+        if (cancellation.isCancelled()) {
+            // The stop aborted the upstream subscription; the prose received so far is the turn,
+            // and the caller persists it as an ordinary ASSISTANT message (ADR-0012). A cancel
+            // arriving with no delta yet carries an empty turn -- still CANCELLED, still no error.
+            throw new RunCancelledException(turn);
+        }
+        return turn;
     }
 
     /**
@@ -139,9 +153,16 @@ public class SpringAiAdapter implements AiAssistantPort {
 
     /** One pass over the model stream; anything before the first delta is retryable. */
     private void streamOnce(
-            List<ChatMessage> memory, Consumer<String> onTextDelta, StreamedTurn streamed) {
+            List<ChatMessage> memory,
+            Consumer<String> onTextDelta,
+            StreamedTurn streamed,
+            RunCancellation cancellation) {
         prompt(memory).stream()
                 .chatClientResponse()
+                // A stop trips this predicate at the next chunk, which completes the flux and
+                // cancels the upstream subscription -- the HTTP request to the model is torn
+                // down, so the tokens nobody will read are not paid for (ADR-0012).
+                .takeWhile(response -> !cancellation.isCancelled())
                 .doOnNext(
                         response -> {
                             ChatResponse chunk = response.chatResponse();

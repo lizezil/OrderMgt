@@ -25,6 +25,8 @@ import com.example.ordermgt.assistant.application.AssistantResult;
 import com.example.ordermgt.assistant.application.AssistantService;
 import com.example.ordermgt.assistant.application.ConversationRunQueue;
 import com.example.ordermgt.assistant.application.ConversationService;
+import com.example.ordermgt.assistant.application.RunRegistry;
+import com.example.ordermgt.assistant.application.RunService;
 import com.example.ordermgt.assistant.domain.AiAssistantPort;
 import com.example.ordermgt.assistant.domain.AiInvocation;
 import com.example.ordermgt.assistant.domain.AiInvocationOutcome;
@@ -138,6 +140,8 @@ class ApiContractTest {
                                         assistantService,
                                         chatSender,
                                         runQueue,
+                                        new RunRegistry(),
+                                        mock(RunService.class),
                                         mock(AiAssistantPort.class),
                                         new ObjectMapper(),
                                         assistantMapper))

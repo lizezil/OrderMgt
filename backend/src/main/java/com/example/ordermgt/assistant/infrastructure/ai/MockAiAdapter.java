@@ -6,6 +6,8 @@ import com.example.ordermgt.assistant.domain.AssistantTurn;
 import com.example.ordermgt.assistant.domain.ChatMessage;
 import com.example.ordermgt.assistant.domain.ProposedToolCall;
 import com.example.ordermgt.assistant.domain.Role;
+import com.example.ordermgt.assistant.domain.RunCancellation;
+import com.example.ordermgt.assistant.domain.RunCancelledException;
 import com.example.ordermgt.assistant.infrastructure.ai.prompt.OfflinePrompts;
 import java.util.ArrayList;
 import java.util.List;
@@ -61,13 +63,28 @@ public class MockAiAdapter implements AiAssistantPort {
 
     @Override
     public AssistantTurn respondStreaming(
-            Long customerId, List<ChatMessage> memory, Consumer<String> onTextDelta) {
+            Long customerId,
+            List<ChatMessage> memory,
+            Consumer<String> onTextDelta,
+            RunCancellation cancellation) {
         AssistantTurn turn = respond(customerId, memory);
-        // Real deltas, so the SPA's incremental rendering is exercised, not just faked.
+        // Real deltas, so the SPA's incremental rendering is exercised, not just faked. The stop
+        // signal is polled between chunks exactly as the real adapter polls it, so cancellation is
+        // reachable offline too.
+        StringBuilder seen = new StringBuilder();
         for (String chunk : chunks(turn.text(), CHUNK_SIZE)) {
+            if (cancellation.isCancelled()) {
+                throw new RunCancelledException(partial(turn, seen.toString()));
+            }
             onTextDelta.accept(chunk);
+            seen.append(chunk);
         }
         return turn;
+    }
+
+    /** The half turn a stop leaves behind: the prose seen so far, none of the audited facts. */
+    private static AssistantTurn partial(AssistantTurn turn, String text) {
+        return new AssistantTurn(text, List.of(), turn.usage(), turn.model(), turn.latencyMs());
     }
 
     private AssistantTurn turn(String message) {

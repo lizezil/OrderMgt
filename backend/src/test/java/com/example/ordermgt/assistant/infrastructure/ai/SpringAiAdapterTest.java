@@ -2,6 +2,7 @@ package com.example.ordermgt.assistant.infrastructure.ai;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowableOfType;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -14,6 +15,8 @@ import com.example.ordermgt.assistant.domain.AiUsage;
 import com.example.ordermgt.assistant.domain.AssistantTurn;
 import com.example.ordermgt.assistant.domain.GroundingProvider;
 import com.example.ordermgt.assistant.domain.ProposedToolCall;
+import com.example.ordermgt.assistant.domain.RunCancellation;
+import com.example.ordermgt.assistant.domain.RunCancelledException;
 import com.example.ordermgt.assistant.domain.ToolRegistry;
 import java.io.IOException;
 import java.net.SocketTimeoutException;
@@ -22,6 +25,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -218,7 +222,8 @@ class SpringAiAdapterTest {
     void streamedTurnKeepsTheProseFromEveryChunkNotJustTheLast() {
         SpringAiAdapter adapter = adapterOver(chunk("你有 "), chunk("3 张订单。"), chunk(""));
 
-        AssistantTurn turn = adapter.respondStreaming(1001L, List.of(), delta -> {});
+        AssistantTurn turn =
+                adapter.respondStreaming(1001L, List.of(), delta -> {}, RunCancellation.NEVER);
 
         assertThat(turn.text()).isEqualTo("你有 3 张订单。");
     }
@@ -229,7 +234,8 @@ class SpringAiAdapterTest {
         SpringAiAdapter adapter =
                 adapterOver(chunk("hello"), chunkWithUsage(" there", 12, 34), chunk(""));
 
-        AssistantTurn turn = adapter.respondStreaming(1001L, List.of(), delta -> {});
+        AssistantTurn turn =
+                adapter.respondStreaming(1001L, List.of(), delta -> {}, RunCancellation.NEVER);
 
         assertThat(turn.usage().promptTokens()).isEqualTo(12);
         assertThat(turn.usage().completionTokens()).isEqualTo(34);
@@ -240,11 +246,37 @@ class SpringAiAdapterTest {
     void streamedToolCallsSurviveATextlessFinishChunk() {
         SpringAiAdapter adapter = adapterOver(chunkWithToolCall(), chunk(""));
 
-        AssistantTurn turn = adapter.respondStreaming(1001L, List.of(), delta -> {});
+        AssistantTurn turn =
+                adapter.respondStreaming(1001L, List.of(), delta -> {}, RunCancellation.NEVER);
 
         assertThat(turn.toolCalls())
                 .extracting(ProposedToolCall::name)
                 .containsExactly("queryMyOrders");
+    }
+
+    /**
+     * 停止真的掐断上游（ADR-0012）：取消信号一翻，下一个 chunk 就被 {@code takeWhile} 拦下、上游订阅被取消， 已经吐出的散文作为半截 turn 随
+     * {@link RunCancelledException} 带出，交给上层落库。中止是"到下一个 chunk 为止"，但那个 chunk 之后再没有一个 token 会被读取或计费。
+     */
+    @Test
+    void aCancelledStreamAbortsAtTheNextChunkAndCarriesTheProseSoFar() {
+        AtomicBoolean cancelled = new AtomicBoolean(false);
+        SpringAiAdapter adapter = adapterOver(chunk("你"), chunk("好"), chunk("世界"));
+
+        // The stop arrives while the first delta is being delivered, exactly where a real one
+        // would.
+        RunCancelledException stopped =
+                catchThrowableOfType(
+                        () ->
+                                adapter.respondStreaming(
+                                        1001L,
+                                        List.of(),
+                                        delta -> cancelled.set(true),
+                                        cancelled::get),
+                        RunCancelledException.class);
+
+        assertThat(stopped).isNotNull();
+        assertThat(stopped.partial().text()).isEqualTo("你");
     }
 
     /** The whole ChatClient stream chain, stubbed at the seams {@code respondStreaming} touches. */

@@ -28,6 +28,7 @@ import com.example.ordermgt.assistant.domain.PendingActionRepository;
 import com.example.ordermgt.assistant.domain.ProposedToolCall;
 import com.example.ordermgt.assistant.domain.Role;
 import com.example.ordermgt.assistant.domain.Run;
+import com.example.ordermgt.assistant.domain.RunCancelledException;
 import com.example.ordermgt.assistant.domain.RunRepository;
 import com.example.ordermgt.assistant.domain.RunStatus;
 import com.example.ordermgt.assistant.domain.ToolRegistry;
@@ -280,6 +281,56 @@ class AssistantServiceTest {
         assertThat(runs.getAllValues().get(1).status()).isEqualTo(RunStatus.FAILED);
         assertThat(runs.getAllValues().get(1).error()).isEqualTo("上游模型超时");
         assertThat(runs.getAllValues().get(1).endedAt()).isNotNull();
+    }
+
+    /**
+     * 客户点了停止（ADR-0012）：半截文本作为一条普通 ASSISTANT 消息落库，Run 收 CANCELLED，审计记 CANCELLED， 异常继续往上抛好让流式端点以
+     * cancelled 帧收尾——这不是失败，不需要 error。
+     */
+    @Test
+    void aStoppedStreamingTurnKeepsTheHalfTextAndClosesTheRunCancelled() {
+        AssistantTurn partial = AssistantTurn.of("我准备好", List.of(), AiUsage.EMPTY);
+        ArgumentCaptor<Run> runs = ArgumentCaptor.forClass(Run.class);
+
+        assertThatThrownBy(
+                        () ->
+                                service.executeTurn(
+                                        context(),
+                                        run -> {},
+                                        () -> {
+                                            throw new RunCancelledException(partial);
+                                        }))
+                .isInstanceOf(RunCancelledException.class);
+
+        verify(conversationService).appendAssistantMessage(CONVERSATION, "我准备好");
+        verify(runRepository, times(2)).save(runs.capture());
+        assertThat(runs.getAllValues().get(0).status()).isEqualTo(RunStatus.RUNNING);
+        assertThat(runs.getAllValues().get(1).status()).isEqualTo(RunStatus.CANCELLED);
+        assertThat(runs.getAllValues().get(1).endedAt()).isNotNull();
+        ArgumentCaptor<AiInvocation> audits = ArgumentCaptor.forClass(AiInvocation.class);
+        verify(aiInvocationRepository).save(audits.capture());
+        assertThat(audits.getValue().outcome()).isEqualTo(AiInvocationOutcome.CANCELLED);
+    }
+
+    /** 停止发生在模型开口之前：没有半截可留，就不落一条空的助手消息，但 Run 与审计照旧。 */
+    @Test
+    void aStopBeforeAnyProseLeavesNoEmptyAssistantMessage() {
+        ArgumentCaptor<Run> runs = ArgumentCaptor.forClass(Run.class);
+
+        assertThatThrownBy(
+                        () ->
+                                service.executeTurn(
+                                        context(),
+                                        run -> {},
+                                        () -> {
+                                            throw new RunCancelledException(null);
+                                        }))
+                .isInstanceOf(RunCancelledException.class);
+
+        verify(conversationService, never()).appendAssistantMessage(any(), anyString());
+        verify(runRepository, times(2)).save(runs.capture());
+        assertThat(runs.getAllValues().get(1).status()).isEqualTo(RunStatus.CANCELLED);
+        verify(aiInvocationRepository).save(any());
     }
 
     /** 模型答了但回合收不了尾（白名单外工具）：Run 一样收 FAILED，原因落在行上。 */

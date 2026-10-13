@@ -314,4 +314,49 @@ describe('流式回复的客户端契约', () => {
     expect(url).toBe('/api/assistant/conversations/7/queue/q3')
     expect(init.method).toBe('DELETE')
   })
+
+  it('run 事件报上这一轮打开的 Run —— 停止按钮要的就是这个 id', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          streamResponse([frame('run', '{"runId":42}'), frame('done', JSON.stringify(DONE))]),
+        ),
+    )
+    const seen: number[] = []
+
+    await chatStream('你好', 7, { onToken: () => {}, onRun: (runId) => seen.push(runId) })
+
+    expect(seen).toEqual([42])
+  })
+
+  it('cancelled 是停止的结果而非失败：报上半截回复，并以 RUN_CANCELLED 收尾', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          streamResponse([frame('token', '我先说'), frame('cancelled', '{"reply":"我先说"}')]),
+        ),
+    )
+    const halves: string[] = []
+
+    await expect(
+      chatStream('你好', 7, { onToken: () => {}, onCancelled: (reply) => halves.push(reply) }),
+    ).rejects.toMatchObject({ code: 'RUN_CANCELLED' })
+
+    expect(halves).toEqual(['我先说'])
+  })
+
+  it('停一个 Run 是 POST 到这条会话的 run 停止端点', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(ok(null))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await api.stopRun(7, 42)
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('/api/assistant/conversations/7/runs/42/stop')
+    expect(init.method).toBe('POST')
+  })
 })

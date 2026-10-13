@@ -44,6 +44,8 @@ export interface Conversation {
   lastMessageAt: string | null
   status: ConversationStatus
   state: ConversationState
+  /** The Run under way when `state` is `RUNNING`; the handle a stop or a reattach needs (else null). */
+  runId: number | null
 }
 
 export interface ActionField {

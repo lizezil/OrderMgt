@@ -10,6 +10,7 @@ import com.example.ordermgt.assistant.application.AssistantService;
 import com.example.ordermgt.assistant.domain.AiAssistantPort;
 import com.example.ordermgt.assistant.domain.AssistantTurn;
 import com.example.ordermgt.assistant.domain.ChatMessage;
+import com.example.ordermgt.assistant.domain.RunCancellation;
 import com.example.ordermgt.assistant.infrastructure.ai.MockAiAdapter;
 import com.example.ordermgt.idempotency.application.IdempotencyGuard;
 import com.example.ordermgt.idempotency.domain.IdempotencyRecord;
@@ -90,9 +91,12 @@ class OrderConcurrencyTest {
 
                 @Override
                 public AssistantTurn respondStreaming(
-                        Long customerId, List<ChatMessage> memory, Consumer<String> onTextDelta) {
+                        Long customerId,
+                        List<ChatMessage> memory,
+                        Consumer<String> onTextDelta,
+                        RunCancellation cancellation) {
                     INVOCATIONS.incrementAndGet();
-                    return DELEGATE.respondStreaming(customerId, memory, onTextDelta);
+                    return DELEGATE.respondStreaming(customerId, memory, onTextDelta, cancellation);
                 }
             };
         }

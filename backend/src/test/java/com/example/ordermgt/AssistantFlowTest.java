@@ -15,6 +15,7 @@ import com.example.ordermgt.assistant.application.AssistantService;
 import com.example.ordermgt.assistant.domain.AiAssistantPort;
 import com.example.ordermgt.assistant.domain.AssistantTurn;
 import com.example.ordermgt.assistant.domain.ChatMessage;
+import com.example.ordermgt.assistant.domain.RunCancellation;
 import com.example.ordermgt.assistant.infrastructure.ai.MockAiAdapter;
 import com.example.ordermgt.assistant.infrastructure.persist.AiInvocationMapper;
 import com.example.ordermgt.assistant.infrastructure.persist.AiInvocationPO;
@@ -84,9 +85,12 @@ class AssistantFlowTest {
 
                 @Override
                 public AssistantTurn respondStreaming(
-                        Long customerId, List<ChatMessage> memory, Consumer<String> onTextDelta) {
+                        Long customerId,
+                        List<ChatMessage> memory,
+                        Consumer<String> onTextDelta,
+                        RunCancellation cancellation) {
                     INVOCATIONS.incrementAndGet();
-                    return DELEGATE.respondStreaming(customerId, memory, onTextDelta);
+                    return DELEGATE.respondStreaming(customerId, memory, onTextDelta, cancellation);
                 }
             };
         }
@@ -207,7 +211,9 @@ class AssistantFlowTest {
 
         AssistantService.TurnContext context =
                 assistantService.prepare(9700L, null, "help me order 3 GIZMO-03");
-        AssistantTurn turn = aiAssistantPort.respondStreaming(9700L, context.memory(), deltas::add);
+        AssistantTurn turn =
+                aiAssistantPort.respondStreaming(
+                        9700L, context.memory(), deltas::add, RunCancellation.NEVER);
         AssistantResult result = assistantService.complete(context, turn);
 
         assertThat(String.join("", deltas)).isEqualTo(turn.text());

@@ -4,5 +4,7 @@ package com.example.ordermgt.assistant.domain;
 public enum AiInvocationOutcome {
     OK,
     ERROR,
-    TIMEOUT
+    TIMEOUT,
+    /** The customer stopped the run mid-call; the upstream stream was aborted (ADR-0012). */
+    CANCELLED
 }

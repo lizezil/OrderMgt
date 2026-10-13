@@ -570,9 +570,17 @@ textarea {
 }
 
 .thinking {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   margin: 0 0 24px;
   color: var(--ink-faint);
   font-style: italic;
+}
+
+/* The stop control shares the "thinking" line but is not part of the aside's voice. */
+.thinking .btn {
+  font-style: normal;
 }
 
 .composer {
