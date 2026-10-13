@@ -9,6 +9,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.example.ordermgt.assistant.application.AssistantResult;
 import com.example.ordermgt.assistant.application.AssistantService;
+import com.example.ordermgt.assistant.application.RunReconciler;
 import com.example.ordermgt.assistant.domain.AiAssistantPort;
 import com.example.ordermgt.assistant.domain.AiInvocationOutcome;
 import com.example.ordermgt.assistant.domain.AiUpstreamException;
@@ -25,6 +26,7 @@ import java.util.List;
 import java.util.function.Consumer;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.DefaultApplicationArguments;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
@@ -94,6 +96,8 @@ class RunPersistenceTest {
     @Autowired private AssistantService assistantService;
 
     @Autowired private AiAssistantPort aiAssistantPort;
+
+    @Autowired private RunReconciler runReconciler;
 
     @Autowired private RunMapper runMapper;
 
@@ -172,6 +176,69 @@ class RunPersistenceTest {
                         get("/api/assistant/conversations")
                                 .header("X-Customer-Id", String.valueOf(customer)))
                 .andExpect(status().isOk());
+    }
+
+    /**
+     * 重启对账：启动那一刻不可能有活 Run，所以残留的 RUNNING 一定是上一个进程留下的；启动钩子一次性把它们 标成 INTERRUPTED 并补上 ended_at，让状态列说真话。
+     *
+     * <p>这里驱动的是 {@link RunReconciler} 真正的启动入口（{@code ApplicationRunner.run}），正是 Spring
+     * 启动时会调的那一下；「一次性、不是定时器」由 L2 的 {@code RunReconcilerTest} 钉住。
+     */
+    @Test
+    void aRunLeftRunningByAPreviousProcessIsInterruptedOnStartup() {
+        Long conversationId =
+                assistantService
+                        .chat(CUSTOMER + 20, null, "help me order 3 GIZMO-03")
+                        .conversationId();
+        runMapper.insert(runningRun(conversationId));
+        // 别的方法可能也留了 RUNNING 行（一个类只清一次 schema），所以断言「全部收尾」而非只看这一条。
+        assertThat(runningRuns()).isGreaterThanOrEqualTo(1);
+
+        runReconciler.run(new DefaultApplicationArguments());
+
+        assertThat(runningRuns()).isZero();
+        RunPO reconciled = interruptedRunOf(conversationId);
+        assertThat(reconciled.getEndedAt()).isNotNull();
+        assertThat(reconciled.getError()).isEqualTo(RunReconciler.INTERRUPTED_REASON);
+    }
+
+    /**
+     * 被中断的回合只能「重发一条全新的 Run」（ADR-0009 已否决断点续传）：重试不改写那条 INTERRUPTED， 而是把最后一条客户消息重新走一遍 prepare → 模型 →
+     * 落库，留下一行新的。
+     */
+    @Test
+    void retryingOpensANewRunAndLeavesTheInterruptedOneAlone() {
+        Long customer = CUSTOMER + 21;
+        Long conversationId =
+                assistantService.chat(customer, null, "help me order 3 GIZMO-03").conversationId();
+        // 跑到一半就没了的回合：客户消息已在 prepare 里落库，回复没有。
+        runMapper.insert(runningRun(conversationId));
+        runReconciler.run(new DefaultApplicationArguments());
+
+        RunPO interrupted = interruptedRunOf(conversationId);
+        Long interruptedId = interrupted.getId();
+        Instant interruptedEnd = interrupted.getEndedAt();
+
+        // 重试 = 把最后一条客户消息作为全新的一轮重发。
+        assistantService.chat(customer, conversationId, "help me order 3 GIZMO-03");
+
+        RunPO untouched = runMapper.selectById(interruptedId);
+        assertThat(untouched.getStatus()).isEqualTo("INTERRUPTED");
+        assertThat(untouched.getEndedAt()).isEqualTo(interruptedEnd);
+        assertThat(runsOf(conversationId))
+                .extracting(RunPO::getStatus)
+                .containsExactlyInAnyOrder("COMPLETED", "INTERRUPTED", "COMPLETED");
+    }
+
+    private long runningRuns() {
+        return runMapper.selectCount(Wrappers.<RunPO>lambdaQuery().eq(RunPO::getStatus, "RUNNING"));
+    }
+
+    private RunPO interruptedRunOf(Long conversationId) {
+        return runsOf(conversationId).stream()
+                .filter(run -> "INTERRUPTED".equals(run.getStatus()))
+                .findFirst()
+                .orElseThrow();
     }
 
     private List<RunPO> runsOf(Long conversationId) {

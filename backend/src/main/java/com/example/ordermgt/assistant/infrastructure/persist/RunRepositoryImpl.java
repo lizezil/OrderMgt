@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.example.ordermgt.assistant.domain.Run;
 import com.example.ordermgt.assistant.domain.RunRepository;
 import com.example.ordermgt.assistant.domain.RunStatus;
+import java.time.Instant;
 import java.util.Collection;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -42,5 +43,19 @@ public class RunRepositoryImpl implements RunRepository {
                 .stream()
                 .map(RunPO::getConversationId)
                 .collect(Collectors.toSet());
+    }
+
+    @Override
+    public int interruptRunning(String reason, Instant at) {
+        // The RUNNING predicate in the WHERE clause is the invariant, applied atomically: no row is
+        // read first, so nothing can slip between a read and the write. Nothing outside RUNNING is
+        // touched -- a terminal row is already the truth and must not be rewritten.
+        return runMapper.update(
+                null,
+                Wrappers.<RunPO>lambdaUpdate()
+                        .eq(RunPO::getStatus, RunStatus.RUNNING.name())
+                        .set(RunPO::getStatus, RunStatus.INTERRUPTED.name())
+                        .set(RunPO::getError, reason)
+                        .set(RunPO::getEndedAt, at));
     }
 }

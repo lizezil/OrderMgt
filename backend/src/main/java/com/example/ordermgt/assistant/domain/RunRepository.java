@@ -1,5 +1,6 @@
 package com.example.ordermgt.assistant.domain;
 
+import java.time.Instant;
 import java.util.Collection;
 import java.util.Set;
 
@@ -13,4 +14,13 @@ public interface RunRepository {
 
     /** Which of {@code conversationIds} have a RUNNING run right now, in one query. */
     Set<Long> runningConversationIds(Collection<Long> conversationIds);
+
+    /**
+     * Closes every Run still marked RUNNING as INTERRUPTED, recording why and when (ADR-0011). No
+     * living process can be behind such a row -- that is exactly what startup reconciliation
+     * asserts. One statement for the whole table, not a row-by-row fixup.
+     *
+     * @return how many rows were interrupted
+     */
+    int interruptRunning(String reason, Instant at);
 }
