@@ -40,11 +40,16 @@ public class ActionConfirmationService {
             case CONFIRMED -> {
                 return replayed(action);
             }
-            case REJECTED -> throw new BusinessException(ErrorCode.CONFLICT, "该操作已被拒绝，无法确认");
-            case EXPIRED -> throw new BusinessException(ErrorCode.ACTION_EXPIRED, "该待确认操作已过期");
+            case REJECTED ->
+                    throw new BusinessException(
+                            ErrorCode.CONFLICT, "the pending action has already been rejected");
+            case EXPIRED ->
+                    throw new BusinessException(
+                            ErrorCode.ACTION_EXPIRED, "the pending action has expired");
             case PENDING -> {
                 if (action.isExpiredAt(now)) {
-                    throw new BusinessException(ErrorCode.ACTION_EXPIRED, "该待确认操作已过期");
+                    throw new BusinessException(
+                            ErrorCode.ACTION_EXPIRED, "the pending action has expired");
                 }
             }
         }
@@ -57,7 +62,8 @@ public class ActionConfirmationService {
                                 () ->
                                         new BusinessException(
                                                 ErrorCode.INTERNAL_ERROR,
-                                                "待确认操作指向了非变更工具: " + action.getToolName()));
+                                                "pending action points at a non-mutating tool: "
+                                                        + action.getToolName()));
 
         ToolResult result = spec.handler().execute(customerId, action.getArgumentsJson());
         action.resolve(PendingActionStatus.CONFIRMED, result.ref(), now);
@@ -75,11 +81,16 @@ public class ActionConfirmationService {
             case REJECTED -> {
                 return replayed(action);
             }
-            case CONFIRMED -> throw new BusinessException(ErrorCode.CONFLICT, "该操作已确认，无法拒绝");
-            case EXPIRED -> throw new BusinessException(ErrorCode.ACTION_EXPIRED, "该待确认操作已过期");
+            case CONFIRMED ->
+                    throw new BusinessException(
+                            ErrorCode.CONFLICT, "the pending action has already been confirmed");
+            case EXPIRED ->
+                    throw new BusinessException(
+                            ErrorCode.ACTION_EXPIRED, "the pending action has expired");
             case PENDING -> {
                 if (action.isExpiredAt(Instant.now())) {
-                    throw new BusinessException(ErrorCode.ACTION_EXPIRED, "该待确认操作已过期");
+                    throw new BusinessException(
+                            ErrorCode.ACTION_EXPIRED, "the pending action has expired");
                 }
             }
         }
@@ -106,11 +117,15 @@ public class ActionConfirmationService {
         PendingAction action =
                 pendingActionRepository
                         .lockByToken(token)
-                        .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "待确认操作不存在"));
+                        .orElseThrow(
+                                () ->
+                                        new BusinessException(
+                                                ErrorCode.NOT_FOUND, "pending action not found"));
         // Someone else's token is reported as absent to the caller, but we keep the
         // distinct error internally so logs show what actually happened.
         if (!action.isOwnedBy(customerId)) {
-            throw new BusinessException(ErrorCode.FORBIDDEN, "无权操作该待确认项");
+            throw new BusinessException(
+                    ErrorCode.FORBIDDEN, "access to this pending action is forbidden");
         }
         return action;
     }

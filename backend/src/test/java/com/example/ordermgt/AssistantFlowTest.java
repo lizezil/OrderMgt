@@ -126,7 +126,7 @@ class AssistantFlowTest {
     @Test
     void everyModelCallIsWrittenToTheAuditTable() {
         Long customer = OWNER + 5;
-        assistantService.chat(customer, null, "帮我下单 3 个 GIZMO-03");
+        assistantService.chat(customer, null, "help me order 3 GIZMO-03");
 
         List<AiInvocationPO> rows =
                 aiInvocationMapper.selectList(
@@ -195,7 +195,7 @@ class AssistantFlowTest {
         List<String> deltas = new ArrayList<>();
 
         AssistantService.TurnContext context =
-                assistantService.prepare(9700L, null, "帮我下单 3 个 GIZMO-03");
+                assistantService.prepare(9700L, null, "help me order 3 GIZMO-03");
         AssistantTurn turn = aiAssistantPort.respondStreaming(9700L, context.memory(), deltas::add);
         AssistantResult result = assistantService.complete(context, turn);
 
@@ -208,11 +208,11 @@ class AssistantFlowTest {
 
     @Test
     void nothingIsCreatedUntilTheCustomerConfirms() {
-        AssistantResult proposal = assistantService.chat(OWNER, null, "帮我下单 3 个 GIZMO-03");
+        AssistantResult proposal = assistantService.chat(OWNER, null, "help me order 3 GIZMO-03");
 
         assertThat(proposal.actions()).hasSize(1);
         assertThat(proposal.actions().get(0).status()).isEqualTo("PENDING");
-        assertThat(proposal.actions().get(0).summary()).isEqualTo("创建订单：GIZMO-03 × 3");
+        assertThat(proposal.actions().get(0).summary()).isEqualTo("Place order: GIZMO-03 × 3");
         // The proposal is inert: the handler was never reached.
         assertThat(orderService.listByCustomer(OWNER, 1, 20).total()).isZero();
 
@@ -236,7 +236,8 @@ class AssistantFlowTest {
 
     @Test
     void confirmingTwiceAppliesTheChangeOnce() {
-        AssistantResult proposal = assistantService.chat(OWNER + 1, null, "帮我下单 3 个 GIZMO-03");
+        AssistantResult proposal =
+                assistantService.chat(OWNER + 1, null, "help me order 3 GIZMO-03");
         String token = proposal.actions().get(0).token();
 
         actionConfirmationService.confirm(OWNER + 1, token);
@@ -248,7 +249,8 @@ class AssistantFlowTest {
 
     @Test
     void aStrangerCannotConfirm() {
-        AssistantResult proposal = assistantService.chat(OWNER + 2, null, "帮我下单 3 个 GIZMO-03");
+        AssistantResult proposal =
+                assistantService.chat(OWNER + 2, null, "help me order 3 GIZMO-03");
         String token = proposal.actions().get(0).token();
 
         assertThatThrownBy(() -> actionConfirmationService.confirm(OWNER + 3, token))
@@ -260,7 +262,8 @@ class AssistantFlowTest {
 
     @Test
     void rejectingLeavesTheDataAlone() {
-        AssistantResult proposal = assistantService.chat(OWNER + 4, null, "帮我下单 3 个 GIZMO-03");
+        AssistantResult proposal =
+                assistantService.chat(OWNER + 4, null, "help me order 3 GIZMO-03");
         ActionResolution rejection =
                 actionConfirmationService.reject(OWNER + 4, proposal.actions().get(0).token());
 
@@ -271,7 +274,7 @@ class AssistantFlowTest {
     @Test
     void aRetriedChatDoesNotCallTheModelTwice() throws Exception {
         int before = StubAiConfiguration.INVOCATIONS.get();
-        String body = "{\"message\":\"帮我下单 3 个 GIZMO-03\"}";
+        String body = "{\"message\":\"help me order 3 GIZMO-03\"}";
 
         MvcResult first =
                 mockMvc.perform(

@@ -98,10 +98,10 @@ public class ActionCardFactory {
         try {
             root = objectMapper.readTree(argumentsJson);
         } catch (Exception ex) {
-            return List.of(new ActionCard.Field("参数", argumentsJson));
+            return List.of(new ActionCard.Field("Arguments", argumentsJson));
         }
         if (!root.isObject()) {
-            return List.of(new ActionCard.Field("参数", argumentsJson));
+            return List.of(new ActionCard.Field("Arguments", argumentsJson));
         }
         List<ActionCard.Field> fields = new ArrayList<>();
         Iterator<Map.Entry<String, JsonNode>> entries = root.fields();

@@ -45,9 +45,12 @@ class ActionConfirmationServiceTest {
                         List.of(
                                 ToolSpec.mutating(
                                         "createOrder",
-                                        "创建订单",
+                                        "Place order",
                                         "{}",
-                                        new ToolCard("创建订单", args -> "创建订单", args -> List.of()),
+                                        new ToolCard(
+                                                "Place Order",
+                                                args -> "Place order",
+                                                args -> List.of()),
                                         (customerId, args) -> {
                                             executions.incrementAndGet();
                                             return ToolResult.of(
@@ -55,7 +58,7 @@ class ActionConfirmationServiceTest {
                                         }),
                                 ToolSpec.readonly(
                                         "queryMyOrders",
-                                        "查询订单",
+                                        "Query orders",
                                         "{}",
                                         (customerId, args) -> ToolResult.of("[]"))));
         service = new ActionConfirmationService(repository, registry);
@@ -105,7 +108,7 @@ class ActionConfirmationServiceTest {
     void anExpiredActionIsNeverExecuted() {
         PendingAction action =
                 PendingAction.propose(
-                        OWNER, 7L, "createOrder", "{}", "创建订单", Duration.ofMinutes(-1));
+                        OWNER, 7L, "createOrder", "{}", "Place order", Duration.ofMinutes(-1));
         when(repository.lockByToken(action.getToken())).thenReturn(Optional.of(action));
 
         assertThatThrownBy(() -> service.confirm(OWNER, action.getToken()))
@@ -136,7 +139,7 @@ class ActionConfirmationServiceTest {
                         null,
                         "queryMyOrders",
                         "{}",
-                        "查询订单",
+                        "Query orders",
                         PendingActionStatus.PENDING,
                         Instant.now().plusSeconds(60),
                         null,
@@ -181,7 +184,7 @@ class ActionConfirmationServiceTest {
                 7L,
                 "createOrder",
                 "{\"lines\":[{\"sku\":\"GIZMO-03\",\"quantity\":3}]}",
-                "创建订单：GIZMO-03 × 3",
+                "Place order: GIZMO-03 × 3",
                 Duration.ofMinutes(15));
     }
 }

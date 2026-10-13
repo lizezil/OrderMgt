@@ -11,26 +11,26 @@ class ConversationTest {
     void theFirstCustomerMessageNamesTheConversation() {
         Conversation conversation = Conversation.start(1001L);
 
-        conversation.titleFrom("  我有哪些   订单？ ");
+        conversation.titleFrom("  what   orders do I have? ");
 
-        assertThat(conversation.getTitle()).isEqualTo("我有哪些 订单？");
+        assertThat(conversation.getTitle()).isEqualTo("what orders do I have?");
     }
 
     @Test
     void aLaterMessageDoesNotRenameIt() {
         Conversation conversation = Conversation.start(1001L);
-        conversation.titleFrom("第一句");
+        conversation.titleFrom("first sentence");
 
-        conversation.titleFrom("第二句");
+        conversation.titleFrom("second sentence");
 
-        assertThat(conversation.getTitle()).isEqualTo("第一句");
+        assertThat(conversation.getTitle()).isEqualTo("first sentence");
     }
 
     @Test
     void longTitlesAreTruncated() {
         Conversation conversation = Conversation.start(1001L);
 
-        conversation.titleFrom("一".repeat(100));
+        conversation.titleFrom("a".repeat(100));
 
         assertThat(conversation.getTitle()).hasSize(Conversation.TITLE_MAX + 1);
         assertThat(conversation.getTitle()).endsWith("…");

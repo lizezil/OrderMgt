@@ -49,7 +49,7 @@ class OrderServiceTest {
     }
 
     @Test
-    void 下单金额完全由目录价决定() {
+    void orderTotalComesEntirelyFromCatalogPrices() {
         when(catalogRepository.findBySku("WIDGET-01"))
                 .thenReturn(Optional.of(item("WIDGET-01", "Widget", "19.90", true)));
         when(orderRepository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
@@ -68,7 +68,7 @@ class OrderServiceTest {
     }
 
     @Test
-    void 多行订单的总额是各行目录价合计() {
+    void multiLineOrderTotalSumsCatalogPricesOfAllLines() {
         when(catalogRepository.findBySku("GADGET-02"))
                 .thenReturn(Optional.of(item("GADGET-02", "Gadget", "49.50", true)));
         when(catalogRepository.findBySku("THING-05"))
@@ -85,7 +85,7 @@ class OrderServiceTest {
     }
 
     @Test
-    void 未知商品不能下单() {
+    void unknownItemCannotBeOrdered() {
         when(catalogRepository.findBySku("NOPE-99")).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> service.createOrder(1001L, List.of(new LineCommand("NOPE-99", 1))))
@@ -96,7 +96,7 @@ class OrderServiceTest {
     }
 
     @Test
-    void 已下架商品不能下单() {
+    void inactiveItemCannotBeOrdered() {
         when(catalogRepository.findBySku("WIDGET-01"))
                 .thenReturn(Optional.of(item("WIDGET-01", "Widget", "19.90", false)));
 
@@ -109,7 +109,7 @@ class OrderServiceTest {
     }
 
     @Test
-    void 订单至少要有一行商品() {
+    void orderRequiresAtLeastOneLine() {
         assertThatThrownBy(() -> service.createOrder(1001L, List.of()))
                 .isInstanceOf(BusinessException.class)
                 .extracting(e -> ((BusinessException) e).errorCode())
@@ -121,7 +121,7 @@ class OrderServiceTest {
     }
 
     @Test
-    void 数量非正的行不能落单() {
+    void nonPositiveQuantityLineIsRejected() {
         when(catalogRepository.findBySku("WIDGET-01"))
                 .thenReturn(Optional.of(item("WIDGET-01", "Widget", "19.90", true)));
 
@@ -134,7 +134,7 @@ class OrderServiceTest {
     }
 
     @Test
-    void 列表只查当前客户的订单() {
+    void listOnlyQueriesTheCurrentCustomersOrders() {
         when(orderRepository.findByCustomer(eq(7L), anyLong(), anyLong())).thenReturn(List.of());
         when(orderRepository.countByCustomer(7L)).thenReturn(0L);
 
@@ -144,7 +144,7 @@ class OrderServiceTest {
     }
 
     @Test
-    void 非法的分页参数被收窄回安全值() {
+    void invalidPagingParamsAreClampedToSafeValues() {
         when(orderRepository.findByCustomer(eq(7L), anyLong(), anyLong())).thenReturn(List.of());
         when(orderRepository.countByCustomer(7L)).thenReturn(0L);
 
@@ -156,7 +156,7 @@ class OrderServiceTest {
     }
 
     @Test
-    void 查看他人订单被拒绝() {
+    void viewingAnotherCustomersOrderIsForbidden() {
         when(orderRepository.findByNumber(any())).thenReturn(Optional.of(order(2002L, "ORD-1")));
 
         assertThatThrownBy(() -> service.getByNumber(1001L, "ORD-1"))
@@ -166,7 +166,7 @@ class OrderServiceTest {
     }
 
     @Test
-    void 不存在的订单返回未找到() {
+    void missingOrderReturnsNotFound() {
         when(orderRepository.findByNumber(any())).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> service.getByNumber(1001L, "ORD-404"))
@@ -176,7 +176,7 @@ class OrderServiceTest {
     }
 
     @Test
-    void 已创建的订单可以取消() {
+    void createdOrderCanBeCancelled() {
         when(orderRepository.findByNumber(any()))
                 .thenReturn(Optional.of(order(1001L, "ORD-1", OrderStatus.CREATED)));
         when(orderRepository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
@@ -186,7 +186,7 @@ class OrderServiceTest {
     }
 
     @Test
-    void 已完成或已取消的订单不能再变更() {
+    void completedOrCancelledOrderCannotChangeStatus() {
         when(orderRepository.findByNumber(any()))
                 .thenReturn(Optional.of(order(1001L, "ORD-9", OrderStatus.COMPLETED)));
 
@@ -198,7 +198,7 @@ class OrderServiceTest {
     }
 
     @Test
-    void 不能把订单改回原状态() {
+    void orderCannotBeChangedBackToItsCurrentStatus() {
         when(orderRepository.findByNumber(any()))
                 .thenReturn(Optional.of(order(1001L, "ORD-1", OrderStatus.CREATED)));
 

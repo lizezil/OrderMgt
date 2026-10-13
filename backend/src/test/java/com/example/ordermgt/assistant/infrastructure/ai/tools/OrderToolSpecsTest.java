@@ -54,7 +54,7 @@ class OrderToolSpecsTest {
     }
 
     @Test
-    void createOrder只把商品与数量交给服务端定价() {
+    void createOrderPassesOnlySkuAndQuantityForServerSidePricing() {
         when(orderService.createOrder(eq(CUSTOMER), anyList()))
                 .thenReturn(order(OrderStatus.CREATED));
 
@@ -71,7 +71,7 @@ class OrderToolSpecsTest {
     }
 
     @Test
-    void createOrder缺少数量时被拒绝() {
+    void createOrderRejectsMissingQuantity() {
         assertThatThrownBy(() -> execute("createOrder", "{\"lines\":[{\"sku\":\"GIZMO-03\"}]}"))
                 .isInstanceOf(BusinessException.class)
                 .extracting(e -> ((BusinessException) e).errorCode())
@@ -79,7 +79,7 @@ class OrderToolSpecsTest {
     }
 
     @Test
-    void cancelOrder走状态机把它改成已取消() {
+    void cancelOrderUsesStateMachineToCancel() {
         when(orderService.changeStatus(CUSTOMER, "ORD-1", OrderStatus.CANCELLED))
                 .thenReturn(order(OrderStatus.CANCELLED));
 
@@ -90,7 +90,7 @@ class OrderToolSpecsTest {
     }
 
     @Test
-    void updateOrderStatus把合法目标状态交给状态机() {
+    void updateOrderStatusPassesValidTargetStatusToStateMachine() {
         when(orderService.changeStatus(CUSTOMER, "ORD-1", OrderStatus.COMPLETED))
                 .thenReturn(order(OrderStatus.COMPLETED));
 
@@ -100,7 +100,7 @@ class OrderToolSpecsTest {
     }
 
     @Test
-    void updateOrderStatus收到非法目标状态时拒绝为参数错误() {
+    void updateOrderStatusRejectsInvalidTargetStatusAsParameterError() {
         // 模型可以无视 schema 的 enum：服务端必须把不认识的枚举值挡成 400，而不是让它变成一次 500。
         assertThatThrownBy(
                         () ->
@@ -113,7 +113,7 @@ class OrderToolSpecsTest {
     }
 
     @Test
-    void queryMyOrders只返回当前客户的订单摘要() {
+    void queryMyOrdersReturnsOnlyCurrentCustomerOrderSummaries() {
         when(orderService.listByCustomer(CUSTOMER, 1, 20))
                 .thenReturn(PageResult.of(List.of(order(OrderStatus.CREATED)), 1, 1, 20));
 
@@ -124,7 +124,7 @@ class OrderToolSpecsTest {
     }
 
     @Test
-    void getOrderByNumber缺少单号时被拒绝() {
+    void getOrderByNumberRejectsMissingOrderNumber() {
         assertThatThrownBy(() -> execute("getOrderByNumber", "{}"))
                 .isInstanceOf(BusinessException.class)
                 .extracting(e -> ((BusinessException) e).errorCode())

@@ -20,13 +20,13 @@ class OrderTest {
     private static final BigDecimal GIZMO_PRICE = new BigDecimal("5.00");
 
     @Test
-    void 订单必须属于一位客户() {
+    void orderMustBelongToACustomer() {
         assertThatThrownBy(() -> Order.create(null, List.of(widget(1))))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
-    void 订单至少需要一行商品() {
+    void orderNeedsAtLeastOneLine() {
         assertThatThrownBy(() -> Order.create(1001L, List.of()))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> Order.create(1001L, null))
@@ -34,7 +34,7 @@ class OrderTest {
     }
 
     @Test
-    void 新订单初始为已创建且带有可读单号() {
+    void newOrderStartsAsCreatedWithReadableOrderNumber() {
         Order order = Order.create(1001L, List.of(widget(1)));
 
         assertThat(order.getStatus()).isEqualTo(OrderStatus.CREATED);
@@ -43,7 +43,7 @@ class OrderTest {
     }
 
     @Test
-    void 订单总额等于各行金额之和() {
+    void orderTotalEqualsSumOfLineAmounts() {
         Order order =
                 Order.create(
                         1001L,
@@ -57,14 +57,14 @@ class OrderTest {
     }
 
     @Test
-    void 行金额等于单价乘以数量() {
+    void lineAmountEqualsUnitPriceTimesQuantity() {
         OrderLine line = OrderLine.of("WIDGET-01", "Widget", 3, WIDGET_PRICE);
 
         assertThat(line.lineAmount().amount()).isEqualByComparingTo("59.70");
     }
 
     @Test
-    void 商品行的数量必须为正且必须有商品编号() {
+    void orderLineNeedsPositiveQuantityAndSku() {
         assertThatThrownBy(() -> OrderLine.of("WIDGET-01", "Widget", 0, WIDGET_PRICE))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> OrderLine.of("WIDGET-01", "Widget", -1, WIDGET_PRICE))
@@ -74,7 +74,7 @@ class OrderTest {
     }
 
     @Test
-    void 已创建的订单可以完成或取消() {
+    void createdOrderCanBeCompletedOrCancelled() {
         Order order = Order.create(1001L, List.of(widget(1)));
 
         assertThat(order.canTransitionTo(OrderStatus.COMPLETED)).isTrue();
@@ -82,7 +82,7 @@ class OrderTest {
     }
 
     @Test
-    void 完成或取消之后订单不再可变更() {
+    void orderInTerminalStateCannotTransitionAgain() {
         Order completed = Order.create(1001L, List.of(widget(1)));
         completed.transitionTo(OrderStatus.COMPLETED);
 
@@ -97,14 +97,14 @@ class OrderTest {
     }
 
     @Test
-    void 订单不能停留在原状态() {
+    void orderCannotStayInItsCurrentStatus() {
         Order order = Order.create(1001L, List.of(widget(1)));
 
         assertThat(order.canTransitionTo(OrderStatus.CREATED)).isFalse();
     }
 
     @Test
-    void 合法流转会改变状态并记录更新时间() {
+    void legalTransitionChangesStatusAndTouchesUpdatedAt() {
         Order order = Order.create(1001L, List.of(widget(1)));
         Instant before = order.getUpdatedAt();
 

@@ -16,34 +16,34 @@ class ToolWhitelistTest {
     private static final ToolHandler NOOP = (customerId, args) -> ToolResult.of("{}");
 
     private static ToolCard card() {
-        return new ToolCard("创建订单", args -> "创建订单", args -> List.of());
+        return new ToolCard("Place Order", args -> "Place order", args -> List.of());
     }
 
     @Test
     void mutatingToolWithoutACardIsRejected() {
-        assertThatThrownBy(() -> ToolSpec.mutating("createOrder", "创建订单", "{}", null, NOOP))
+        assertThatThrownBy(() -> ToolSpec.mutating("createOrder", "Place order", "{}", null, NOOP))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
     void readonlyToolMustNotCarryACard() {
-        assertThatThrownBy(() -> new ToolSpec("queryMyOrders", "查询", "{}", false, NOOP, card()))
+        assertThatThrownBy(() -> new ToolSpec("queryMyOrders", "Query", "{}", false, NOOP, card()))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
     void toolNameAndSchemaAndHandlerAreMandatory() {
-        assertThatThrownBy(() -> ToolSpec.readonly(null, "查询", "{}", NOOP))
+        assertThatThrownBy(() -> ToolSpec.readonly(null, "Query", "{}", NOOP))
                 .isInstanceOf(NullPointerException.class);
-        assertThatThrownBy(() -> ToolSpec.readonly("queryMyOrders", "查询", null, NOOP))
+        assertThatThrownBy(() -> ToolSpec.readonly("queryMyOrders", "Query", null, NOOP))
                 .isInstanceOf(NullPointerException.class);
-        assertThatThrownBy(() -> ToolSpec.readonly("queryMyOrders", "查询", "{}", null))
+        assertThatThrownBy(() -> ToolSpec.readonly("queryMyOrders", "Query", "{}", null))
                 .isInstanceOf(NullPointerException.class);
     }
 
     @Test
     void theRegistryOnlyAnswersForRegisteredTools() {
-        ToolSpec query = ToolSpec.readonly("queryMyOrders", "查询", "{}", NOOP);
+        ToolSpec query = ToolSpec.readonly("queryMyOrders", "Query", "{}", NOOP);
         ToolRegistry registry = new ToolRegistry(List.of(query));
 
         assertThat(registry.find("queryMyOrders")).contains(query);
@@ -54,7 +54,7 @@ class ToolWhitelistTest {
 
     @Test
     void aReadonlyToolHasNoSummaryOfItsOwn() {
-        ToolSpec query = ToolSpec.readonly("queryMyOrders", "查询", "{}", NOOP);
+        ToolSpec query = ToolSpec.readonly("queryMyOrders", "Query", "{}", NOOP);
 
         assertThat(query.summarise("{}")).isEqualTo("queryMyOrders");
     }

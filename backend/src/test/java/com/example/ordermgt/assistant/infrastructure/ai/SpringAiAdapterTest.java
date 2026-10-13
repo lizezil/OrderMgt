@@ -18,13 +18,13 @@ import org.springframework.web.client.ResourceAccessException;
 class SpringAiAdapterTest {
 
     @Test
-    void JDK客户端的读超时记成TIMEOUT而不是ERROR() {
+    void jdkClientReadTimeoutIsRecordedAsTimeoutNotError() {
         assertThat(SpringAiAdapter.outcomeOf(new SocketTimeoutException("Read timed out")))
                 .isEqualTo(AiInvocationOutcome.TIMEOUT);
     }
 
     @Test
-    void Spring把读超时包进ResourceAccessException后仍记成TIMEOUT() {
+    void readTimeoutWrappedInResourceAccessExceptionStillRecordedAsTimeout() {
         IOException readTimeout = new SocketTimeoutException("connect timed out");
         assertThat(
                         SpringAiAdapter.outcomeOf(
@@ -33,19 +33,19 @@ class SpringAiAdapterTest {
     }
 
     @Test
-    void 请求头超时的HttpTimeoutException也记成TIMEOUT() {
+    void headerTimeoutHttpTimeoutExceptionIsAlsoRecordedAsTimeout() {
         assertThat(SpringAiAdapter.outcomeOf(new HttpTimeoutException("request timed out")))
                 .isEqualTo(AiInvocationOutcome.TIMEOUT);
     }
 
     @Test
-    void 流式的Reactor超时包在IllegalStateException里仍记成TIMEOUT() {
+    void reactorStreamingTimeoutWrappedInIllegalStateExceptionStillRecordedAsTimeout() {
         RuntimeException wrapped = new IllegalStateException(new TimeoutException("Flux timeout"));
         assertThat(SpringAiAdapter.outcomeOf(wrapped)).isEqualTo(AiInvocationOutcome.TIMEOUT);
     }
 
     @Test
-    void 非超时的上游故障记成ERROR() {
+    void nonTimeoutUpstreamFailureIsRecordedAsError() {
         assertThat(SpringAiAdapter.outcomeOf(new RuntimeException("connection refused")))
                 .isEqualTo(AiInvocationOutcome.ERROR);
     }

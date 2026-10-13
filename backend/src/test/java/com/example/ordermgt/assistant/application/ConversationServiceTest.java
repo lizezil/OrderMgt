@@ -55,7 +55,7 @@ class ConversationServiceTest {
     }
 
     @Test
-    void 访问不存在的会话返回未找到() {
+    void accessingNonexistentConversationReturnsNotFound() {
         when(conversationRepository.findById(CONVERSATION)).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> service.getOwned(OWNER, CONVERSATION))
@@ -65,7 +65,7 @@ class ConversationServiceTest {
     }
 
     @Test
-    void 访问他人的会话被拒绝() {
+    void accessingSomeoneElsesConversationIsRejected() {
         when(conversationRepository.findById(CONVERSATION))
                 .thenReturn(Optional.of(conversation(STRANGER)));
 
@@ -76,7 +76,7 @@ class ConversationServiceTest {
     }
 
     @Test
-    void 第一条客户消息成为会话标题并刷新时间() {
+    void firstCustomerMessageBecomesTitleAndRefreshesTimestamp() {
         Conversation conversation = untitledConversation(OWNER);
         when(conversationRepository.findById(CONVERSATION)).thenReturn(Optional.of(conversation));
         when(conversationRepository.save(any()))
@@ -84,42 +84,45 @@ class ConversationServiceTest {
         when(conversationRepository.append(any()))
                 .thenAnswer(invocation -> invocation.getArgument(0));
 
-        Message message = service.appendCustomerMessage(OWNER, CONVERSATION, "  我有哪些   订单？ ");
+        Message message =
+                service.appendCustomerMessage(OWNER, CONVERSATION, "  what   orders do I have? ");
 
-        assertThat(conversation.getTitle()).isEqualTo("我有哪些 订单？");
+        assertThat(conversation.getTitle()).isEqualTo("what orders do I have?");
         assertThat(message.role()).isEqualTo(Role.CUSTOMER);
         verify(conversationRepository).save(conversation);
     }
 
     @Test
-    void 记忆窗口只取最近若干条并按顺序交给模型() {
+    void memoryWindowTakesOnlyRecentMessagesInOrder() {
         Instant now = Instant.now();
         when(conversationRepository.findRecentMessages(CONVERSATION, 2))
                 .thenReturn(
                         List.of(
-                                Message.customer(CONVERSATION, "第一句", now),
-                                Message.assistant(CONVERSATION, "第二句", now)));
+                                Message.customer(CONVERSATION, "first sentence", now),
+                                Message.assistant(CONVERSATION, "second sentence", now)));
 
         List<ChatMessage> memory = service.memory(CONVERSATION, 2);
 
         assertThat(memory)
                 .extracting(ChatMessage::role)
                 .containsExactly(Role.CUSTOMER, Role.ASSISTANT);
-        assertThat(memory).extracting(ChatMessage::content).containsExactly("第一句", "第二句");
+        assertThat(memory)
+                .extracting(ChatMessage::content)
+                .containsExactly("first sentence", "second sentence");
         verify(conversationRepository).findRecentMessages(CONVERSATION, 2);
     }
 
     @Test
-    void 历史回填把卡片解析成它当前的状态() {
+    void historyResolvesCardToItsCurrentState() {
         Instant now = Instant.now();
         when(conversationRepository.findById(CONVERSATION))
                 .thenReturn(Optional.of(conversation(OWNER)));
         when(conversationRepository.findAllMessages(CONVERSATION))
                 .thenReturn(
                         List.of(
-                                Message.customer(CONVERSATION, "帮我下单", now),
+                                Message.customer(CONVERSATION, "help me order", now),
                                 Message.assistantWithAction(
-                                        CONVERSATION, "创建订单：GIZMO-03 × 3", 9L, now)));
+                                        CONVERSATION, "Place order: GIZMO-03 × 3", 9L, now)));
         when(pendingActionRepository.findByIdIn(List.of(9L)))
                 .thenReturn(List.of(pendingAction(PendingActionStatus.CONFIRMED)));
 
@@ -134,7 +137,7 @@ class ConversationServiceTest {
 
     private static Conversation conversation(Long customerId) {
         Instant now = Instant.now();
-        return Conversation.rehydrate(CONVERSATION, customerId, "标题", now, now, now);
+        return Conversation.rehydrate(CONVERSATION, customerId, "title", now, now, now);
     }
 
     private static Conversation untitledConversation(Long customerId) {
@@ -152,7 +155,7 @@ class ConversationServiceTest {
                 null,
                 "createOrder",
                 "{\"lines\":[{\"sku\":\"GIZMO-03\",\"quantity\":3}]}",
-                "创建订单：GIZMO-03 × 3",
+                "Place order: GIZMO-03 × 3",
                 status,
                 now.plusSeconds(600),
                 now,

@@ -156,7 +156,7 @@ class OrderAssistantBusinessFlowTest {
     }
 
     @Test
-    void 目录里的商品与单价是下单的唯一价格来源() throws Exception {
+    void catalogItemsAndUnitPricesAreTheSolePriceSourceForOrders() throws Exception {
         List<CatalogItem> items = catalogRepository.findAllActive();
 
         assertThat(items).hasSize(5);
@@ -175,7 +175,7 @@ class OrderAssistantBusinessFlowTest {
     }
 
     @Test
-    void 下单金额只认目录价请求里塞的价格被忽略() throws Exception {
+    void orderAmountOnlyCountsCatalogPriceAndIgnoresRequestPrice() throws Exception {
         long customer = newCustomer();
         String body =
                 "{\"lines\":[{\"sku\":\"WIDGET-01\",\"quantity\":2,\"unitPrice\":0.01,\"lineAmount\":0.02}]}";
@@ -191,7 +191,7 @@ class OrderAssistantBusinessFlowTest {
     }
 
     @Test
-    void 多行订单的总额等于各行目录价合计() throws Exception {
+    void multiLineOrderTotalEqualsSumOfLineCatalogPrices() throws Exception {
         long customer = newCustomer();
 
         mockMvc.perform(
@@ -206,7 +206,7 @@ class OrderAssistantBusinessFlowTest {
     }
 
     @Test
-    void 未知商品不能下单() throws Exception {
+    void unknownSkuCannotBeOrdered() throws Exception {
         long customer = newCustomer();
 
         mockMvc.perform(
@@ -219,7 +219,7 @@ class OrderAssistantBusinessFlowTest {
     }
 
     @Test
-    void 客户看不到也打不开别人的订单() throws Exception {
+    void customerCannotSeeOrOpenAnotherCustomersOrders() throws Exception {
         long alice = newCustomer();
         long bob = newCustomer();
         String orderNo = createOrder(alice, "{\"lines\":[{\"sku\":\"GIZMO-03\",\"quantity\":1}]}");
@@ -234,17 +234,17 @@ class OrderAssistantBusinessFlowTest {
     }
 
     @Test
-    void 助手只回答当前客户自己的订单且不能读别人的会话() throws Exception {
+    void assistantOnlyAnswersOwnOrdersAndCannotReadOthersConversations() throws Exception {
         long alice = newCustomer();
         long bob = newCustomer();
         createOrder(alice, "{\"lines\":[{\"sku\":\"GIZMO-03\",\"quantity\":1}]}");
 
-        AssistantResult aliceAnswer = assistantService.chat(alice, null, "我有哪些订单？");
+        AssistantResult aliceAnswer = assistantService.chat(alice, null, "what orders do I have?");
         assertThat(aliceAnswer.executed())
                 .singleElement()
                 .satisfies(tool -> assertThat(tool.resultJson()).contains("GIZMO-03"));
 
-        AssistantResult bobAnswer = assistantService.chat(bob, null, "我有哪些订单？");
+        AssistantResult bobAnswer = assistantService.chat(bob, null, "what orders do I have?");
         assertThat(bobAnswer.executed())
                 .singleElement()
                 .satisfies(tool -> assertThat(tool.resultJson()).isEqualTo("[]"));
@@ -258,7 +258,7 @@ class OrderAssistantBusinessFlowTest {
     }
 
     @Test
-    void 取消订单必须确认之后才生效() throws Exception {
+    void orderCancellationTakesEffectOnlyAfterConfirmation() throws Exception {
         long customer = newCustomer();
         String orderNo =
                 createOrder(customer, "{\"lines\":[{\"sku\":\"GIZMO-03\",\"quantity\":3}]}");
@@ -266,8 +266,8 @@ class OrderAssistantBusinessFlowTest {
         ActionCard card = proposeCancel(customer, orderNo);
 
         assertThat(card.status()).isEqualTo("PENDING");
-        assertThat(card.summary()).isEqualTo("取消订单 " + orderNo);
-        assertThat(card.title()).isEqualTo("取消订单");
+        assertThat(card.summary()).isEqualTo("Cancel order " + orderNo);
+        assertThat(card.title()).isEqualTo("Cancel Order");
         // 提议是惰性的：确认之前订单一动不动。
         assertThat(orderService.getByNumber(customer, orderNo).getStatus())
                 .isEqualTo(OrderStatus.CREATED);
@@ -281,7 +281,7 @@ class OrderAssistantBusinessFlowTest {
     }
 
     @Test
-    void 已取消的订单不能再取消() throws Exception {
+    void cancelledOrderCannotBeCancelledAgain() throws Exception {
         long customer = newCustomer();
         String orderNo =
                 createOrder(customer, "{\"lines\":[{\"sku\":\"GIZMO-03\",\"quantity\":1}]}");
@@ -297,7 +297,7 @@ class OrderAssistantBusinessFlowTest {
     }
 
     @Test
-    void 已完成的订单不能再取消() throws Exception {
+    void completedOrderCannotBeCancelled() throws Exception {
         long customer = newCustomer();
         String orderNo =
                 createOrder(customer, "{\"lines\":[{\"sku\":\"GIZMO-03\",\"quantity\":1}]}");
@@ -305,7 +305,7 @@ class OrderAssistantBusinessFlowTest {
         ScriptedAiConfiguration.program(
                 memory ->
                         AssistantTurn.of(
-                                "我准备把订单标记为完成。",
+                                "I am about to mark the order as completed.",
                                 List.of(
                                         new ProposedToolCall(
                                                 "updateOrderStatus",
@@ -315,7 +315,7 @@ class OrderAssistantBusinessFlowTest {
                                                 true)),
                                 AiUsage.EMPTY));
         AssistantResult proposal =
-                assistantService.chat(customer, null, "把订单 " + orderNo + " 标记完成");
+                assistantService.chat(customer, null, "mark order " + orderNo + " as completed");
         actionConfirmationService.confirm(customer, proposal.actions().get(0).token());
         assertThat(orderService.getByNumber(customer, orderNo).getStatus())
                 .isEqualTo(OrderStatus.COMPLETED);
@@ -350,7 +350,7 @@ class OrderAssistantBusinessFlowTest {
     }
 
     @Test
-    void 重复拒绝是重放而不是报错() throws Exception {
+    void repeatedRejectionIsReplayedRatherThanAnError() throws Exception {
         long customer = newCustomer();
         String orderNo =
                 createOrder(customer, "{\"lines\":[{\"sku\":\"GIZMO-03\",\"quantity\":1}]}");
@@ -367,7 +367,7 @@ class OrderAssistantBusinessFlowTest {
     }
 
     @Test
-    void 过期的确认单不能被确认也不会产生副作用() {
+    void expiredConfirmationCannotBeConfirmedAndHasNoSideEffects() {
         long customer = newCustomer();
         Conversation conversation = conversationService.start(customer);
         PendingAction stale =
@@ -376,7 +376,7 @@ class OrderAssistantBusinessFlowTest {
                         conversation.getId(),
                         "createOrder",
                         "{\"lines\":[{\"sku\":\"GIZMO-03\",\"quantity\":1}]}",
-                        "创建订单：GIZMO-03 × 1",
+                        "Place order: GIZMO-03 × 1",
                         Duration.ofMinutes(-1));
         pendingActionRepository.save(stale);
 
@@ -390,7 +390,7 @@ class OrderAssistantBusinessFlowTest {
     }
 
     @Test
-    void 确认一张参数非法的卡片会被拒绝且不产生副作用() {
+    void confirmingACardWithInvalidArgumentsIsRejectedWithoutSideEffects() {
         long customer = newCustomer();
         ScriptedAiConfiguration.program(
                 memory ->
@@ -401,7 +401,7 @@ class OrderAssistantBusinessFlowTest {
                                                 "createOrder", "{\"lines\":[]}", true)),
                                 AiUsage.EMPTY));
 
-        AssistantResult proposal = assistantService.chat(customer, null, "帮我下个单");
+        AssistantResult proposal = assistantService.chat(customer, null, "help me place an order");
         assertThat(proposal.actions()).hasSize(1);
         assertThat(proposal.actions().get(0).status()).isEqualTo("PENDING");
 
@@ -418,9 +418,10 @@ class OrderAssistantBusinessFlowTest {
     }
 
     @Test
-    void 历史回填会把卡片连同它的当前状态还给客户() throws Exception {
+    void historyBackfillsActionCardsWithTheirCurrentStatus() throws Exception {
         long customer = newCustomer();
-        AssistantResult proposal = assistantService.chat(customer, null, "帮我下单 3 个 GIZMO-03");
+        AssistantResult proposal =
+                assistantService.chat(customer, null, "help me order 3 GIZMO-03");
         actionConfirmationService.confirm(customer, proposal.actions().get(0).token());
 
         List<MessageView> history =
@@ -435,7 +436,7 @@ class OrderAssistantBusinessFlowTest {
     }
 
     @Test
-    void 同一个幂等键在不同客户之间互不影响() throws Exception {
+    void sameIdempotencyKeyIsIsolatedAcrossCustomers() throws Exception {
         long alice = newCustomer();
         long bob = newCustomer();
         String body = "{\"lines\":[{\"sku\":\"WIDGET-01\",\"quantity\":2}]}";
@@ -450,7 +451,7 @@ class OrderAssistantBusinessFlowTest {
     }
 
     @Test
-    void 模型提出未注册的工具时整轮被拒且不落卡片() throws Exception {
+    void unregisteredToolProposalRejectsWholeTurnAndPersistsNoCard() throws Exception {
         long customer = newCustomer();
         ScriptedAiConfiguration.program(
                 memory ->
@@ -463,7 +464,7 @@ class OrderAssistantBusinessFlowTest {
                         post("/api/assistant/chat")
                                 .header("X-Customer-Id", String.valueOf(customer))
                                 .contentType(MediaType.APPLICATION_JSON)
-                                .content("{\"message\":\"删库跑路\"}"))
+                                .content("{\"message\":\"drop the database and run away\"}"))
                 .andExpect(status().isBadGateway())
                 .andExpect(jsonPath("$.code").value("UPSTREAM_AI_ERROR"));
 
@@ -471,16 +472,16 @@ class OrderAssistantBusinessFlowTest {
     }
 
     @Test
-    void 每次模型调用都留一行审计成功的与失败的都有() throws Exception {
+    void everyModelCallWritesOneAuditRowWhetherItSucceededOrFailed() throws Exception {
         long customer = newCustomer();
 
-        assistantService.chat(customer, null, "我有哪些订单？");
+        assistantService.chat(customer, null, "what orders do I have?");
 
         ScriptedAiConfiguration.program(
                 memory -> {
                     throw new AiUpstreamException(
                             ErrorCode.UPSTREAM_AI_ERROR,
-                            "模型超时",
+                            "model timeout",
                             new RuntimeException("timeout"),
                             "qwen-max",
                             5000,
@@ -490,7 +491,7 @@ class OrderAssistantBusinessFlowTest {
                         post("/api/assistant/chat")
                                 .header("X-Customer-Id", String.valueOf(customer))
                                 .contentType(MediaType.APPLICATION_JSON)
-                                .content("{\"message\":\"我有哪些订单？\"}"))
+                                .content("{\"message\":\"what orders do I have?\"}"))
                 .andExpect(status().isBadGateway());
 
         List<AiInvocationPO> rows =
@@ -504,7 +505,7 @@ class OrderAssistantBusinessFlowTest {
     }
 
     @Test
-    void 未知路由返回统一的未找到响应() throws Exception {
+    void unknownRouteReturnsTheUniformNotFoundResponse() throws Exception {
         mockMvc.perform(get("/api/does-not-exist"))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("NOT_FOUND"));
@@ -545,14 +546,15 @@ class OrderAssistantBusinessFlowTest {
         ScriptedAiConfiguration.program(
                 memory ->
                         AssistantTurn.of(
-                                "好的，我准备取消订单 " + orderNo + "，请你确认。",
+                                "Sure, I am ready to cancel order " + orderNo + ", please confirm.",
                                 List.of(
                                         new ProposedToolCall(
                                                 "cancelOrder",
                                                 "{\"orderNumber\":\"" + orderNo + "\"}",
                                                 true)),
                                 AiUsage.EMPTY));
-        AssistantResult result = assistantService.chat(customer, null, "取消订单 " + orderNo);
+        AssistantResult result =
+                assistantService.chat(customer, null, "please cancel order " + orderNo);
         assertThat(result.actions()).hasSize(1);
         return result.actions().get(0);
     }

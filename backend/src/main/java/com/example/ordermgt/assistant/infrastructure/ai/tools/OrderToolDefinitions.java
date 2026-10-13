@@ -50,7 +50,7 @@ public class OrderToolDefinitions {
         return List.of(
                 ToolSpec.readonly(
                         "queryMyOrders",
-                        "查询当前客户自己的订单列表（不含其他客户）。",
+                        "List the current customer's own orders (excluding other customers).",
                         """
                         {"type":"object","properties":{}}""",
                         (customerId, args) -> {
@@ -62,9 +62,9 @@ public class OrderToolDefinitions {
                         }),
                 ToolSpec.readonly(
                         "getOrderByNumber",
-                        "按订单号查询当前客户自己的某一笔订单详情。",
+                        "Look up one of the current customer's own orders by order number.",
                         """
-                        {"type":"object","properties":{"orderNumber":{"type":"string","description":"订单号"}},"required":["orderNumber"]}""",
+                        {"type":"object","properties":{"orderNumber":{"type":"string","description":"Order number"}},"required":["orderNumber"]}""",
                         (customerId, args) -> {
                             String orderNumber = requireText(objectMapper, args, "orderNumber");
                             return ToolResult.of(
@@ -76,11 +76,12 @@ public class OrderToolDefinitions {
                         }),
                 ToolSpec.mutating(
                         "createOrder",
-                        "为客户创建一笔新订单。价格由系统按 sku 决定，不要自行提供价格。",
+                        "Create a new order for the customer. Prices are set by the "
+                                + "system from the sku; do not supply prices.",
                         """
-                        {"type":"object","properties":{"lines":{"type":"array","minItems":1,"items":{"type":"object","properties":{"sku":{"type":"string","description":"商品编号"},"quantity":{"type":"integer","minimum":1}},"required":["sku","quantity"]}}},"required":["lines"]}""",
+                        {"type":"object","properties":{"lines":{"type":"array","minItems":1,"items":{"type":"object","properties":{"sku":{"type":"string","description":"SKU"},"quantity":{"type":"integer","minimum":1}},"required":["sku","quantity"]}}},"required":["lines"]}""",
                         new ToolCard(
-                                "创建订单",
+                                "Create Order",
                                 args -> describeLines(objectMapper, args),
                                 args -> lineFields(objectMapper, args)),
                         (customerId, args) -> {
@@ -93,24 +94,24 @@ public class OrderToolDefinitions {
                         }),
                 ToolSpec.mutating(
                         "updateOrderStatus",
-                        "把订单状态改为 COMPLETED 或 CANCELLED。",
+                        "Change the order status to COMPLETED or CANCELLED.",
                         """
                         {"type":"object","properties":{"orderNumber":{"type":"string"},"targetStatus":{"type":"string","enum":["COMPLETED","CANCELLED"]}},"required":["orderNumber","targetStatus"]}""",
                         new ToolCard(
-                                "变更订单状态",
+                                "Change Order Status",
                                 args ->
-                                        "将订单 "
+                                        "Change order "
                                                 + text(objectMapper, args, "orderNumber")
-                                                + " 的状态改为 "
+                                                + " to "
                                                 + text(objectMapper, args, "targetStatus"),
                                 args ->
                                         List.of(
                                                 new ToolField(
-                                                        "订单号",
+                                                        "Order number",
                                                         textOrDash(
                                                                 objectMapper, args, "orderNumber")),
                                                 new ToolField(
-                                                        "目标状态",
+                                                        "Target status",
                                                         textOrDash(
                                                                 objectMapper,
                                                                 args,
@@ -127,16 +128,16 @@ public class OrderToolDefinitions {
                         }),
                 ToolSpec.mutating(
                         "cancelOrder",
-                        "取消一笔订单。",
+                        "Cancel an order.",
                         """
                         {"type":"object","properties":{"orderNumber":{"type":"string"}},"required":["orderNumber"]}""",
                         new ToolCard(
-                                "取消订单",
-                                args -> "取消订单 " + text(objectMapper, args, "orderNumber"),
+                                "Cancel Order",
+                                args -> "Cancel order " + text(objectMapper, args, "orderNumber"),
                                 args ->
                                         List.of(
                                                 new ToolField(
-                                                        "订单号",
+                                                        "Order number",
                                                         textOrDash(
                                                                 objectMapper,
                                                                 args,
@@ -157,14 +158,16 @@ public class OrderToolDefinitions {
     private static List<LineCommand> parseLines(ObjectMapper mapper, String args) {
         JsonNode lines = root(mapper, args).path("lines");
         if (!lines.isArray() || lines.isEmpty()) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "lines 必须是非空数组");
+            throw new BusinessException(
+                    ErrorCode.VALIDATION_FAILED, "lines must be a non-empty array");
         }
         List<LineCommand> commands = new ArrayList<>();
         for (JsonNode line : lines) {
             String sku = line.path("sku").asText("");
             int quantity = line.path("quantity").asInt(0);
             if (sku.isBlank() || quantity < 1) {
-                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "每一行都需要 sku 与 >=1 的数量");
+                throw new BusinessException(
+                        ErrorCode.VALIDATION_FAILED, "each line needs a sku and quantity >= 1");
             }
             commands.add(new LineCommand(sku, quantity));
         }
@@ -172,17 +175,19 @@ public class OrderToolDefinitions {
     }
 
     private static String describeLines(ObjectMapper mapper, String args) {
-        StringBuilder sb = new StringBuilder("创建订单：");
+        StringBuilder sb = new StringBuilder("Place order: ");
+        boolean first = true;
         for (LineCommand command : parseLines(mapper, args)) {
-            if (sb.charAt(sb.length() - 1) != '：') {
-                sb.append('、');
+            if (!first) {
+                sb.append(", ");
             }
+            first = false;
             sb.append(command.sku()).append(" × ").append(command.quantity());
         }
         return sb.toString();
     }
 
-    /** One 商品 / 数量 pair per ordered line, so nothing about the request is hidden. */
+    /** One Item / Quantity pair per ordered line, so nothing about the request is hidden. */
     private static List<ToolField> lineFields(ObjectMapper mapper, String args) {
         List<ToolField> fields = new ArrayList<>();
         JsonNode lines = root(mapper, args).path("lines");
@@ -191,8 +196,8 @@ public class OrderToolDefinitions {
         }
         for (JsonNode line : lines) {
             String sku = line.path("sku").asText("");
-            fields.add(new ToolField("商品", sku.isBlank() ? "—" : sku));
-            fields.add(new ToolField("数量", String.valueOf(line.path("quantity").asInt(0))));
+            fields.add(new ToolField("Item", sku.isBlank() ? "—" : sku));
+            fields.add(new ToolField("Quantity", String.valueOf(line.path("quantity").asInt(0))));
         }
         return fields;
     }
@@ -237,7 +242,7 @@ public class OrderToolDefinitions {
     private static String requireText(ObjectMapper mapper, String args, String field) {
         String value = text(mapper, args, field);
         if (value.isBlank()) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "缺少参数: " + field);
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "missing argument: " + field);
         }
         return value;
     }
@@ -255,7 +260,8 @@ public class OrderToolDefinitions {
         try {
             return mapper.readTree(args);
         } catch (JsonProcessingException ex) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "工具参数不是合法 JSON");
+            throw new BusinessException(
+                    ErrorCode.VALIDATION_FAILED, "tool arguments are not valid JSON");
         }
     }
 
@@ -263,7 +269,7 @@ public class OrderToolDefinitions {
         try {
             return mapper.writeValueAsString(value);
         } catch (JsonProcessingException ex) {
-            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "结果序列化失败");
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "failed to serialize result");
         }
     }
 }

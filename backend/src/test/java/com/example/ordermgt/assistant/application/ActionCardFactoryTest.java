@@ -37,11 +37,12 @@ class ActionCardFactoryTest {
                                 "createOrder",
                                 "{\"lines\":[{\"sku\":\"WIDGET-01\",\"quantity\":3}]}"));
 
-        assertThat(card.title()).isEqualTo("创建订单");
-        assertThat(card.summary()).isEqualTo("创建订单：WIDGET-01 × 3");
+        assertThat(card.title()).isEqualTo("Create Order");
+        assertThat(card.summary()).isEqualTo("Place order: WIDGET-01 × 3");
         assertThat(card.fields())
                 .containsExactly(
-                        new ActionCard.Field("商品", "WIDGET-01"), new ActionCard.Field("数量", "3"));
+                        new ActionCard.Field("Item", "WIDGET-01"),
+                        new ActionCard.Field("Quantity", "3"));
     }
 
     @Test
@@ -54,10 +55,10 @@ class ActionCardFactoryTest {
 
         assertThat(card.fields())
                 .containsExactly(
-                        new ActionCard.Field("商品", "WIDGET-01"),
-                        new ActionCard.Field("数量", "3"),
-                        new ActionCard.Field("商品", "GIZMO-03"),
-                        new ActionCard.Field("数量", "2"));
+                        new ActionCard.Field("Item", "WIDGET-01"),
+                        new ActionCard.Field("Quantity", "3"),
+                        new ActionCard.Field("Item", "GIZMO-03"),
+                        new ActionCard.Field("Quantity", "2"));
     }
 
     @Test
@@ -68,18 +69,18 @@ class ActionCardFactoryTest {
                                 "updateOrderStatus",
                                 "{\"orderNumber\":\"ORD-1\",\"targetStatus\":\"CANCELLED\"}"));
 
-        assertThat(card.title()).isEqualTo("变更订单状态");
+        assertThat(card.title()).isEqualTo("Change Order Status");
         assertThat(card.fields())
                 .containsExactly(
-                        new ActionCard.Field("订单号", "ORD-1"),
-                        new ActionCard.Field("目标状态", "CANCELLED"));
+                        new ActionCard.Field("Order number", "ORD-1"),
+                        new ActionCard.Field("Target status", "CANCELLED"));
     }
 
     @Test
     void anUndescribableProposalStillBecomesARejectableCard() {
         ActionCard card = factory.card(action("createOrder", "not-json"));
 
-        assertThat(card.fields()).containsExactly(new ActionCard.Field("参数", "not-json"));
+        assertThat(card.fields()).containsExactly(new ActionCard.Field("Arguments", "not-json"));
     }
 
     private PendingAction action(String toolName, String argumentsJson) {

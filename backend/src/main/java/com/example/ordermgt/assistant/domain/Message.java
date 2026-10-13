@@ -41,6 +41,6 @@ public record Message(
         }
         return content.length() <= CONTENT_MAX
                 ? content
-                : content.substring(0, CONTENT_MAX - 14) + "...[已截断]";
+                : content.substring(0, CONTENT_MAX - 14) + "...[truncated]";
     }
 }

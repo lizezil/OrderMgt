@@ -98,24 +98,26 @@ class SmokeDemoFlowTest {
     }
 
     @Test
-    void 演示路径走一遍从只读查询到越权被拒() throws Exception {
+    void walkDemoPathFromReadOnlyQueryToCrossCustomerForbidden() throws Exception {
         long customer = newCustomer();
         long other = newCustomer();
         long conversationId = startConversation(customer);
 
         // 1) 只读：查询当场执行，回复里带着工具查回的结果和用量。
-        JsonNode readOnly = send(conversationId, customer, "{\"message\":\"我有哪些订单？\"}");
+        JsonNode readOnly =
+                send(conversationId, customer, "{\"message\":\"what orders do I have?\"}");
         assertThat(readOnly.get("reply").asText()).contains("queryMyOrders");
         assertThat(readOnly.get("model").asText()).isEqualTo("offline-mock");
         assertThat(readOnly.get("promptTokens").asInt()).isNotNegative();
         assertThat(readOnly.get("completionTokens").asInt()).isNotNegative();
 
         // 2) 变更：只出卡片，不执行。
-        JsonNode proposal = send(conversationId, customer, "{\"message\":\"帮我下单 2 个 DOODAD-04\"}");
+        JsonNode proposal =
+                send(conversationId, customer, "{\"message\":\"help me order 2 DOODAD-04\"}");
         assertThat(proposal.get("actions")).hasSize(1);
         assertThat(proposal.get("actions").get(0).get("status").asText()).isEqualTo("PENDING");
         assertThat(proposal.get("actions").get(0).get("summary").asText())
-                .isEqualTo("创建订单：DOODAD-04 × 2");
+                .isEqualTo("Place order: DOODAD-04 × 2");
         String token = proposal.get("actions").get(0).get("token").asText();
         assertThat(orderTotal(customer)).isZero();
 
@@ -147,11 +149,11 @@ class SmokeDemoFlowTest {
     }
 
     @Test
-    void 第二轮提问带着第一轮的上下文() throws Exception {
+    void secondTurnCarriesContextFromFirstTurn() throws Exception {
         long customer = newCustomer();
         long conversationId = startConversation(customer);
-        String first = "帮我下单 2 个 DOODAD-04";
-        String second = "我刚才要下单几个 DOODAD-04？只回答数字。";
+        String first = "help me order 2 DOODAD-04";
+        String second = "how many DOODAD-04 did I just want to order? answer with the number only.";
 
         send(conversationId, customer, "{\"message\":\"" + first + "\"}");
         RecordingAiConfiguration.LAST_MEMORY.set(null);

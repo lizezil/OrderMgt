@@ -14,38 +14,38 @@ import org.junit.jupiter.api.Test;
 class MoneyTest {
 
     @Test
-    void 金额统一保留两位小数并四舍五入() {
+    void moneyAlwaysKeepsTwoDecimalsWithRounding() {
         assertThat(Money.of(new BigDecimal("5.005")).amount()).isEqualByComparingTo("5.01");
         assertThat(Money.of(new BigDecimal("19.9")).amount()).isEqualByComparingTo("19.90");
         assertThat(Money.of(new BigDecimal("0.001")).amount()).isEqualByComparingTo("0.00");
     }
 
     @Test
-    void 金额不允许为负() {
+    void moneyCannotBeNegative() {
         assertThatThrownBy(() -> Money.of(new BigDecimal("-0.01")))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
-    void 金额不能为空() {
+    void moneyCannotBeNull() {
         assertThatThrownBy(() -> Money.of(null)).isInstanceOf(NullPointerException.class);
     }
 
     @Test
-    void 单价乘以数量得到行金额() {
+    void unitPriceTimesQuantityGivesLineAmount() {
         Money lineAmount = Money.of(new BigDecimal("19.90")).multiply(3);
 
         assertThat(lineAmount.amount()).isEqualByComparingTo("59.70");
     }
 
     @Test
-    void 数量为零时行金额为零() {
+    void zeroQuantityGivesZeroLineAmount() {
         assertThat(Money.of(new BigDecimal("19.90")).multiply(0).amount())
                 .isEqualByComparingTo("0.00");
     }
 
     @Test
-    void 多行金额相加得到订单总额() {
+    void summingLineAmountsGivesOrderTotal() {
         Money total =
                 Money.of(new BigDecimal("19.90"))
                         .multiply(3)

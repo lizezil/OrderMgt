@@ -17,13 +17,13 @@ class MessageTest {
 
     @Test
     void customerAndAssistantTurnsCarryTheirRole() {
-        assertThat(Message.customer(1L, "你好", NOW).role()).isEqualTo(Role.CUSTOMER);
-        assertThat(Message.assistant(1L, "你好", NOW).role()).isEqualTo(Role.ASSISTANT);
+        assertThat(Message.customer(1L, "hello", NOW).role()).isEqualTo(Role.CUSTOMER);
+        assertThat(Message.assistant(1L, "hello", NOW).role()).isEqualTo(Role.ASSISTANT);
     }
 
     @Test
     void aCardBearingTurnRemembersItsCard() {
-        Message message = Message.assistantWithAction(1L, "创建订单", 9L, NOW);
+        Message message = Message.assistantWithAction(1L, "Place order: GIZMO-03 × 3", 9L, NOW);
 
         assertThat(message.role()).isEqualTo(Role.ASSISTANT);
         assertThat(message.pendingActionId()).isEqualTo(9L);
@@ -34,7 +34,7 @@ class MessageTest {
         Message message = Message.customer(1L, "x".repeat(Message.CONTENT_MAX + 1000), NOW);
 
         assertThat(message.content().length()).isLessThanOrEqualTo(Message.CONTENT_MAX);
-        assertThat(message.content()).endsWith("...[已截断]");
+        assertThat(message.content()).endsWith("...[truncated]");
     }
 
     @Test

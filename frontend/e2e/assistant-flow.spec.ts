@@ -10,9 +10,9 @@ test.describe('助手：提议、确认、落单', () => {
   test('只读的问题当场就答，不产生任何待授权卡片', async ({ page }) => {
     await openAs(page, freshCustomer())
 
-    await ask(page, '我有哪些订单？')
+    await ask(page, 'what orders do I have?')
 
-    await expect(page.getByText('我先查一下你自己的订单。')).toBeVisible()
+    await expect(page.getByText('Let me look up your own orders.')).toBeVisible()
     await expect(page.locator('figure.slip')).toHaveCount(0)
     await expect(page.getByRole('button', { name: '授权执行' })).toHaveCount(0)
     // One assistant turn, not two: the streamed placeholder is replaced by the persisted reply.
@@ -22,11 +22,11 @@ test.describe('助手：提议、确认、落单', () => {
   test('变更只以卡片提议；确认之前订单页什么都不会有', async ({ page }) => {
     await openAs(page, freshCustomer())
 
-    await ask(page, '帮我下单 2 个 GADGET-02')
+    await ask(page, 'help me order 2 GADGET-02')
 
     const slip = page.locator('figure.slip')
     await expect(slip).toBeVisible()
-    await expect(slip.locator('.slip-kind')).toHaveText('创建订单')
+    await expect(slip.locator('.slip-kind')).toHaveText('Create Order')
     await expect(slip.locator('.slip-state')).toHaveText('待授权')
     await expect(slip).toContainText('GADGET-02')
     await expect(slip).toContainText('2')
@@ -38,7 +38,7 @@ test.describe('助手：提议、确认、落单', () => {
 
   test('授权之后订单才落地，金额由服务端按目录算出', async ({ page }) => {
     await openAs(page, freshCustomer())
-    await ask(page, '帮我下单 2 个 GADGET-02')
+    await ask(page, 'help me order 2 GADGET-02')
 
     const slip = page.locator('figure.slip')
     await expect(slip.locator('.slip-state')).toHaveText('待授权')
@@ -58,7 +58,7 @@ test.describe('助手：提议、确认、落单', () => {
 
   test('拒绝的卡片不产生订单，也不会再被点第二次', async ({ page }) => {
     await openAs(page, freshCustomer())
-    await ask(page, '帮我下单 1 个 DOODAD-04')
+    await ask(page, 'help me order 1 DOODAD-04')
 
     const slip = page.locator('figure.slip')
     await slip.getByRole('button', { name: '拒绝' }).click()
@@ -72,7 +72,7 @@ test.describe('助手：提议、确认、落单', () => {
 
   test('刷新之后历史里的卡片是只读的，仍然不给第二次确认', async ({ page }) => {
     await openAs(page, freshCustomer())
-    await ask(page, '帮我下单 3 个 GIZMO-03')
+    await ask(page, 'help me order 3 GIZMO-03')
     await page.locator('figure.slip').getByRole('button', { name: '授权执行' }).click()
     await expect(page.locator('figure.slip .slip-state')).toHaveText('已执行')
 
@@ -87,9 +87,9 @@ test.describe('助手：提议、确认、落单', () => {
   test('回话是流式落定的：只出现一次，并标出这一轮的模型耗时', async ({ page }) => {
     await openAs(page, freshCustomer())
 
-    await ask(page, '我有哪些订单？')
+    await ask(page, 'what orders do I have?')
 
-    await expect(page.getByText('我先查一下你自己的订单。')).toHaveCount(1)
+    await expect(page.getByText('Let me look up your own orders.')).toHaveCount(1)
     await expect(page.locator('.meter')).toContainText('模型耗时')
     await expect(page.locator('.meter')).toContainText('记忆窗口 2 条')
   })
@@ -98,10 +98,10 @@ test.describe('助手：提议、确认、落单', () => {
     await openAs(page, freshCustomer())
     await expect(page.getByText('还没有对话')).toBeVisible()
 
-    await ask(page, '我有哪些订单？')
+    await ask(page, 'what orders do I have?')
 
     const entry = page.locator('.docket .entry')
     await expect(entry).toHaveCount(1)
-    await expect(entry).toContainText('我有哪些订单？')
+    await expect(entry).toContainText('what orders do I have?')
   })
 })

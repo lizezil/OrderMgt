@@ -33,11 +33,11 @@ import org.springframework.stereotype.Component;
 @Profile("offline")
 public class MockAiAdapter implements AiAssistantPort {
 
-    /** "3 个 GIZMO-03". */
+    /** "2 DOODAD-04". */
     private static final Pattern COUNT_THEN_SKU =
-            Pattern.compile("(\\d+)\\s*个\\s*([A-Za-z]+-\\d+)");
+            Pattern.compile("(\\d+)\\s*(?:x\\s+)?([A-Za-z]+-\\d+)");
 
-    /** "GIZMO-03 x 3" / "GIZMO-03×3". */
+    /** "DOODAD-04 x 3". */
     private static final Pattern SKU_THEN_COUNT =
             Pattern.compile("([A-Za-z]+-\\d+)\\s*[xX×]\\s*(\\d+)");
 
@@ -66,12 +66,12 @@ public class MockAiAdapter implements AiAssistantPort {
     }
 
     private AssistantTurn turn(String message) {
-        if (message.contains("取消")) {
+        if (message.contains("cancel")) {
             Matcher orderNumber = ORDER_NUMBER.matcher(message);
             if (orderNumber.find()) {
                 String found = orderNumber.group();
                 return AssistantTurn.of(
-                        "好的，我准备取消订单 " + found + "，请你确认。",
+                        "Sure, I am ready to cancel order " + found + ", please confirm.",
                         List.of(
                                 new ProposedToolCall(
                                         "cancelOrder",
@@ -81,35 +81,44 @@ public class MockAiAdapter implements AiAssistantPort {
             }
         }
 
-        if (message.contains("下单") || message.contains("购买") || message.contains("买")) {
+        if (message.contains("list")
+                || message.contains("what")
+                || message.contains("how many")
+                || message.contains("check")
+                || message.contains("query")
+                || message.contains("show")) {
+            return AssistantTurn.of(
+                    "Let me look up your own orders.",
+                    List.of(new ProposedToolCall("queryMyOrders", "{}", false)),
+                    AiUsage.EMPTY);
+        }
+
+        if (message.contains("buy") || message.contains("purchase") || message.contains("order")) {
             String lines = linesJson(message);
             if (lines != null) {
                 return AssistantTurn.of(
-                        "我准备好了一个下单操作，请你确认。",
+                        "I have prepared an order for you, please confirm.",
                         List.of(
                                 new ProposedToolCall(
                                         "createOrder", "{\"lines\":[" + lines + "]}", true)),
                         AiUsage.EMPTY);
             }
             return AssistantTurn.of(
-                    "（离线模式）请告诉我商品编号和数量，例如\"帮我下单 3 个 GIZMO-03\"。", List.of(), AiUsage.EMPTY);
-        }
-
-        if (message.contains("订单") || message.contains("查询") || message.contains("查")) {
-            return AssistantTurn.of(
-                    "我先查一下你自己的订单。",
-                    List.of(new ProposedToolCall("queryMyOrders", "{}", false)),
+                    "(offline mode) Please tell me the SKU and quantity, for example "
+                            + "\"help me order 2 DOODAD-04\".",
+                    List.of(),
                     AiUsage.EMPTY);
         }
 
         return AssistantTurn.of(
-                "（离线模式）我是桩助手，没有接真实模型。试试\"我有哪些订单\"或\"帮我下单 3 个 GIZMO-03\"。",
+                "(offline mode) I am a stub assistant without a real model. Try "
+                        + "\"what orders do I have\" or \"help me order 2 DOODAD-04\".",
                 List.of(),
                 AiUsage.EMPTY);
     }
 
     /**
-     * Collects every "N 个 SKU" / "SKU x N" pair in the message into the shape the createOrder tool
+     * Collects every "N SKU" / "SKU x N" pair in the message into the shape the createOrder tool
      * expects. Returns null when the message names no product, so the caller can ask instead of
      * inventing an order.
      */

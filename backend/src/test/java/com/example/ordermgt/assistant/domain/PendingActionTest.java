@@ -15,7 +15,8 @@ class PendingActionTest {
 
     @Test
     void aFreshProposalIsPendingAndBoundToItsCustomer() {
-        PendingAction action = PendingAction.propose(1001L, 7L, "createOrder", "{}", "创建订单", TTL);
+        PendingAction action =
+                PendingAction.propose(1001L, 7L, "createOrder", "{}", "Place order", TTL);
 
         assertThat(action.getStatus()).isEqualTo(PendingActionStatus.PENDING);
         assertThat(action.isPending()).isTrue();
@@ -27,7 +28,8 @@ class PendingActionTest {
 
     @Test
     void resolvingIsOneWay() {
-        PendingAction action = PendingAction.propose(1001L, 7L, "createOrder", "{}", "创建订单", TTL);
+        PendingAction action =
+                PendingAction.propose(1001L, 7L, "createOrder", "{}", "Place order", TTL);
 
         action.resolve(PendingActionStatus.CONFIRMED, "ORD-1", Instant.now());
 
@@ -41,7 +43,8 @@ class PendingActionTest {
 
     @Test
     void onlyTerminalStatusesMayResolveAnAction() {
-        PendingAction action = PendingAction.propose(1001L, 7L, "createOrder", "{}", "创建订单", TTL);
+        PendingAction action =
+                PendingAction.propose(1001L, 7L, "createOrder", "{}", "Place order", TTL);
 
         assertThatThrownBy(() -> action.resolve(PendingActionStatus.PENDING, null, Instant.now()))
                 .isInstanceOf(IllegalArgumentException.class);
@@ -58,7 +61,7 @@ class PendingActionTest {
     @Test
     void expiryIsDecidedByTheDeadline() {
         PendingAction action =
-                PendingAction.propose(1001L, 7L, "createOrder", "{}", "创建订单", Duration.ZERO);
+                PendingAction.propose(1001L, 7L, "createOrder", "{}", "Place order", Duration.ZERO);
 
         assertThat(action.isExpiredAt(Instant.now())).isTrue();
     }
@@ -68,7 +71,8 @@ class PendingActionTest {
         Set<String> tokens = new HashSet<>();
         for (int i = 0; i < 200; i++) {
             tokens.add(
-                    PendingAction.propose(1001L, 7L, "createOrder", "{}", "创建订单", TTL).getToken());
+                    PendingAction.propose(1001L, 7L, "createOrder", "{}", "Place order", TTL)
+                            .getToken());
         }
         assertThat(tokens).hasSize(200);
     }

@@ -18,13 +18,13 @@ public class CatalogGroundingProvider implements GroundingProvider {
 
     @Override
     public String facts() {
-        StringBuilder sb = new StringBuilder("可用商品（sku 必须原样取自这里）：\n");
+        StringBuilder sb = new StringBuilder("Available items (take skus exactly from here):\n");
         for (CatalogItem item : catalogRepository.findAllActive()) {
             sb.append("- ")
                     .append(item.sku())
                     .append(' ')
                     .append(item.name())
-                    .append(" 单价 ")
+                    .append(" unit price ")
                     .append(item.unitPrice())
                     .append('\n');
         }

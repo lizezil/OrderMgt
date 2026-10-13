@@ -111,7 +111,7 @@ class ApiContractTest {
     }
 
     @Test
-    void 缺少客户身份头时返回参数错误() throws Exception {
+    void missingCustomerHeaderReturnsValidationError() throws Exception {
         mvc.perform(get("/api/orders"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
@@ -121,7 +121,7 @@ class ApiContractTest {
     }
 
     @Test
-    void 下单请求没有商品行时返回参数错误() throws Exception {
+    void orderWithoutLinesReturnsValidationError() throws Exception {
         mvc.perform(
                         post("/api/orders")
                                 .header("X-Customer-Id", CUSTOMER)
@@ -132,7 +132,7 @@ class ApiContractTest {
     }
 
     @Test
-    void 下单数量非正时返回参数错误() throws Exception {
+    void nonPositiveQuantityReturnsValidationError() throws Exception {
         mvc.perform(
                         post("/api/orders")
                                 .header("X-Customer-Id", CUSTOMER)
@@ -143,7 +143,7 @@ class ApiContractTest {
     }
 
     @Test
-    void 下单成功返回统一的成功响应体() throws Exception {
+    void successfulOrderReturnsUnifiedSuccessBody() throws Exception {
         when(orderService.createOrder(eq(CUSTOMER), any())).thenReturn(order("ORD-1"));
 
         mvc.perform(
@@ -159,7 +159,7 @@ class ApiContractTest {
     }
 
     @Test
-    void 重试同一幂等键会重放原响应而不再下单() throws Exception {
+    void retryWithSameIdempotencyKeyReplaysResponseWithoutCreatingOrder() throws Exception {
         when(idempotencyRepository.tryClaim(any())).thenReturn(Optional.empty());
         when(idempotencyRepository.find(CUSTOMER, "CREATE_ORDER", "k2"))
                 .thenReturn(
@@ -182,7 +182,7 @@ class ApiContractTest {
     }
 
     @Test
-    void 同一幂等键被换成另一个请求时返回冲突() throws Exception {
+    void reusingIdempotencyKeyForDifferentRequestReturnsConflict() throws Exception {
         when(idempotencyRepository.tryClaim(any())).thenReturn(Optional.empty());
         when(idempotencyRepository.find(CUSTOMER, "CREATE_ORDER", "k3"))
                 .thenReturn(Optional.of(record("k3", "a-different-hash", "{}")));
@@ -198,7 +198,7 @@ class ApiContractTest {
     }
 
     @Test
-    void 目录只暴露商品编号名称与单价() throws Exception {
+    void catalogExposesOnlySkuNameAndUnitPrice() throws Exception {
         when(catalogRepository.findAllActive())
                 .thenReturn(
                         List.of(
@@ -215,7 +215,7 @@ class ApiContractTest {
     }
 
     @Test
-    void 确认他人的卡片返回无权() throws Exception {
+    void confirmingAnotherCustomersCardReturnsForbidden() throws Exception {
         doThrow(new BusinessException(ErrorCode.FORBIDDEN))
                 .when(actionConfirmationService)
                 .confirm(CUSTOMER, "tok");
@@ -226,7 +226,7 @@ class ApiContractTest {
     }
 
     @Test
-    void 确认不存在的卡片返回未找到() throws Exception {
+    void confirmingMissingCardReturnsNotFound() throws Exception {
         doThrow(new BusinessException(ErrorCode.NOT_FOUND))
                 .when(actionConfirmationService)
                 .confirm(CUSTOMER, "deadbeef");
@@ -239,7 +239,7 @@ class ApiContractTest {
     }
 
     @Test
-    void 确认已过期的卡片返回已失效() throws Exception {
+    void confirmingExpiredCardReturnsGone() throws Exception {
         doThrow(new BusinessException(ErrorCode.ACTION_EXPIRED))
                 .when(actionConfirmationService)
                 .confirm(CUSTOMER, "old");
@@ -250,7 +250,7 @@ class ApiContractTest {
     }
 
     @Test
-    void 助手收到空消息时返回参数错误() throws Exception {
+    void emptyAssistantMessageReturnsValidationError() throws Exception {
         mvc.perform(
                         post("/api/assistant/chat")
                                 .header("X-Customer-Id", CUSTOMER)
@@ -261,12 +261,12 @@ class ApiContractTest {
     }
 
     @Test
-    void 助手正常回复带回模型与耗时() throws Exception {
-        when(assistantService.chat(eq(CUSTOMER), isNull(), eq("你好")))
+    void normalAssistantReplyCarriesModelAndLatency() throws Exception {
+        when(assistantService.chat(eq(CUSTOMER), isNull(), eq("hello")))
                 .thenReturn(
                         new AssistantResult(
                                 5L,
-                                "你好",
+                                "hello",
                                 List.of(),
                                 List.of(),
                                 new AiUsage(1, 2),
@@ -277,21 +277,21 @@ class ApiContractTest {
                         post("/api/assistant/chat")
                                 .header("X-Customer-Id", CUSTOMER)
                                 .contentType(MediaType.APPLICATION_JSON)
-                                .content("{\"message\":\"你好\"}"))
+                                .content("{\"message\":\"hello\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.conversationId").value(5))
-                .andExpect(jsonPath("$.data.reply").value("你好"))
+                .andExpect(jsonPath("$.data.reply").value("hello"))
                 .andExpect(jsonPath("$.data.model").value("qwen-max"))
                 .andExpect(jsonPath("$.data.latencyMs").value(1234));
     }
 
     @Test
-    void 模型上游失败时返回网关错误而不是服务内部错误() throws Exception {
+    void upstreamModelFailureReturnsBadGatewayNotInternalError() throws Exception {
         when(assistantService.chat(anyLong(), any(), anyString()))
                 .thenThrow(
                         new AiUpstreamException(
                                 ErrorCode.UPSTREAM_AI_ERROR,
-                                "AI 服务调用失败",
+                                "AI upstream call failed",
                                 new RuntimeException("boom"),
                                 "qwen-max",
                                 10,
@@ -301,7 +301,7 @@ class ApiContractTest {
                         post("/api/assistant/chat")
                                 .header("X-Customer-Id", CUSTOMER)
                                 .contentType(MediaType.APPLICATION_JSON)
-                                .content("{\"message\":\"你好\"}"))
+                                .content("{\"message\":\"hello\"}"))
                 .andExpect(status().isBadGateway())
                 .andExpect(jsonPath("$.code").value("UPSTREAM_AI_ERROR"));
     }

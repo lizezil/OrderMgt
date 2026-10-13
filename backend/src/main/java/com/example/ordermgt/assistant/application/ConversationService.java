@@ -48,9 +48,11 @@ public class ConversationService {
                         .orElseThrow(
                                 () ->
                                         new BusinessException(
-                                                ErrorCode.NOT_FOUND, "对话不存在: " + conversationId));
+                                                ErrorCode.NOT_FOUND,
+                                                "conversation not found: " + conversationId));
         if (!conversation.getCustomerId().equals(customerId)) {
-            throw new BusinessException(ErrorCode.FORBIDDEN, "无权访问该对话");
+            throw new BusinessException(
+                    ErrorCode.FORBIDDEN, "access to this conversation is forbidden");
         }
         return conversation;
     }
