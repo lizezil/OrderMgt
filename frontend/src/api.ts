@@ -127,7 +127,10 @@ function parseSseFrame(frame: string): { name: string; data: string } | null {
   const data: string[] = []
   for (const line of frame.split(/\r\n|\r|\n/)) {
     if (line.startsWith('event:')) name = line.slice(6).trim()
-    else if (line.startsWith('data:')) data.push(line.slice(5).replace(/^ /, ''))
+    // No space-stripping after the colon: the SSE spec's optional separator space does not exist
+    // on this wire -- Spring's SseEmitter writes `data:` verbatim -- so a payload that begins
+    // with a space would lose a real word ("I can" + " help" arriving as "I canhelp").
+    else if (line.startsWith('data:')) data.push(line.slice(5))
   }
   return data.length ? { name, data: data.join('\n') } : null
 }

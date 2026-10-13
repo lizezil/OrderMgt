@@ -41,9 +41,9 @@ function streamResponse(chunks: string[], status = 200, statusText = 'OK'): Resp
   } as unknown as Response
 }
 
-/** Exactly the frame shape the backend's SseEmitter writes. */
+/** Exactly the frame shape the backend's SseEmitter writes: no separator space after the colons. */
 function frame(name: string, data: string): string {
-  return `event: ${name}\ndata: ${data}\n\n`
+  return `event:${name}\ndata:${data}\n\n`
 }
 
 const DONE: ChatResponse = {
@@ -156,6 +156,21 @@ describe('流式回复的客户端契约', () => {
     expect(result).toEqual(DONE)
   })
 
+  it('token 自带的行首空格是正文的一部分 —— Spring 的 SseEmitter 不写分隔空格', async () => {
+    // 真实线上字节（tcpdump 过）：`event:` 与 `data:` 后面没有 SSE 规范建议的那个分隔空格，
+    // 所以 `data: I can help` 里的行首空格属于正文；按规范剥一个就会把词粘在一起（"I canhelp"）。
+    const body =
+      'event:token\ndata:Hello!\n\n' +
+      'event:token\ndata: I can help\n\n' +
+      `event:done\ndata:${JSON.stringify(DONE)}\n\n`
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(streamResponse([body])))
+    const deltas: string[] = []
+
+    await chatStream('x', 7, (delta) => deltas.push(delta))
+
+    expect(deltas).toEqual(['Hello!', ' I can help'])
+  })
+
   it('一帧被读到一半时先缓冲，拼齐了才消费', async () => {
     const whole = frame('token', '你好') + frame('done', JSON.stringify(DONE))
     // Cut inside the event name: nothing is complete yet, so nothing may be emitted.
@@ -172,10 +187,10 @@ describe('流式回复的客户端契约', () => {
     expect(result.reply).toBe(DONE.reply)
   })
 
-  it('兼容 CRLF 与多行 data（SSE 规范里同一条消息的多行按换行拼接）', async () => {
+  it('兼容 CRLF 与多行 data（同一条消息的多行按换行拼接）', async () => {
     const body =
-      'event: token\r\ndata: 第一行\r\ndata: 第二行\r\n\r\n' +
-      `event: done\r\ndata: ${JSON.stringify(DONE)}\r\n\r\n`
+      'event:token\r\ndata:第一行\r\ndata:第二行\r\n\r\n' +
+      `event:done\r\ndata:${JSON.stringify(DONE)}\r\n\r\n`
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(streamResponse([body])))
     const deltas: string[] = []
 
