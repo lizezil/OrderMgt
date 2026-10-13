@@ -373,3 +373,77 @@ describe('断流对账', () => {
     }
   })
 })
+
+describe('输入框归属的会话，由正在切换的那一步决定', () => {
+  it('新对话还在创建时就回车：这一句属于新会话，不落进刚离开的那条', async () => {
+    listConversationsMock.mockResolvedValue([conversation(1, '第一条')])
+    let resolveCreation!: (conversation: Conversation) => void
+    startConversationMock.mockImplementation(
+      () =>
+        new Promise<Conversation>((resolve) => {
+          resolveCreation = resolve
+        }),
+    )
+
+    const wrapper = await mountView()
+    const newConversation = wrapper
+      .findAll('button')
+      .find((candidate) => candidate.text().includes('新对话'))
+    if (!newConversation) throw new Error('找不到新对话按钮')
+    await newConversation.trigger('click') // POST /conversations 还挂着
+    await wrapper.get('textarea').setValue('第二条的问题')
+    await sendButton(wrapper).trigger('click') // 竞态窗口：此刻 activeId 还是旧会话
+    resolveCreation(conversation(2, null))
+    await flushPromises()
+
+    expect(chatStreamMock).toHaveBeenCalledWith('第二条的问题', 2, expect.any(Function))
+  })
+
+  it('切回助手后首屏会话还没展开就回车：这句落在即将展开的那条里，不另起炉灶', async () => {
+    let resolveList!: (conversations: Conversation[]) => void
+    listConversationsMock.mockImplementation(
+      () =>
+        new Promise<Conversation[]>((resolve) => {
+          resolveList = resolve
+        }),
+    )
+
+    const wrapper = mount(AssistantView)
+    await nextTick()
+    await wrapper.get('textarea').setValue('回来后的第一句')
+    await sendButton(wrapper).trigger('click') // 竞态窗口：加载还没落定，activeId 为空
+    resolveList([conversation(3, '之前聊的')])
+    await flushPromises()
+
+    expect(chatStreamMock).toHaveBeenCalledWith('回来后的第一句', 3, expect.any(Function))
+    // 而不是绕过加载、自作主张新建一段（startConversation 默认给的是 7）。
+    expect(startConversationMock).not.toHaveBeenCalled()
+  })
+
+  it('上一轮收尾中（侧栏刷新一直挂着）的回车不被吞掉：下一句照常发出', async () => {
+    listConversationsMock.mockResolvedValueOnce([]) // 挂载时的列表
+    listConversationsMock.mockImplementation(() => new Promise(() => {})) // 之后的刷新永不返回
+    chatStreamMock.mockResolvedValue({
+      conversationId: 7,
+      reply: '好的',
+      executed: [],
+      actions: [],
+      promptTokens: 1,
+      completionTokens: 1,
+      model: 'offline-mock',
+      latencyMs: 10,
+    })
+
+    const wrapper = await mountView()
+    await wrapper.get('textarea').setValue('第一句')
+    await sendButton(wrapper).trigger('click')
+    await flushPromises()
+
+    await wrapper.get('textarea').setValue('第二句')
+    await sendButton(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(chatStreamMock).toHaveBeenCalledTimes(2)
+    expect(chatStreamMock.mock.calls[1]![0]).toBe('第二句')
+  })
+})

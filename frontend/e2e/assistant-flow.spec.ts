@@ -104,4 +104,28 @@ test.describe('助手：提议、确认、落单', () => {
     await expect(entry).toHaveCount(1)
     await expect(entry).toContainText('what orders do I have?')
   })
+
+  test('两条会话在切页往返后互不合并，各自的回复都还在', async ({ page }) => {
+    await openAs(page, freshCustomer())
+    await ask(page, 'what orders do I have?')
+    await expect(page.getByText('Let me look up your own orders.')).toBeVisible()
+
+    await page.getByRole('button', { name: '＋ 新对话' }).click()
+    await ask(page, 'help me order 2 GADGET-02')
+    await expect(page.locator('figure.slip')).toBeVisible()
+
+    await openTab(page, '订单')
+    await openTab(page, '助手')
+
+    // 切回来自动展开最近这条（第二段）：里面只有第二轮。
+    const entries = page.locator('.docket .entry')
+    await expect(entries).toHaveCount(2)
+    await expect(page.locator('article.customer')).toHaveCount(1)
+    await expect(page.locator('.sheet').getByText('help me order 2 GADGET-02')).toBeVisible()
+
+    // 点开第一条：第一轮还在，回复也还在 —— 没有任何一条消息出现在两段会话里。
+    await entries.filter({ hasText: 'what orders do I have?' }).click()
+    await expect(page.locator('article.customer')).toHaveCount(1)
+    await expect(page.getByText('Let me look up your own orders.')).toBeVisible()
+  })
 })

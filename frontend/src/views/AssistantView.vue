@@ -49,6 +49,15 @@ async function loadConversations(): Promise<void> {
   conversations.value = await api.listConversations()
 }
 
+/**
+ * The first message titles its conversation, so the sidebar is stale after a send -- but only the
+ * *sidebar*. Refreshing it must neither hold the composer busy (a quick second Enter used to be
+ * silently dropped while the last one awaited this) nor fail a turn that already landed.
+ */
+function refreshConversations(): void {
+  loadConversations().catch((error) => fail(error))
+}
+
 async function open(conversation: Conversation): Promise<void> {
   activeId.value = conversation.id
   usage.value = null
@@ -71,9 +80,21 @@ async function createConversation(): Promise<Conversation> {
   return conversation
 }
 
+/**
+ * The switch the composer must not race: a 新对话 still being created, or the first load after
+ * the view is rebuilt. Until it settles, `activeId` is the *previous* conversation -- a quick
+ * Enter used to file the message there, silently merging two threads into one.
+ */
+let pendingSwitch: Promise<unknown> = Promise.resolve()
+
+function track<T>(work: Promise<T>): Promise<T> {
+  pendingSwitch = work
+  return work
+}
+
 async function newConversation(): Promise<void> {
   try {
-    await createConversation()
+    await track(createConversation())
     messages.value = []
     usage.value = null
   } catch (error) {
@@ -181,6 +202,11 @@ async function send(): Promise<void> {
   const text = draft.value.trim()
   if (!text || sending.value) return
 
+  // The message belongs to the conversation the in-flight switch settles on, never to the one
+  // that happened to be active a moment ago. A failed switch already reported itself; the
+  // composer then speaks for whatever is active, as before.
+  await pendingSwitch.catch(() => {})
+
   draft.value = ''
   sending.value = true
   // Identity for the reconcile below: ids the screen already held before this send, so re-sending
@@ -232,8 +258,7 @@ async function send(): Promise<void> {
     }
     messages.value = messages.value.filter((message) => message !== reply)
     appendReply(response)
-    // The first message is what titles the conversation, so the sidebar is now stale.
-    await loadConversations()
+    refreshConversations()
   } catch (error) {
     // The half-rendered placeholder never survives a failure; what replaces it is not a guess but
     // the server's answer to "did this send actually land?" -- the stream dying says nothing
@@ -258,7 +283,7 @@ function onResolved(message: Message, card: ActionCard): void {
 
 onMounted(async () => {
   try {
-    await loadConversations()
+    await track(loadConversations())
     if (conversations.value.length) {
       await open(conversations.value[0])
     }
