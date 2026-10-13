@@ -169,21 +169,24 @@ public class AssistantService {
      * happened and was billed either way, and an audit row reading "unknown" would hide that.
      */
     public void recordFailure(TurnContext context, AssistantTurn turn, Exception ex) {
+        if (context == null) {
+            return;
+        }
         AiUpstreamException upstream = ex instanceof AiUpstreamException u ? u : null;
-        String model = upstream != null ? upstream.model() : turn == null ? null : turn.model();
-        Integer latencyMs =
-                upstream != null ? upstream.latencyMs() : turn == null ? null : turn.latencyMs();
-        AiInvocationOutcome outcome =
-                upstream != null ? upstream.outcome() : AiInvocationOutcome.ERROR;
-        auditAccount(
-                context == null ? null : context.conversation(),
-                model,
-                turn == null ? null : turn.usage().promptTokens(),
-                turn == null ? null : turn.usage().completionTokens(),
-                latencyMs,
-                outcome,
-                ex.getMessage(),
-                null);
+        Conversation conversation = context.conversation();
+        recordInvocation(
+                AiInvocation.record(
+                        conversation.getId(),
+                        conversation.getCustomerId(),
+                        upstream != null ? upstream.model() : turn == null ? null : turn.model(),
+                        turn == null ? null : turn.usage().promptTokens(),
+                        turn == null ? null : turn.usage().completionTokens(),
+                        upstream != null
+                                ? upstream.latencyMs()
+                                : turn == null ? null : turn.latencyMs(),
+                        upstream != null ? upstream.outcome() : AiInvocationOutcome.ERROR,
+                        ex.getMessage(),
+                        null));
     }
 
     /** A prepared turn: the conversation is known and the model has not been called yet. */
@@ -232,47 +235,26 @@ public class AssistantService {
     }
 
     private void recordSuccess(Conversation conversation, AssistantTurn turn) {
-        auditAccount(
-                conversation,
-                turn.model(),
-                turn.usage().promptTokens(),
-                turn.usage().completionTokens(),
-                turn.latencyMs(),
-                AiInvocationOutcome.OK,
-                null,
-                toolCallsJson(turn.toolCalls()));
+        recordInvocation(
+                AiInvocation.record(
+                        conversation.getId(),
+                        conversation.getCustomerId(),
+                        turn.model(),
+                        turn.usage().promptTokens(),
+                        turn.usage().completionTokens(),
+                        turn.latencyMs(),
+                        AiInvocationOutcome.OK,
+                        null,
+                        toolCallsJson(turn.toolCalls())));
     }
 
     /**
      * Audit is a side channel: if it cannot be written, the turn still stands. It is never allowed
      * to turn a successful reply into a failed request.
      */
-    private void auditAccount(
-            Conversation conversation,
-            String model,
-            Integer promptTokens,
-            Integer completionTokens,
-            Integer latencyMs,
-            AiInvocationOutcome outcome,
-            String error,
-            String toolCallsJson) {
-        if (conversation == null) {
-            return;
-        }
+    private void recordInvocation(AiInvocation invocation) {
         try {
-            aiInvocationRepository.save(
-                    AiInvocation.record(
-                            conversation.getId(),
-                            conversation.getCustomerId(),
-                            // model is NOT NULL in the table, and a fake turn may not name one:
-                            // an audit row reading "unknown" beats losing the row entirely.
-                            model == null || model.isBlank() ? "unknown" : model,
-                            promptTokens,
-                            completionTokens,
-                            latencyMs,
-                            outcome,
-                            truncate(error),
-                            toolCallsJson));
+            aiInvocationRepository.save(invocation);
         } catch (RuntimeException ex) {
             log.warn("could not write ai_invocations row: {}", ex.getMessage());
         }
@@ -288,13 +270,5 @@ public class AssistantService {
             log.warn("could not serialize tool calls for audit: {}", ex.getMessage());
             return null;
         }
-    }
-
-    /** The error column is VARCHAR(1000); a long provider message must not fail the insert. */
-    private static String truncate(String value) {
-        if (value == null) {
-            return null;
-        }
-        return value.length() <= 1000 ? value : value.substring(0, 1000);
     }
 }

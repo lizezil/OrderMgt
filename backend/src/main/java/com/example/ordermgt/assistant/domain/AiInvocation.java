@@ -36,13 +36,23 @@ public record AiInvocation(
                 null,
                 conversationId,
                 customerId,
-                model,
+                // model is NOT NULL in the table, and a fake turn may not name one: an audit row
+                // reading "unknown" beats losing the row entirely.
+                model == null || model.isBlank() ? "unknown" : model,
                 promptTokens,
                 completionTokens,
                 latencyMs,
                 outcome,
-                error,
+                // error is VARCHAR(1000); a long provider message must not fail the insert.
+                truncate(error),
                 toolCallsJson,
                 Instant.now());
+    }
+
+    private static String truncate(String value) {
+        if (value == null) {
+            return null;
+        }
+        return value.length() <= 1000 ? value : value.substring(0, 1000);
     }
 }
