@@ -43,6 +43,13 @@ spring:
 assistant:
   memory:
     window: 20
+  # The dedicated streaming pool (see AsyncConfig). max-concurrent = worker threads, i.e. how
+  # many model streams can run at once; queue-capacity = how many more may wait for a thread.
+  # Past max-concurrent + queue-capacity in-flight streams, /stream answers 503 instead of
+  # queueing without bound. Kept as a property so load can be tuned without a recompile.
+  stream:
+    max-concurrent: 20
+    queue-capacity: 100
   action:
     ttl-minutes: 15
     sweep-interval-ms: 60000

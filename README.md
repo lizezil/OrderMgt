@@ -134,7 +134,7 @@ make db-up                  # 测试跑在真实 MySQL 上，先把常驻容器�
 |---|---|---|
 | L1 领域规则（纯单测） | 聚合与值对象的不变量 | `Money`、`Order`/`OrderLine` 状态机、`OrderNumber`、`ToolWhitelist`、`Message`、`Conversation`、`PendingAction` |
 | L2 应用用例（Mockito） | 编排与边界，不碰数据库 | `OrderService`、`ConversationService`、`AssistantService`、`ActionConfirmationService`、`ActionCardFactory`、`IdempotencyGuard`、`OrderToolSpecs` |
-| L3 API 契约（MockMvc） | 统一响应体、校验、状态码、幂等头 | `ApiContractTest`、`SpringAiAdapter`（超时/异常归类成 `TIMEOUT`/`ERROR`） |
+| L3 API 契约（MockMvc） | 统一响应体、校验、状态码、幂等头 | `ApiContractTest`、`StreamSaturationContractTest`（流式池打满 → 503 `SERVICE_BUSY`，不无限排队；`AsyncConfigTest` 逼出线程/队列边界）、`SpringAiAdapter`（超时/异常归类成 `TIMEOUT`/`ERROR`） |
 | L4 集成（真 MySQL + 桩模型，不烧 Key） | 端到端业务流与并发正确性 | `AssistantFlowTest`（"提议→不执行→确认→落单→重复确认不重复落单→越权 403"、幂等键重放、每次调用落一行 `ai_invocations`）、`OrderAssistantBusinessFlowTest`、`SmokeDemoFlowTest`、`OrderConcurrencyTest`（6 线程真实并发；含"幂等键 FAILED 重试只执行一次"，钉住并验证 `reclaim` 竞态修复） |
 | L5 SPA 单元与组件（Vitest + jsdom） | 后端替客户端保证不了的那半份契约 | `api.spec`（SSE 分帧 / 身份头 / 错误体）、`ActionCardPanel.spec`、`OrdersView.spec`、`AssistantView.spec`、`toast.spec` |
 | L6 浏览器端到端（Playwright + Chromium） | 真浏览器里走完"提议 → 确认 → 落单" | `catalog.spec`、`orders-identity.spec`、`assistant-flow.spec` |

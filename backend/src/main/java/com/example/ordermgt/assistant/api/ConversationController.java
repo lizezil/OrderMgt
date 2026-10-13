@@ -7,11 +7,14 @@ import com.example.ordermgt.assistant.domain.AiAssistantPort;
 import com.example.ordermgt.assistant.domain.AssistantTurn;
 import com.example.ordermgt.idempotency.application.IdempotencyGuard;
 import com.example.ordermgt.shared.api.ApiResponse;
+import com.example.ordermgt.shared.api.ErrorCode;
+import com.example.ordermgt.shared.error.BusinessException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.validation.Valid;
 import java.io.IOException;
 import java.util.List;
 import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -98,6 +101,11 @@ public class ConversationController {
      * retries belong on the JSON endpoint with an Idempotency-Key; - it streams text only. A tool
      * turn is atomic by nature, so its card shows up whole in the `done` event -- pretending to
      * stream it would be theatre.
+     *
+     * <p>The stream runs on a bounded pool (see {@code AsyncConfig}). When it is saturated --
+     * {@code max-concurrent} running and the wait queue full -- the rejection is reported as a 503
+     * before any event is sent, so a caller finds out immediately instead of holding a connection
+     * open for a turn that would only time out in the queue.
      */
     @GetMapping(value = "/{conversationId}/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter stream(
@@ -105,7 +113,13 @@ public class ConversationController {
             @PathVariable Long conversationId,
             @RequestParam String message) {
         SseEmitter emitter = new SseEmitter(STREAM_TIMEOUT_MS);
-        streamExecutor.execute(() -> streamTurn(emitter, customerId, conversationId, message));
+        try {
+            streamExecutor.execute(() -> streamTurn(emitter, customerId, conversationId, message));
+        } catch (RejectedExecutionException ex) {
+            log.warn("streaming pool saturated; rejected turn for conversation {}", conversationId);
+            throw new BusinessException(
+                    ErrorCode.SERVICE_BUSY, "too many streaming turns in flight; retry shortly");
+        }
         return emitter;
     }
 

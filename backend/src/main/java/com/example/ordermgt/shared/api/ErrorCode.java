@@ -19,6 +19,7 @@ public enum ErrorCode {
     IDEMPOTENCY_CONFLICT(HttpStatus.CONFLICT, "idempotency key conflict"),
     ACTION_EXPIRED(HttpStatus.GONE, "the pending action has expired"),
     UPSTREAM_AI_ERROR(HttpStatus.BAD_GATEWAY, "AI upstream call failed"),
+    SERVICE_BUSY(HttpStatus.SERVICE_UNAVAILABLE, "the service is busy; please retry shortly"),
     INTERNAL_ERROR(HttpStatus.INTERNAL_SERVER_ERROR, "internal server error");
 
     private final HttpStatus status;
