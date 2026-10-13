@@ -125,7 +125,7 @@ class OrderConcurrencyTest {
     }
 
     @Test
-    void 同一张卡片被并发确认只落一单() {
+    void concurrentConfirmationsOfSameCardApplyOnlyOnce() {
         long customer = newCustomer();
         String token = proposeCreateOrder(customer);
 
@@ -144,7 +144,7 @@ class OrderConcurrencyTest {
     }
 
     @Test
-    void 并发的确认与拒绝只有先到者生效() {
+    void concurrentConfirmAndRejectOnlyFirstArrivalWins() {
         long customer = newCustomer();
         String token = proposeCreateOrder(customer);
 
@@ -167,7 +167,7 @@ class OrderConcurrencyTest {
     }
 
     @Test
-    void 相同幂等键并发下单只落一单() throws Exception {
+    void concurrentOrdersWithSameIdempotencyKeyCreateOnlyOneOrder() throws Exception {
         long customer = newCustomer();
         String key = "race-order-" + customer;
         String body = "{\"lines\":[{\"sku\":\"GIZMO-03\",\"quantity\":2}]}";
@@ -209,14 +209,15 @@ class OrderConcurrencyTest {
         assertThat(orderNos).hasSize(1);
         for (HttpReply reply : replies) {
             if (reply.status() == 409) {
-                assertThat(JsonPath.read(reply.body(), "$.code")).isEqualTo("IDEMPOTENCY_CONFLICT");
+                assertThat((String) JsonPath.read(reply.body(), "$.code"))
+                        .isEqualTo("IDEMPOTENCY_CONFLICT");
             }
         }
         assertThat(orderService.listByCustomer(customer, 1, 20).total()).isEqualTo(1);
     }
 
     @Test
-    void 不带幂等键的并发下单互不干扰() {
+    void concurrentOrdersWithoutIdempotencyKeyDoNotInterfere() {
         long customer = newCustomer();
 
         List<Outcome<Order>> outcomes =
@@ -248,7 +249,7 @@ class OrderConcurrencyTest {
     }
 
     @Test
-    void 并发流转订单状态只允许一个赢家() {
+    void concurrentStatusTransitionsAllowOnlyOneWinner() {
         long customer = newCustomer();
         String orderNo = createOrder(customer, 1).getOrderNumber().value();
 
@@ -277,10 +278,10 @@ class OrderConcurrencyTest {
     }
 
     @Test
-    void 幂等键失败后并发重试只执行一次动作() throws Exception {
+    void concurrentRetryAfterIdempotencyFailureExecutesActionOnce() throws Exception {
         long customer = newCustomer();
         String key = "retry-race-" + customer;
-        String message = "帮我下单 3 个 GIZMO-03";
+        String message = "help me order 3 GIZMO-03";
 
         // 前置：一次失败的尝试把键留在 FAILED（Guard 允许 FAILED 被重试）。
         Instant now = Instant.now();
@@ -328,9 +329,8 @@ class OrderConcurrencyTest {
         assertThat(extractValues(outcomes)).allMatch(r -> r.status() == 200 || r.status() == 409);
 
         // 并发正确性语义：同一幂等键的动作至多执行一次——读到 FAILED 的线程都来重试时，
-        // 只该有一个抢到执行权，其余要么撞 IN_PROGRESS 得 409，要么读到 COMPLETED 拿重放。
-        // 已知缺陷：reclaim() 是无条件 update（无 WHERE status='FAILED'），并发重试会双双拿到
-        // 执行权、动作执行多次——本断言因此失败，用于钉住该竞态，修复后转绿。
+        // reclaim() 的条件更新（WHERE status='FAILED'）只放行一个，其余重读记录后要么撞
+        // IN_PROGRESS 得 409，要么读到 COMPLETED 拿重放。
         assertThat(CountingStubAiConfiguration.INVOCATIONS.get()).isEqualTo(1);
     }
 
@@ -338,9 +338,10 @@ class OrderConcurrencyTest {
         return CUSTOMER_SEQUENCE.incrementAndGet();
     }
 
-    /** 关键词桩把"N 个 SKU"翻成一张待确认的 createOrder 卡片；返回卡片令牌。 */
+    /** 关键词桩把"N SKU"翻成一张待确认的 createOrder 卡片；返回卡片令牌。 */
     private String proposeCreateOrder(long customer) {
-        AssistantResult proposal = assistantService.chat(customer, null, "帮我下单 3 个 GIZMO-03");
+        AssistantResult proposal =
+                assistantService.chat(customer, null, "help me order 3 GIZMO-03");
         assertThat(proposal.actions()).hasSize(1);
         return proposal.actions().get(0).token();
     }
@@ -379,7 +380,8 @@ class OrderConcurrencyTest {
         pool.shutdown();
         try {
             if (!pool.awaitTermination(30, TimeUnit.SECONDS)) {
-                throw new IllegalStateException("并发用例 30 秒内未全部结束");
+                throw new IllegalStateException(
+                        "concurrent tasks did not finish within 30 seconds");
             }
             List<Outcome<T>> outcomes = new ArrayList<>();
             for (Future<Outcome<T>> future : pending) {
@@ -390,7 +392,7 @@ class OrderConcurrencyTest {
             Thread.currentThread().interrupt();
             throw new IllegalStateException(e);
         } catch (ExecutionException | TimeoutException e) {
-            throw new IllegalStateException("并发任务未正常结束", e);
+            throw new IllegalStateException("concurrent tasks did not terminate normally", e);
         }
     }
 

@@ -123,6 +123,7 @@ class IdempotencyGuardTest {
         when(repository.tryClaim(any())).thenReturn(Optional.empty());
         when(repository.find(1L, OPERATION, KEY))
                 .thenReturn(Optional.of(record(9L, IdempotencyStatus.FAILED, null, HASH)));
+        when(repository.reclaim(9L)).thenReturn(true);
 
         Map<String, Object> result =
                 guard.execute(
@@ -131,6 +132,49 @@ class IdempotencyGuardTest {
         assertThat(result).containsEntry("orderNo", "ORD-2");
         verify(repository).reclaim(9L);
         verify(repository).complete(eq(9L), anyString());
+    }
+
+    @Test
+    void losingTheReclaimRaceRefusesInsteadOfRunningTheActionAgain() {
+        when(repository.tryClaim(any())).thenReturn(Optional.empty());
+        when(repository.find(1L, OPERATION, KEY))
+                .thenReturn(Optional.of(record(9L, IdempotencyStatus.FAILED, null, HASH)))
+                .thenReturn(Optional.of(record(9L, IdempotencyStatus.IN_PROGRESS, null, HASH)));
+        when(repository.reclaim(9L)).thenReturn(false);
+
+        assertThatThrownBy(() -> guard.execute(1L, OPERATION, KEY, HASH, () -> Map.of(), Map.class))
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).errorCode())
+                .isEqualTo(ErrorCode.IDEMPOTENCY_CONFLICT);
+        verify(repository, never()).complete(anyLong(), anyString());
+    }
+
+    @Test
+    void losingTheRaceToAnAlreadyCompletedKeyReplaysIt() {
+        when(repository.tryClaim(any())).thenReturn(Optional.empty());
+        when(repository.find(1L, OPERATION, KEY))
+                .thenReturn(Optional.of(record(9L, IdempotencyStatus.FAILED, null, HASH)))
+                .thenReturn(
+                        Optional.of(
+                                record(
+                                        9L,
+                                        IdempotencyStatus.COMPLETED,
+                                        "{\"orderNo\":\"ORD-1\"}",
+                                        HASH)));
+        when(repository.reclaim(9L)).thenReturn(false);
+
+        Map<String, Object> replayed =
+                guard.execute(
+                        1L,
+                        OPERATION,
+                        KEY,
+                        HASH,
+                        () -> {
+                            throw new AssertionError("the action must not run twice");
+                        },
+                        Map.class);
+
+        assertThat(replayed).containsEntry("orderNo", "ORD-1");
     }
 
     @Test

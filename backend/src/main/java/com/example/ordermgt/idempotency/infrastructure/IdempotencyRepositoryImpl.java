@@ -64,12 +64,20 @@ public class IdempotencyRepositoryImpl implements IdempotencyRepository {
     }
 
     @Override
-    public void reclaim(Long id) {
+    public boolean reclaim(Long id) {
         IdempotencyRecordPO patch = new IdempotencyRecordPO();
-        patch.setId(id);
         patch.setStatus(IdempotencyStatus.IN_PROGRESS.name());
         patch.setCompletedAt(null);
-        mapper.updateById(patch);
+        // WHERE status = 'FAILED' is the whole point: of N threads retrying a failed key, only
+        // the one whose UPDATE actually matches a row gets to run the action again.
+        return mapper.update(
+                        patch,
+                        Wrappers.<IdempotencyRecordPO>lambdaUpdate()
+                                .eq(IdempotencyRecordPO::getId, id)
+                                .eq(
+                                        IdempotencyRecordPO::getStatus,
+                                        IdempotencyStatus.FAILED.name()))
+                > 0;
     }
 
     @Override

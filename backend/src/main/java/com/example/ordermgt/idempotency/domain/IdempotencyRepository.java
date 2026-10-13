@@ -18,7 +18,15 @@ public interface IdempotencyRepository {
 
     void markFailed(Long id);
 
-    void reclaim(Long id);
+    /**
+     * Reclaims a FAILED record for a retry by flipping it to IN_PROGRESS. The transition is
+     * conditional on the row still being FAILED, so under concurrent retries exactly one caller
+     * wins; an unconditional update would let every retrying thread acquire execution rights and
+     * run the action again.
+     *
+     * @return true when this caller won the race, false when someone else already reclaimed it
+     */
+    boolean reclaim(Long id);
 
     /**
      * Fails every key still IN_PROGRESS whose {@code expires_at} has passed. A key left IN_PROGRESS

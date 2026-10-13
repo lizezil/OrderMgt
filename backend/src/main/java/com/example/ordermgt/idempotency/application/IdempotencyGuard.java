@@ -121,29 +121,55 @@ public class IdempotencyGuard {
                         .orElseThrow(
                                 () ->
                                         new BusinessException(
-                                                ErrorCode.INTERNAL_ERROR, "幂等键争用后未能读回记录"));
+                                                ErrorCode.INTERNAL_ERROR,
+                                                "idempotency record missing after claim "
+                                                        + "contention"));
 
         if (requestHash != null
                 && existing.requestHash() != null
                 && !requestHash.equals(existing.requestHash())) {
             throw new BusinessException(
-                    ErrorCode.IDEMPOTENCY_CONFLICT, "幂等键 " + idempotencyKey + " 已被用于另一个不同的请求");
+                    ErrorCode.IDEMPOTENCY_CONFLICT,
+                    "idempotency key "
+                            + idempotencyKey
+                            + " was already used for a different request");
         }
 
         return switch (existing.status()) {
             case COMPLETED -> Claim.replayed(read(existing.responseJson(), responseType));
-            case IN_PROGRESS ->
-                    throw new BusinessException(
-                            ErrorCode.IDEMPOTENCY_CONFLICT, "相同幂等键的请求仍在处理中，请稍后重试");
+            case IN_PROGRESS -> throw inProgress();
             case FAILED -> {
                 log.info(
                         "retrying previously failed idempotent operation {} key={}",
                         operation,
                         idempotencyKey);
-                repository.reclaim(existing.id());
-                yield Claim.claimed(existing.id());
+                if (repository.reclaim(existing.id())) {
+                    yield Claim.claimed(existing.id());
+                }
+                // Lost the reclaim race: another retrying thread already flipped this record out
+                // of FAILED (and may even have finished). Answer from the record's current state
+                // instead of running the action a second time.
+                IdempotencyRecord raced =
+                        repository
+                                .find(customerId, operation, idempotencyKey)
+                                .orElseThrow(
+                                        () ->
+                                                new BusinessException(
+                                                        ErrorCode.INTERNAL_ERROR,
+                                                        "idempotency record missing after reclaim "
+                                                                + "contention"));
+                yield switch (raced.status()) {
+                    case COMPLETED -> Claim.replayed(read(raced.responseJson(), responseType));
+                    case IN_PROGRESS, FAILED -> throw inProgress();
+                };
             }
         };
+    }
+
+    private static BusinessException inProgress() {
+        return new BusinessException(
+                ErrorCode.IDEMPOTENCY_CONFLICT,
+                "same idempotency key request is still in progress, retry later");
     }
 
     /**
@@ -183,18 +209,21 @@ public class IdempotencyGuard {
         try {
             return objectMapper.writeValueAsString(value);
         } catch (JsonProcessingException ex) {
-            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "幂等响应序列化失败");
+            throw new BusinessException(
+                    ErrorCode.INTERNAL_ERROR, "failed to serialize idempotent response");
         }
     }
 
     private <T> T read(String json, Class<T> type) {
         if (json == null) {
-            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "幂等记录缺少响应内容");
+            throw new BusinessException(
+                    ErrorCode.INTERNAL_ERROR, "idempotency record has no stored response");
         }
         try {
             return objectMapper.readValue(json, type);
         } catch (JsonProcessingException ex) {
-            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "幂等响应反序列化失败");
+            throw new BusinessException(
+                    ErrorCode.INTERNAL_ERROR, "failed to deserialize idempotent response");
         }
     }
 }
