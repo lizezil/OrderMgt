@@ -52,7 +52,7 @@ cd frontend && pnpm install && pnpm build && cd ..          # 可选：把界面
 ./mvnw -pl backend spring-boot:run
 ```
 
-打开 <http://localhost:8081>。数据落在容器里的 `ordermgt` 库（compose 的 `mysql-data` 卷），Flyway 会自动建表并写入 5 条商品种子数据。默认 profile 就是 `mysql`，连接参数取自 `MYSQL_*` 环境变量（默认值与 compose 一致）；容器没起时应用会直接启动失败，而不是悄悄换一个本地库。没有 Key 也能启动，只是助手功能不可用。
+打开 <http://localhost:8081>。数据落在容器里的 `ordermgt` 库（compose 的 `mysql-data` 卷），Flyway 会自动建表并写入 5 条商品种子数据。默认 profile 就是 `mysql`，连接参数取自 `MYSQL_*` 环境变量（默认值与 compose 一致）；容器没起时应用会直接启动失败，而不是悄悄换一个本地库。没有 Key 也能启动，但助手功能会调不通——想在没有 Key 的情况下把助手整条闭环走一遍，加上 `offline` profile（见「没有 Key 也能跑」）。
 
 想确认整条链路是否正常，用自带脚本打一遍（真调模型，约 10 秒）：
 
@@ -93,7 +93,7 @@ docker compose up --build
 | GET | `/api/assistant/conversations` | 会话列表 |
 | GET | `/api/assistant/conversations/{id}/messages` | 历史（含每张卡片的当前状态） |
 | POST | `/api/assistant/conversations/{id}/messages` | 在指定会话里发消息 |
-| GET | `/api/assistant/conversations/{id}/stream?message=` | SSE：`token` 事件逐个吐字，最后一发 `done` 带完整结果 |
+| GET | `/api/assistant/conversations/{id}/stream?message=` | SSE：`token` 事件逐个吐字，最后一发 `done` 带完整结果。SPA 用它做增量渲染（`fetch` + `ReadableStream`，因为要带 `X-Customer-Id` 头） |
 | POST | `/api/assistant/actions/{token}/confirm` | 确认并执行（重复确认返回 `replayed:true`，不会执行第二次） |
 | POST | `/api/assistant/actions/{token}/reject` | 拒绝 |
 | POST | `/api/orders` | 直接下单（幂等键：`Idempotency-Key`） |
@@ -129,7 +129,7 @@ make db-up                  # 测试跑在真实 MySQL 上，先把常驻容器�
 |---|---|
 | 领域单测 | `PendingAction`（归属/一次性流转/过期/超长参数）、`Conversation`（标题派生） |
 | 应用单测 | `IdempotencyGuard`（重放、键挪用、并发重复、失败重试）、`ActionConfirmationService`（执行一次、重放、越权、过期） |
-| 集成（真 MySQL，不烧 Key） | `AssistantFlowTest`：真库 + 桩模型，跑通"提议→不执行→确认→落单→重复确认不重复落单→越权 403"，以及幂等键重放 |
+| 集成（真 MySQL，不烧 Key） | `AssistantFlowTest`：真库 + 桩模型，跑通"提议→不执行→确认→落单→重复确认不重复落单→越权 403"、幂等键重放、每次调用落一行 `ai_invocations`、过期 `IN_PROGRESS` 键被清理任务刷成 `FAILED` |
 
 前端：`cd frontend && pnpm typecheck && pnpm build`（`build` 会先跑 Prettier，再交给 Vite）。
 
@@ -163,10 +163,26 @@ docs/             项目文档
 
 依赖方向：`api → application → domain`，`infrastructure → domain`（实现端口）。**domain 不依赖任何框架。**
 
+## 模型的超时、重试与审计
+
+三件事都集中在适配器与编排层，**不在业务事务里**（ADR-0002）：
+
+- **超时**：1.1.8 没有 `spring.ai.*.timeout` 属性，所以同步调用通过 `RestClientCustomizer` 换上一个带超时的 `JdkClientHttpRequestFactory`（连接 5s / 读取 60s，见 `AiHttpClientConfig`）；流式调用在 `SpringAiAdapter` 里用 Reactor `.timeout(2min)` + `.blockLast(2min)` 双上界（类路径上没有反应式连接器，WebClient 走 JDK HttpClient，没有全局响应超时可设）。
+- **重试**：Spring AI 自带 `RetryTemplate`，默认 10 次 / 退避 `2s×5` 上限 3 分钟——一个卡死的上游最坏能被拖近 19 分钟。我们只用属性把默认收到 **3 次 / 1s / ×2 / 上限 8s**。进程内**没有**自研退避，也没有 jitter；重复执行的风险由幂等键与卡片行锁兜住。
+- **审计**：每次模型调用都往 `ai_invocations` 落一行——成功走 `AssistantService.complete`，失败与超时在 `recordFailure`（同步的 `chat` 与流式的 `streamTurn` 都会调用），失败行带上 model、latency 与 `ERROR`/`TIMEOUT`。审计是旁路：写不进去只记一条 warn，绝不影响本轮回复。
+
+## 没有 Key 也能跑（离线模式）
+
+```bash
+SPRING_PROFILES_ACTIVE=mysql,offline ./mvnw -pl backend spring-boot:run
+```
+
+`offline` 激活 `MockAiAdapter`（同时用 `@Profile("!offline")` 关掉真实的 `SpringAiAdapter`），它是一个关键词驱动的桩：说「我有哪些订单」它会提议 `queryMyOrders`，说「帮我下单 3 个 GIZMO-03」它会提议 `createOrder`——于是"提议 → 确认 → 落单"整条闭环在没有任何 API Key 的情况下照样走得通。`mysql` 那一半负责给数据源。集成测试也复用同一个类，所以桩的行为与测试看到的一致。
+
 ## 已知缺口（诚实清单）
 
-- `ai_invocations` 表已建但**尚未写入**：token 消耗目前只回在响应体里，没有落审计表。
-- SSE 只在服务端实现并已验证；SPA 走的是 JSON 接口，**没有接流式**（工具轮本来就是原子的，流式对它没有意义）。
-- 没有 `Idempotency-Key` 超时清理任务：进程在"动作已提交"与"标记 COMPLETED"之间挂掉，该键会停在 `IN_PROGRESS` 直到过期（见 [ADR-0007](docs/adr/0007-two-idempotency-paths.md)）。
-- 模型调用没有退避重试；流式调用有 2 分钟上界（`SpringAiAdapter.STREAM_TIMEOUT`），同步调用依赖客户端默认超时。
+- **模型调用的重试是框架给的，不是我们写的**：我们只调 `spring.ai.retry.*`，没有自己实现退避、也不支持 jitter；`respondStreaming` 不被框架重试，只有流式自己的双上界。
+- **超时与重试没有自动化测试**：重试发生在 Spring AI 内部，要断言就得起一个假上游，当前选择是不引入假上游、只靠真上游冒烟观察日志。
+- `ai_invocations` 现在**会写**（成功与失败各一行），但**没有读取端点**——审计全貌要用 SQL 查，接口里只回带了 `model`/`latencyMs` 供界面显示耗时。
+- 离线适配器 `MockAiAdapter` 是**关键词驱动的桩**，只用于没有 Key 的演示，不理解真实语义。
 - Docker Compose 只起**单实例应用**：确认态的并发去重靠数据库行锁，多实例同样成立，但没有做过压测。
