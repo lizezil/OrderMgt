@@ -19,8 +19,12 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.LongConsumer;
+import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
@@ -45,6 +49,13 @@ public class SpringAiAdapter implements AiAssistantPort {
 
     /** Streaming calls are bounded so a stalled upstream cannot pin a thread forever. */
     private static final Duration STREAM_TIMEOUT = Duration.ofMinutes(2);
+
+    /** First-token retry, aligned with spring.ai.retry: 3 attempts / 1s / ×2 / 8s cap. */
+    private static final int STREAM_RETRY_ATTEMPTS = 3;
+
+    private static final Duration RETRY_INITIAL_BACKOFF = Duration.ofSeconds(1);
+
+    private static final Duration RETRY_MAX_BACKOFF = Duration.ofSeconds(8);
 
     private static final String SYSTEM_PROMPT =
             """
@@ -86,33 +97,110 @@ public class SpringAiAdapter implements AiAssistantPort {
         AtomicReference<ChatResponse> last = new AtomicReference<>();
         long start = System.nanoTime();
 
+        // A replay is only safe while the client has seen nothing: retrying after the first
+        // token would put duplicated text on the wire, so from then on the stream either
+        // finishes or fails honestly.
+        AtomicBoolean emitted = new AtomicBoolean(false);
+        Consumer<String> tracked =
+                delta -> {
+                    emitted.set(true);
+                    onTextDelta.accept(delta);
+                };
+
         try {
-            prompt(memory).stream()
-                    .chatClientResponse()
-                    .doOnNext(
-                            response -> {
-                                ChatResponse chunk = response.chatResponse();
-                                if (chunk == null) {
-                                    return;
-                                }
-                                last.set(chunk);
-                                String delta = textOf(chunk);
-                                if (!delta.isEmpty()) {
-                                    onTextDelta.accept(delta);
-                                }
-                            })
-                    // Belt and braces: `.timeout` errors out on a stalled stream (no delta for two
-                    // minutes), `.blockLast` bounds the total wall clock even if the upstream keeps
-                    // trickling tokens. Streaming is not retried by the framework.
-                    .timeout(STREAM_TIMEOUT)
-                    .blockLast(STREAM_TIMEOUT);
+            return retryBeforeFirstToken(
+                    () -> {
+                        last.set(null);
+                        streamOnce(memory, tracked, last);
+                        // The final chunk of the stream carries the aggregated tool calls, so
+                        // the turn is built from it exactly like the non-streaming path -- one
+                        // extraction, two transports.
+                        return toTurn(last.get(), elapsedMs(start));
+                    },
+                    emitted::get,
+                    STREAM_RETRY_ATTEMPTS,
+                    SpringAiAdapter::sleepForRetry);
         } catch (RuntimeException ex) {
             throw upstreamFailure("respondStreaming", ex, elapsedMs(start));
         }
+    }
 
-        // The final chunk of the stream carries the aggregated tool calls, so the turn is
-        // built from it exactly like the non-streaming path -- one extraction, two transports.
-        return toTurn(last.get(), elapsedMs(start));
+    /** One pass over the model stream; anything before the first delta is retryable. */
+    private void streamOnce(
+            List<ChatMessage> memory,
+            Consumer<String> onTextDelta,
+            AtomicReference<ChatResponse> last) {
+        prompt(memory).stream()
+                .chatClientResponse()
+                .doOnNext(
+                        response -> {
+                            ChatResponse chunk = response.chatResponse();
+                            if (chunk == null) {
+                                return;
+                            }
+                            last.set(chunk);
+                            String delta = textOf(chunk);
+                            if (!delta.isEmpty()) {
+                                onTextDelta.accept(delta);
+                            }
+                        })
+                // Belt and braces: `.timeout` errors out on a stalled stream (no delta for two
+                // minutes), `.blockLast` bounds the total wall clock even if the upstream keeps
+                // trickling tokens. The framework never retries a stream -- the whole-stream
+                // replay before the first token is ours (see retryBeforeFirstToken).
+                .timeout(STREAM_TIMEOUT)
+                .blockLast(STREAM_TIMEOUT);
+    }
+
+    /**
+     * First-token retry: a stream that dies before the client has seen anything is replayed whole;
+     * once a token is out, failure is final. Backoff mirrors spring.ai.retry (1s, ×2, capped at
+     * 8s), so the blocking and streaming transports wait the same way.
+     *
+     * <p>Package-private and model-free -- the attempt arrives as a lambda -- so every branch of
+     * the policy can be tested without a model.
+     */
+    static AssistantTurn retryBeforeFirstToken(
+            Supplier<AssistantTurn> attempt,
+            BooleanSupplier emitted,
+            int maxAttempts,
+            LongConsumer backoff) {
+        RuntimeException failure = null;
+        for (int attemptNo = 1; attemptNo <= maxAttempts; attemptNo++) {
+            try {
+                return attempt.get();
+            } catch (RuntimeException ex) {
+                failure = ex;
+                if (emitted.getAsBoolean() || attemptNo == maxAttempts) {
+                    break;
+                }
+                long delayMs = backoffMs(attemptNo);
+                log.warn(
+                        "stream attempt {}/{} failed before any token, retrying in {}ms: {}",
+                        attemptNo,
+                        maxAttempts,
+                        delayMs,
+                        ex.getMessage());
+                backoff.accept(delayMs);
+            }
+        }
+        throw failure;
+    }
+
+    /** 1s, 2s, 4s, ... clamped at the 8s cap -- same schedule spring.ai.retry uses. */
+    private static long backoffMs(int failedAttempt) {
+        return Math.min(
+                RETRY_INITIAL_BACKOFF.toMillis() * (1L << (failedAttempt - 1)),
+                RETRY_MAX_BACKOFF.toMillis());
+    }
+
+    private static void sleepForRetry(long delayMs) {
+        try {
+            Thread.sleep(delayMs);
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("interrupted while waiting to retry the stream", ex);
+        }
     }
 
     /**
