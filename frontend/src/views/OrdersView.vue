@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { api } from '../api'
+import { errorMessage } from '../errors'
 import type { Order } from '../types'
 
 const orders = ref<Order[]>([])
@@ -18,7 +19,7 @@ async function load(): Promise<void> {
     total.value = result.total
     selected.value = null
   } catch (caught) {
-    error.value = caught instanceof Error ? caught.message : '加载失败'
+    error.value = errorMessage(caught, '加载失败')
   }
 }
 

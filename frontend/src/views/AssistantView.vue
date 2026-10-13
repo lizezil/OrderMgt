@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { nextTick, onMounted, ref } from 'vue'
 import { api } from '../api'
+import { errorMessage } from '../errors'
 import type { ActionCard, ChatResponse, Conversation, Message } from '../types'
 import ActionCardPanel from '../components/ActionCardPanel.vue'
 
@@ -18,7 +19,7 @@ const scroller = ref<HTMLElement | null>(null)
 let localId = -1
 
 function fail(error: unknown): void {
-  emit('error', error instanceof Error ? error.message : '请求失败')
+  emit('error', errorMessage(error, '请求失败'))
 }
 
 async function scrollToEnd(): Promise<void> {
@@ -62,11 +63,17 @@ async function open(conversation: Conversation): Promise<void> {
   await scrollToEnd()
 }
 
+/** Starts a conversation, files it at the top of the rail and makes it active. */
+async function createConversation(): Promise<Conversation> {
+  const conversation = await api.startConversation()
+  conversations.value = [conversation, ...conversations.value]
+  activeId.value = conversation.id
+  return conversation
+}
+
 async function newConversation(): Promise<void> {
   try {
-    const conversation = await api.startConversation()
-    conversations.value = [conversation, ...conversations.value]
-    activeId.value = conversation.id
+    await createConversation()
     messages.value = []
     usage.value = null
   } catch (error) {
@@ -119,10 +126,7 @@ async function send(): Promise<void> {
     // The stream endpoint needs a conversation in its path, so start one when this is a fresh chat.
     let conversationId = activeId.value
     if (conversationId === null) {
-      const conversation = await api.startConversation()
-      conversations.value = [conversation, ...conversations.value]
-      activeId.value = conversation.id
-      conversationId = conversation.id
+      conversationId = (await createConversation()).id
     }
 
     // The reply is rendered as it arrives; the placeholder is swapped for the persisted turn once

@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import type { ActionCard, ActionResolution } from '../types'
 import { api } from '../api'
+import { errorMessage } from '../errors'
 
 const props = defineProps<{ card: ActionCard }>()
 const emit = defineEmits<{
@@ -66,7 +67,7 @@ async function resolve(kind: 'confirm' | 'reject'): Promise<void> {
     justResolved.value = true
     emit('resolved', { ...props.card, status: resolution.status as ActionCard['status'] })
   } catch (error) {
-    emit('error', error instanceof Error ? error.message : '操作失败')
+    emit('error', errorMessage(error, '操作失败'))
   } finally {
     busy.value = false
   }

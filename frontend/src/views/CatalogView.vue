@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { api } from '../api'
+import { errorMessage } from '../errors'
 import type { CatalogItem } from '../types'
 
 const items = ref<CatalogItem[]>([])
@@ -10,7 +11,7 @@ onMounted(async () => {
   try {
     items.value = await api.listCatalog()
   } catch (caught) {
-    error.value = caught instanceof Error ? caught.message : '加载失败'
+    error.value = errorMessage(caught, '加载失败')
   }
 })
 </script>
