@@ -12,6 +12,8 @@ import com.example.ordermgt.assistant.domain.ToolRegistry;
 import com.example.ordermgt.assistant.domain.ToolSpec;
 import com.example.ordermgt.shared.api.ErrorCode;
 import com.example.ordermgt.shared.error.BusinessException;
+import java.net.SocketTimeoutException;
+import java.net.http.HttpTimeoutException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -44,13 +46,16 @@ public class SpringAiAdapter implements AiAssistantPort {
 
     private static final String SYSTEM_PROMPT =
             """
-            你是订单管理助手。你可以调用工具来查询或变更客户的订单。
-            规则：
-            - 只能使用已提供的工具，不要臆造工具或参数。
-            - 变更类工具（创建/取消/改状态）只是"提议"，真实执行由客户确认后完成，
-              所以调用它们时请在文本里说明你打算做什么。
-            - 绝不要猜测或编造订单号、商品编号或金额；下单只填 sku 和数量。
-            - 用简洁的中文回答。
+            You are an order management assistant. You may call tools to query or change
+            a customer's orders.
+            Rules:
+            - Use only the provided tools; do not invent tools or arguments.
+            - Mutating tools (create / cancel / change status) are only "proposals"; the
+              real execution happens after the customer confirms, so when calling them say
+              in the text what you intend to do.
+            - Never guess or fabricate order numbers, skus or amounts; placing an order
+              fills in only sku and quantity.
+            - Answer in concise English.
             """;
 
     private final ChatClient chatClient;
@@ -141,10 +146,21 @@ public class SpringAiAdapter implements AiAssistantPort {
                 outcomeOf(ex));
     }
 
-    /** A timeout anywhere in the chain is a timeout; anything else is a plain upstream error. */
-    private static AiInvocationOutcome outcomeOf(Throwable ex) {
+    /**
+     * A timeout anywhere in the chain is a timeout; anything else is a plain upstream error.
+     *
+     * <p>Three shapes count, because the two transports report a timeout differently: Reactor's
+     * {@code .timeout()} raises {@link TimeoutException}, while the JDK HttpClient behind {@code
+     * JdkClientHttpRequestFactory} reports an expired read/request deadline as {@link
+     * SocketTimeoutException} or {@link HttpTimeoutException} -- IOExceptions that would otherwise
+     * land in the audit as a generic ERROR. Package-private so the classification can be tested
+     * directly against each real shape.
+     */
+    static AiInvocationOutcome outcomeOf(Throwable ex) {
         for (Throwable cause = ex; cause != null; cause = cause.getCause()) {
-            if (cause instanceof TimeoutException) {
+            if (cause instanceof TimeoutException
+                    || cause instanceof SocketTimeoutException
+                    || cause instanceof HttpTimeoutException) {
                 return AiInvocationOutcome.TIMEOUT;
             }
         }
@@ -224,7 +240,8 @@ public class SpringAiAdapter implements AiAssistantPort {
                     switch (turn.role()) {
                         case CUSTOMER -> new UserMessage(nullToEmpty(turn.content()));
                         case ASSISTANT -> new AssistantMessage(nullToEmpty(turn.content()));
-                        case TOOL -> new UserMessage("[工具结果] " + nullToEmpty(turn.content()));
+                        case TOOL ->
+                                new UserMessage("[Tool result] " + nullToEmpty(turn.content()));
                     });
         }
         return messages;
