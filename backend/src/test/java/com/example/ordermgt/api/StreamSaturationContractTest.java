@@ -9,6 +9,7 @@ import com.example.ordermgt.assistant.api.AssistantApiMapper;
 import com.example.ordermgt.assistant.api.ChatSender;
 import com.example.ordermgt.assistant.api.ConversationController;
 import com.example.ordermgt.assistant.application.AssistantService;
+import com.example.ordermgt.assistant.application.ConversationRunQueue;
 import com.example.ordermgt.assistant.application.ConversationService;
 import com.example.ordermgt.assistant.domain.AiAssistantPort;
 import com.example.ordermgt.shared.error.GlobalExceptionHandler;
@@ -41,10 +42,14 @@ class StreamSaturationContractTest {
                                         mock(ConversationService.class),
                                         mock(AssistantService.class),
                                         mock(ChatSender.class),
+                                        // The pool is the thing under test, so the run queue is
+                                        // real:
+                                        // a turn that cannot get a thread must surface as 503, not
+                                        // leave the conversation's slot held.
+                                        new ConversationRunQueue(saturated, 5),
                                         mock(AiAssistantPort.class),
                                         new ObjectMapper(),
-                                        Mappers.getMapper(AssistantApiMapper.class),
-                                        saturated))
+                                        Mappers.getMapper(AssistantApiMapper.class)))
                         .setControllerAdvice(new GlobalExceptionHandler())
                         .build();
     }

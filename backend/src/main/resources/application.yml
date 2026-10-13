@@ -43,6 +43,11 @@ spring:
 assistant:
   memory:
     window: 20
+  # How many streaming turns may wait in line behind the one in flight, per conversation
+  # (ADR-0012). Past this the send is refused with 429 QUEUE_FULL: a full line is a capacity
+  # fact, not a state conflict. The line lives in memory only, so a restart empties it.
+  run:
+    queue-depth: 5
   # The dedicated streaming pool (see AsyncConfig). max-concurrent = worker threads, i.e. how
   # many model streams can run at once; queue-capacity = how many more may wait for a thread.
   # Past max-concurrent + queue-capacity in-flight streams, /stream answers 503 instead of

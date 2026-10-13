@@ -23,6 +23,7 @@ import com.example.ordermgt.assistant.api.ConversationController;
 import com.example.ordermgt.assistant.application.ActionConfirmationService;
 import com.example.ordermgt.assistant.application.AssistantResult;
 import com.example.ordermgt.assistant.application.AssistantService;
+import com.example.ordermgt.assistant.application.ConversationRunQueue;
 import com.example.ordermgt.assistant.application.ConversationService;
 import com.example.ordermgt.assistant.domain.AiAssistantPort;
 import com.example.ordermgt.assistant.domain.AiInvocation;
@@ -114,6 +115,13 @@ class ApiContractTest {
 
         AssistantApiMapper assistantMapper = Mappers.getMapper(AssistantApiMapper.class);
 
+        // Direct execution: this suite is about the contract on the wire, not about scheduling, so
+        // an admitted turn runs on the calling thread.
+        ConversationRunQueue runQueue = new ConversationRunQueue(Runnable::run, 5);
+        ChatSender chatSender =
+                new ChatSender(
+                        assistantService, guard, assistantMapper, conversationService, runQueue);
+
         mvc =
                 MockMvcBuilders.standaloneSetup(
                                 new OrderController(
@@ -124,16 +132,15 @@ class ApiContractTest {
                                         catalogRepository,
                                         Mappers.getMapper(CatalogApiMapper.class)),
                                 new ActionController(actionConfirmationService),
-                                new AssistantController(
-                                        new ChatSender(assistantService, guard, assistantMapper)),
+                                new AssistantController(chatSender),
                                 new ConversationController(
                                         conversationService,
                                         assistantService,
-                                        new ChatSender(assistantService, guard, assistantMapper),
+                                        chatSender,
+                                        runQueue,
                                         mock(AiAssistantPort.class),
                                         new ObjectMapper(),
-                                        assistantMapper,
-                                        Runnable::run))
+                                        assistantMapper))
                         .setControllerAdvice(new GlobalExceptionHandler())
                         .setValidator(validator)
                         .setMessageConverters(new MappingJackson2HttpMessageConverter(wire))

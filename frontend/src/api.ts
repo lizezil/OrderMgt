@@ -6,6 +6,7 @@ import type {
   Message,
   Order,
   PageResult,
+  QueuedTurn,
 } from './types'
 import { DEFAULT_CUSTOMER_ID, DEFAULT_PAGE_SIZE, FIRST_PAGE } from './constants'
 
@@ -68,18 +69,35 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
  */
 const FRAME_END = /\r\n\r\n|\n\n|\r\r/
 
+/** Error code for a queued turn the customer deleted before it ever ran (see `dropped` below). */
+export const QUEUE_DROPPED = 'QUEUE_DROPPED'
+
+/** What a streaming turn reports as it goes: prose deltas, and its place in line if it has one. */
+export interface ChatStreamHandlers {
+  onToken: (delta: string) => void
+  /** Called once if the turn had to wait on a busy conversation (ADR-0012). */
+  onQueued?: (queued: QueuedTurn) => void
+  /** Called when a queued turn leaves the line and starts running -- before its first token. */
+  onStarted?: () => void
+}
+
 /**
  * Streaming send. The endpoint is a GET carrying the message in the query string, so the customer
  * header still rides on the request — which is why this reads the body with fetch and a
  * ReadableStream rather than EventSource: EventSource cannot set request headers.
  *
  * <p>The contract mirrors the JSON endpoint: `token` events carry prose deltas, then one `done`
- * event carries the same ChatResponse (cards included). An `error` event fails the promise.
+ * event carries the same ChatResponse (cards included). Three frames exist only here, because only
+ * a stream can wait: `queued` says the turn is behind another one and hands back the id its DELETE
+ * needs, `started` says it now has the conversation to itself, and `dropped` says the customer
+ * removed it from the line, so it will never run. An `error` event fails the promise; a `dropped`
+ * one rejects with {@link QUEUE_DROPPED}, which is a decision rather than a failure and is handled
+ * without a toast.
  */
 export async function chatStream(
   message: string,
   conversationId: number,
-  onToken: (delta: string) => void,
+  handlers: ChatStreamHandlers,
 ): Promise<ChatResponse> {
   const response = await fetch(
     `/api/assistant/conversations/${conversationId}/stream?message=${encodeURIComponent(message)}`,
@@ -98,6 +116,7 @@ export async function chatStream(
   let buffer = ''
   let result: ChatResponse | null = null
   let failure: string | null = null
+  let dropped = false
 
   for (;;) {
     const { value, done } = await reader.read()
@@ -111,16 +130,36 @@ export async function chatStream(
       const frame = buffer.slice(0, boundary.index)
       buffer = buffer.slice(boundary.index + boundary[0].length)
       const event = parseSseFrame(frame)
-      if (event?.name === 'token') onToken(event.data)
+      if (event?.name === 'token') handlers.onToken(event.data)
+      else if (event?.name === 'queued') reportQueued(event.data, handlers)
+      else if (event?.name === 'started') handlers.onStarted?.()
       else if (event?.name === 'done') result = JSON.parse(event.data) as ChatResponse
+      else if (event?.name === 'dropped') dropped = true
       else if (event?.name === 'error') failure = event.data
       boundary = FRAME_END.exec(buffer)
     }
   }
 
+  if (dropped) {
+    // Not a failure: the customer deleted this turn from the line, so nothing was ever asked. The
+    // transport was fine, which is why the status is the response's own.
+    throw new ApiError(QUEUE_DROPPED, '排队中的这一轮已被取消', 200)
+  }
   if (failure) throw new ApiError('STREAM_ERROR', failure, 502)
   if (!result) throw new ApiError('STREAM_ERROR', '流式响应未返回结果', 502)
   return result
+}
+
+/** Reports a `queued` frame, ignoring one that carries no usable id (then it is only visible). */
+function reportQueued(data: string, handlers: ChatStreamHandlers): void {
+  try {
+    const queued = JSON.parse(data) as Partial<QueuedTurn>
+    if (typeof queued.itemId === 'string') {
+      handlers.onQueued?.({ itemId: queued.itemId, position: queued.position ?? 1 })
+    }
+  } catch {
+    // A malformed frame must not take the turn down with it; the line is simply not deletable.
+  }
 }
 
 function parseSseFrame(frame: string): { name: string; data: string } | null {
@@ -153,6 +192,13 @@ export const api = {
     ),
 
   chatStream,
+
+  /** Takes one waiting turn off the conversation's line; it will then never run (ADR-0012). */
+  cancelQueued: (conversationId: number, itemId: string) =>
+    request<null>(
+      `/api/assistant/conversations/${conversationId}/queue/${encodeURIComponent(itemId)}`,
+      { method: 'DELETE' },
+    ),
 
   confirm: (token: string) =>
     request<ActionResolution>(`/api/assistant/actions/${token}/confirm`, { method: 'POST' }),

@@ -23,6 +23,13 @@ export const LOCAL_MESSAGE_ID_START = -1
 export const RECONCILE_DELAY_MS = 1500
 export const RECONCILE_ATTEMPTS = 3
 
+/**
+ * How many sends may wait behind the running one, per conversation. Mirrors the backend's
+ * `assistant.run.queue-depth`; keeping the composer under it only avoids firing a send the server
+ * would answer with 429 QUEUE_FULL.
+ */
+export const MAX_QUEUE_DEPTH = 5
+
 /** A card reads "N minutes to expiry" until this many remain, then just "expiring soon". */
 export const EXPIRY_SOON_MINUTES = 1
 

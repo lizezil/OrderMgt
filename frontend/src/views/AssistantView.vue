@@ -1,7 +1,12 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from 'vue'
-import { api } from '../api'
-import { LOCAL_MESSAGE_ID_START, RECONCILE_ATTEMPTS, RECONCILE_DELAY_MS } from '../constants'
+import { api, ApiError, QUEUE_DROPPED } from '../api'
+import {
+  LOCAL_MESSAGE_ID_START,
+  MAX_QUEUE_DEPTH,
+  RECONCILE_ATTEMPTS,
+  RECONCILE_DELAY_MS,
+} from '../constants'
 import { errorMessage } from '../errors'
 import { renderMarkdown } from '../markdown'
 import type { ActionCard, ChatResponse, Conversation, ConversationState, Message } from '../types'
@@ -13,12 +18,42 @@ const conversations = ref<Conversation[]>([])
 const messages = ref<Message[]>([])
 const activeId = ref<number | null>(null)
 const draft = ref('')
-const sending = ref(false)
 const loading = ref(false)
 const usage = ref<{ prompt: number; completion: number; latencyMs: number } | null>(null)
 const scroller = ref<HTMLElement | null>(null)
 
+/** Sends still awaiting their stream. A count, not a lock: a busy conversation takes more of them. */
+const inFlight = ref(0)
+
+/**
+ * Whether a turn is running or waiting right now. Drives the "助手正在拟…" note and hides the retry
+ * entry -- while a turn is in flight the thread's tail is not settled enough to offer a re-send.
+ */
+const sending = computed(() => inFlight.value > 0)
+
 let localId = LOCAL_MESSAGE_ID_START
+
+/** One send waiting its turn on a busy conversation, keyed to the optimistic bubble it belongs to. */
+interface QueuedSend {
+  conversationId: number
+  itemId: string
+  messageId: number
+  text: string
+}
+
+/** Every send currently waiting in line, across conversations; the strip shows the active one's. */
+const queued = ref<QueuedSend[]>([])
+
+/**
+ * The line for the conversation on screen. The server owns the real line (another tab can add to
+ * it), so this is only what this screen knows about -- enough to show the count and delete an item,
+ * and the server's 429 remains the authority on capacity.
+ */
+const activeQueue = computed(() =>
+  queued.value.filter((item) => item.conversationId === activeId.value),
+)
+
+const queueFull = computed(() => activeQueue.value.length >= MAX_QUEUE_DEPTH)
 
 function fail(error: unknown): void {
   emit('error', errorMessage(error, '请求失败'))
@@ -82,6 +117,30 @@ function retry(message: Message): void {
   if (sending.value) return
   draft.value = message.content ?? ''
   void send()
+}
+
+/** A queued marker is per-send: it goes away when the turn starts, fails, or is deleted. */
+function forgetQueued(messageId: number): void {
+  queued.value = queued.value.filter((item) => item.messageId !== messageId)
+}
+
+/** Whether a failed send was one the customer deleted from the line, rather than a real error. */
+function isQueueDropped(error: unknown): boolean {
+  return error instanceof ApiError && error.code === QUEUE_DROPPED
+}
+
+/**
+ * Deletes one waiting item. A 404 means it was too late -- the turn reached the front and is
+ * running -- which is the server telling the truth, so it is reported like any other failure and
+ * the turn simply proceeds.
+ */
+async function cancelQueued(item: QueuedSend): Promise<void> {
+  try {
+    await api.cancelQueued(item.conversationId, item.itemId)
+    forgetQueued(item.messageId)
+  } catch (error) {
+    fail(error)
+  }
 }
 
 async function loadConversations(): Promise<void> {
@@ -203,6 +262,10 @@ async function reconcile(
   text: string,
   knownIds: Set<number>,
 ): Promise<ReconcileOutcome> {
+  // Another send still in flight makes a wholesale reassignment wrong: its optimistic bubble is not
+  // in the server's history yet -- a queued turn has not even been committed -- so replacing the
+  // thread would erase it. 'unknown' is exactly this answer: keep local state, report the error.
+  if (inFlight.value > 1) return 'unknown'
   let absent = false
   for (let attempt = 0; attempt < RECONCILE_ATTEMPTS; attempt++) {
     let history: Message[]
@@ -233,9 +296,14 @@ async function reconcile(
   return 'landed'
 }
 
+/**
+ * Sends one message. Not gated on a turn already running: on a busy conversation the server puts
+ * this one in line and answers on this same stream with a `queued` frame, so a second Enter while
+ * the assistant is still answering is a normal thing to do, not a mistake to swallow.
+ */
 async function send(): Promise<void> {
   const text = draft.value.trim()
-  if (!text || sending.value) return
+  if (!text) return
 
   // The message belongs to the conversation the in-flight switch settles on, never to the one
   // that happened to be active a moment ago. A failed switch already reported itself; the
@@ -243,7 +311,7 @@ async function send(): Promise<void> {
   await pendingSwitch.catch(() => {})
 
   draft.value = ''
-  sending.value = true
+  inFlight.value++
   // Identity for the reconcile below: ids the screen already held before this send, so re-sending
   // identical words can be told apart from the older turn that happens to say the same thing.
   const knownIds = new Set(messages.value.map((message) => message.id))
@@ -280,25 +348,49 @@ async function send(): Promise<void> {
     })
     const reply = messages.value[messages.value.length - 1]!
     placeholder = reply
+    const target = conversationId
 
-    const response = await api.chatStream(text, conversationId, (delta) => {
-      reply.content = (reply.content ?? '') + delta
-      void scrollToEnd()
+    const response = await api.chatStream(text, target, {
+      onToken: (delta) => {
+        reply.content = (reply.content ?? '') + delta
+        void scrollToEnd()
+      },
+      onQueued: (turn) => {
+        queued.value = [
+          ...queued.value,
+          { conversationId: target, itemId: turn.itemId, messageId: sent.id, text },
+        ]
+      },
+      // The turn is out of the line now; the server says so before its first token, so the count
+      // never keeps calling a running turn "waiting".
+      onStarted: () => forgetQueued(sent.id),
     })
 
-    usage.value = {
-      prompt: response.promptTokens,
-      completion: response.completionTokens,
-      latencyMs: response.latencyMs,
+    forgetQueued(sent.id)
+    // The turn belongs to the conversation it was asked in. A queued turn can land minutes after
+    // the customer has moved on, so only a still-open thread gets its reply and its meter.
+    if (activeId.value === target) {
+      usage.value = {
+        prompt: response.promptTokens,
+        completion: response.completionTokens,
+        latencyMs: response.latencyMs,
+      }
+      messages.value = messages.value.filter((message) => message !== reply)
+      appendReply(response)
     }
-    messages.value = messages.value.filter((message) => message !== reply)
-    appendReply(response)
     refreshConversations()
   } catch (error) {
     // The half-rendered placeholder never survives a failure; what replaces it is not a guess but
     // the server's answer to "did this send actually land?" -- the stream dying says nothing
     // either way, because the backend finishes and persists the turn even with nobody listening.
+    forgetQueued(sent.id)
     messages.value = messages.value.filter((message) => message !== placeholder)
+    if (isQueueDropped(error)) {
+      // The customer deleted it from the line, so nothing was ever asked. Retract the bubble and
+      // keep the draft cleared -- cancelling a queued send is not a reason to rewrite it.
+      messages.value = messages.value.filter((message) => message !== sent)
+      return
+    }
     const outcome =
       conversationId === null ? 'not-sent' : await reconcile(conversationId, text, knownIds)
     if (outcome === 'not-sent') {
@@ -307,7 +399,7 @@ async function send(): Promise<void> {
     }
     if (outcome !== 'recovered') fail(error)
   } finally {
-    sending.value = false
+    inFlight.value--
     await scrollToEnd()
   }
 }
@@ -395,6 +487,14 @@ onMounted(async () => {
 
     <div class="composer">
       <div class="measure">
+        <!-- Turns waiting behind the one in flight on this conversation: visible, and deletable by id. -->
+        <div v-if="activeQueue.length" class="queue">
+          <span class="queue-head">排队中：{{ activeQueue.length }} 条</span>
+          <span v-for="item in activeQueue" :key="item.itemId" class="queue-item">
+            <span class="queue-text">{{ item.text }}</span>
+            <button class="btn quiet" @click="cancelQueued(item)">删除</button>
+          </span>
+        </div>
         <div class="composer-row">
           <textarea
             v-model="draft"
@@ -402,7 +502,7 @@ onMounted(async () => {
             placeholder="说点什么…（Enter 发送）"
             @keydown.enter.exact.prevent="send"
           />
-          <button class="btn authority" :disabled="sending || !draft.trim()" @click="send">
+          <button class="btn authority" :disabled="!draft.trim() || queueFull" @click="send">
             发送
           </button>
         </div>

@@ -1,26 +1,42 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { api } from '../api'
+import { api, ApiError, QUEUE_DROPPED } from '../api'
 import { RECONCILE_DELAY_MS } from '../constants'
-import type { ActionCard, ChatResponse, Conversation, ConversationState, Message } from '../types'
+import type {
+  ActionCard,
+  ChatResponse,
+  Conversation,
+  ConversationState,
+  Message,
+  QueuedTurn,
+} from '../types'
 import AssistantView from './AssistantView.vue'
 
-vi.mock('../api', () => ({
-  api: {
-    listConversations: vi.fn(),
-    history: vi.fn(),
-    startConversation: vi.fn(),
-    chatStream: vi.fn(),
-    confirm: vi.fn(),
-    reject: vi.fn(),
-  },
-}))
+vi.mock('../api', async () => {
+  // The real ApiError class travels through the mock so `instanceof` in the view still holds: the
+  // dropped-queue path is detected by the error's code, not by its text.
+  const actual = await vi.importActual<typeof import('../api')>('../api')
+  return {
+    ApiError: actual.ApiError,
+    QUEUE_DROPPED: actual.QUEUE_DROPPED,
+    api: {
+      listConversations: vi.fn(),
+      history: vi.fn(),
+      startConversation: vi.fn(),
+      chatStream: vi.fn(),
+      cancelQueued: vi.fn(),
+      confirm: vi.fn(),
+      reject: vi.fn(),
+    },
+  }
+})
 
 const listConversationsMock = vi.mocked(api.listConversations)
 const historyMock = vi.mocked(api.history)
 const startConversationMock = vi.mocked(api.startConversation)
 const chatStreamMock = vi.mocked(api.chatStream)
+const cancelQueuedMock = vi.mocked(api.cancelQueued)
 
 function conversation(
   id: number,
@@ -43,6 +59,21 @@ function pendingCard(): ActionCard {
     rejectEndpoint: '/api/assistant/actions/tok-1/reject',
     expiresAt: new Date(Date.now() + 15 * 60_000).toISOString(),
     status: 'PENDING',
+  }
+}
+
+/** The `done` payload for a turn that answered in prose; override what the test cares about. */
+function reply(overrides: Partial<ChatResponse> = {}): ChatResponse {
+  return {
+    conversationId: 7,
+    reply: '好的',
+    executed: [],
+    actions: [],
+    promptTokens: 1,
+    completionTokens: 1,
+    model: 'offline-mock',
+    latencyMs: 10,
+    ...overrides,
   }
 }
 
@@ -198,22 +229,17 @@ describe('有问无答的回合', () => {
   it('重试把那句话作为全新的一轮重发', async () => {
     listConversationsMock.mockResolvedValue([conversation(7, '下单')])
     historyMock.mockResolvedValue([unanswered()])
-    chatStreamMock.mockResolvedValue({
-      conversationId: 7,
-      reply: '好的',
-      executed: [],
-      actions: [],
-      promptTokens: 1,
-      completionTokens: 1,
-      model: 'offline-mock',
-      latencyMs: 10,
-    })
+    chatStreamMock.mockResolvedValue(reply())
 
     const wrapper = await mountView()
     await wrapper.get('.retry button').trigger('click')
     await flushPromises()
 
-    expect(chatStreamMock).toHaveBeenCalledWith('帮我下单 1 个 GIZMO-03', 7, expect.any(Function))
+    expect(chatStreamMock).toHaveBeenCalledWith(
+      '帮我下单 1 个 GIZMO-03',
+      7,
+      expect.objectContaining({ onToken: expect.any(Function) }),
+    )
   })
 
   it('回合还在跑（RUNNING）时不给重试：回复也许只是迟到，重发会多开一个 Run', async () => {
@@ -243,8 +269,8 @@ describe('流式回复', () => {
     listConversationsMock.mockResolvedValue([])
     let emitDelta!: (delta: string) => void
     let finish!: (response: ChatResponse) => void
-    chatStreamMock.mockImplementation((_message, _id, onToken) => {
-      emitDelta = onToken
+    chatStreamMock.mockImplementation((_message, _id, handlers) => {
+      emitDelta = handlers.onToken
       return new Promise<ChatResponse>((resolve) => {
         finish = resolve
       })
@@ -256,7 +282,11 @@ describe('流式回复', () => {
     await flushPromises()
 
     expect(startConversationMock).toHaveBeenCalled()
-    expect(chatStreamMock).toHaveBeenCalledWith('帮我下单 2 个 GADGET-02', 7, expect.any(Function))
+    expect(chatStreamMock).toHaveBeenCalledWith(
+      '帮我下单 2 个 GADGET-02',
+      7,
+      expect.objectContaining({ onToken: expect.any(Function) }),
+    )
 
     emitDelta('我准备好')
     await nextTick()
@@ -266,16 +296,15 @@ describe('流式回复', () => {
     await nextTick()
     expect(wrapper.text()).toContain('我准备好了一个下单操作，请你确认。')
 
-    finish({
-      conversationId: 7,
-      reply: '我准备好了一个下单操作，请你确认。',
-      executed: [],
-      actions: [pendingCard()],
-      promptTokens: 12,
-      completionTokens: 8,
-      model: 'offline-mock',
-      latencyMs: 321,
-    })
+    finish(
+      reply({
+        reply: '我准备好了一个下单操作，请你确认。',
+        actions: [pendingCard()],
+        promptTokens: 12,
+        completionTokens: 8,
+        latencyMs: 321,
+      }),
+    )
     await flushPromises()
 
     // The streamed placeholder is replaced (not appended to), and the card is its own turn.
@@ -523,7 +552,11 @@ describe('输入框归属的会话，由正在切换的那一步决定', () => {
     resolveCreation(conversation(2, null))
     await flushPromises()
 
-    expect(chatStreamMock).toHaveBeenCalledWith('第二条的问题', 2, expect.any(Function))
+    expect(chatStreamMock).toHaveBeenCalledWith(
+      '第二条的问题',
+      2,
+      expect.objectContaining({ onToken: expect.any(Function) }),
+    )
   })
 
   it('切回助手后首屏会话还没展开就回车：这句落在即将展开的那条里，不另起炉灶', async () => {
@@ -542,7 +575,11 @@ describe('输入框归属的会话，由正在切换的那一步决定', () => {
     resolveList([conversation(3, '之前聊的')])
     await flushPromises()
 
-    expect(chatStreamMock).toHaveBeenCalledWith('回来后的第一句', 3, expect.any(Function))
+    expect(chatStreamMock).toHaveBeenCalledWith(
+      '回来后的第一句',
+      3,
+      expect.objectContaining({ onToken: expect.any(Function) }),
+    )
     // 而不是绕过加载、自作主张新建一段（startConversation 默认给的是 7）。
     expect(startConversationMock).not.toHaveBeenCalled()
   })
@@ -550,16 +587,7 @@ describe('输入框归属的会话，由正在切换的那一步决定', () => {
   it('上一轮收尾中（侧栏刷新一直挂着）的回车不被吞掉：下一句照常发出', async () => {
     listConversationsMock.mockResolvedValueOnce([]) // 挂载时的列表
     listConversationsMock.mockImplementation(() => new Promise(() => {})) // 之后的刷新永不返回
-    chatStreamMock.mockResolvedValue({
-      conversationId: 7,
-      reply: '好的',
-      executed: [],
-      actions: [],
-      promptTokens: 1,
-      completionTokens: 1,
-      model: 'offline-mock',
-      latencyMs: 10,
-    })
+    chatStreamMock.mockResolvedValue(reply())
 
     const wrapper = await mountView()
     await wrapper.get('textarea').setValue('第一句')
@@ -572,5 +600,140 @@ describe('输入框归属的会话，由正在切换的那一步决定', () => {
 
     expect(chatStreamMock).toHaveBeenCalledTimes(2)
     expect(chatStreamMock.mock.calls[1]![0]).toBe('第二句')
+  })
+})
+
+describe('忙时入队', () => {
+  /** The callbacks the view hands a stream; all of them are passed here. */
+  interface Handlers {
+    onToken: (delta: string) => void
+    onQueued: (turn: QueuedTurn) => void
+    onStarted: () => void
+  }
+
+  /**
+   * A conversation that is already answering. Every stream stays open until the test settles it,
+   * which is what makes "a second send while the first is still running" reachable.
+   */
+  function busyConversation() {
+    const seen: Handlers[] = []
+    const settlers: {
+      resolve: (response: ChatResponse) => void
+      reject: (error: unknown) => void
+    }[] = []
+    chatStreamMock.mockImplementation((_message, _id, handlers) => {
+      seen.push(handlers as Handlers)
+      return new Promise<ChatResponse>((resolve, reject) => {
+        settlers.push({ resolve, reject })
+      })
+    })
+    return {
+      on: (index: number): Handlers => seen[index]!,
+      reject: (index: number, error: unknown): void => settlers[index]!.reject(error),
+      resolve: (index: number, response: ChatResponse): void => settlers[index]!.resolve(response),
+    }
+  }
+
+  async function sendLine(wrapper: ReturnType<typeof mount>, text: string): Promise<void> {
+    await wrapper.get('textarea').setValue(text)
+    await sendButton(wrapper).trigger('click')
+    await flushPromises()
+  }
+
+  beforeEach(() => {
+    listConversationsMock.mockResolvedValue([conversation(7, '下单')])
+    historyMock.mockResolvedValue([])
+  })
+
+  it('一轮还在回答时再发一句：不另起一个 Run，而是排进这条会话的队伍', async () => {
+    const stream = busyConversation()
+    const wrapper = await mountView()
+    await sendLine(wrapper, '第一句')
+
+    // 忙，但发送键照旧可用（只要有话可说）：下一句就是要排进去的那句，而不是被悄悄吞掉的那句。
+    await wrapper.get('textarea').setValue('第二句')
+    expect(sendButton(wrapper).attributes('disabled')).toBeUndefined()
+
+    await sendButton(wrapper).trigger('click')
+    await flushPromises()
+    stream.on(1).onQueued({ itemId: 'q1', position: 1 })
+    await nextTick()
+
+    expect(wrapper.get('.queue-head').text()).toBe('排队中：1 条')
+    expect(wrapper.get('.queue-text').text()).toBe('第二句')
+  })
+
+  it('轮到它开始时撤下排队标记：started 一到，它就是一轮普通的回复', async () => {
+    const stream = busyConversation()
+    const wrapper = await mountView()
+    await sendLine(wrapper, '第一句')
+    await sendLine(wrapper, '第二句')
+    stream.on(1).onQueued({ itemId: 'q1', position: 1 })
+    await nextTick()
+    expect(wrapper.find('.queue').exists()).toBe(true)
+
+    stream.on(1).onStarted()
+    await nextTick()
+
+    expect(wrapper.find('.queue').exists()).toBe(false)
+  })
+
+  it('删掉排队中的那条：DELETE 服务端那一项，本地气泡一起收回且不报错', async () => {
+    const stream = busyConversation()
+    cancelQueuedMock.mockResolvedValue(null)
+    const wrapper = await mountView()
+    await sendLine(wrapper, '第一句')
+    await sendLine(wrapper, '第二句')
+    stream.on(1).onQueued({ itemId: 'q1', position: 1 })
+    await nextTick()
+
+    await wrapper.get('.queue-item button').trigger('click')
+    await flushPromises()
+
+    expect(cancelQueuedMock).toHaveBeenCalledWith(7, 'q1')
+    expect(wrapper.find('.queue').exists()).toBe(false)
+
+    // 服务端随后以 dropped 收尾这条流：是客户自己的删除，不是失败，不该弹错误也不该留下这句话。
+    stream.reject(1, new ApiError(QUEUE_DROPPED, '排队中的这一轮已被取消', 200))
+    await flushPromises()
+
+    expect(wrapper.emitted('error')).toBeUndefined()
+    expect(wrapper.text()).not.toContain('第二句')
+  })
+
+  it('排满 5 条就把发送键关掉：再多一条 429 不该由客户去撞上', async () => {
+    const stream = busyConversation()
+    const wrapper = await mountView()
+    for (let index = 1; index <= 6; index++) {
+      await sendLine(wrapper, `要排队的第 ${index} 句`)
+    }
+
+    // 第 1 句在跑，第 2..6 句在排队 —— 正好排满一条会话的上限。
+    for (let index = 1; index <= 5; index++) {
+      stream.on(index).onQueued({ itemId: `q${index}`, position: index })
+    }
+    await nextTick()
+
+    expect(wrapper.get('.queue-head').text()).toBe('排队中：5 条')
+    expect(sendButton(wrapper).attributes('disabled')).toBeDefined()
+  })
+
+  it('排队中的那一轮回来时客户已经切走：回复不落进另一段对话', async () => {
+    listConversationsMock.mockResolvedValue([conversation(7, '下单'), conversation(8, '另一段')])
+    historyMock.mockResolvedValue([])
+    const stream = busyConversation()
+    const wrapper = await mountView()
+    await sendLine(wrapper, '第一句')
+    await sendLine(wrapper, '第二句')
+
+    const other = wrapper.findAll('.entry').find((entry) => entry.text().includes('另一段'))
+    if (!other) throw new Error('找不到另一段对话的入口')
+    await other.trigger('click')
+    await flushPromises()
+
+    stream.resolve(1, reply({ reply: '迟到很久的回复。' }))
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('迟到很久的回复。')
   })
 })

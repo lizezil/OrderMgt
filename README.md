@@ -13,6 +13,7 @@
 设计定稿（决策表、表结构、接口契约、里程碑与实测记录）见 [面试作业-设计定稿.md](docs/面试作业-设计定稿.md)，
 需求梳理与坑位分析见 [面试作业-需求梳理与坑位分析.md](docs/面试作业-需求梳理与坑位分析.md)，
 直播演示的逐步脚本与讲解要点见 [面试作业-演示脚本与讲解要点.md](docs/面试作业-演示脚本与讲解要点.md)，
+面向追问型面试的备课手册（要求对照/结构/实现/讲法/复习路径）见 [面试作业-准备手册.md](docs/面试作业-准备手册.md)，
 按使用者视角梳理的用户故事见 [用户故事.md](docs/用户故事.md)；
 领域词汇表见 [CONTEXT.md](CONTEXT.md)，所有架构决策见 [docs/adr/](docs/adr/)。
 
@@ -98,8 +99,9 @@ docker compose up --build
 | POST | `/api/assistant/conversations` | 新对话 |
 | GET | `/api/assistant/conversations` | 会话列表；每项带 `status`（`ACTIVE`/`ARCHIVED`）与派生 `state`（`IDLE`/`RUNNING`/`WAITING_APPROVAL`，见 [ADR-0011](docs/adr/0011-run-is-the-unit-of-execution.md)） |
 | GET | `/api/assistant/conversations/{id}/messages` | 历史（含每张卡片的当前状态） |
-| POST | `/api/assistant/conversations/{id}/messages` | 在指定会话里发消息 |
-| GET | `/api/assistant/conversations/{id}/stream?message=` | SSE：`token` 事件逐个吐字，最后一发 `done` 带完整结果。SPA 用它做增量渲染（`fetch` + `ReadableStream`，因为要带 `X-Customer-Id` 头） |
+| POST | `/api/assistant/conversations/{id}/messages` | 在指定会话里发消息；会话忙时 `409 CONFLICT`（见下） |
+| GET | `/api/assistant/conversations/{id}/stream?message=` | SSE：`token` 事件逐个吐字，最后一发 `done` 带完整结果。SPA 用它做增量渲染（`fetch` + `ReadableStream`，因为要带 `X-Customer-Id` 头）。会话忙时**入队**，先补发 `queued`（带可删除的 `itemId`），轮到它时补发 `started`；被删掉的排队项以 `dropped` 收尾 |
+| DELETE | `/api/assistant/conversations/{id}/queue/{itemId}` | 删掉一条排队项（`itemId` 是内存态 id）；它**不会执行**，其连接收到 `dropped` 后关闭。不在队列里 → `404` |
 | POST | `/api/assistant/actions/{token}/confirm` | 确认并执行（重复确认返回 `replayed:true`，不会执行第二次） |
 | POST | `/api/assistant/actions/{token}/reject` | 拒绝 |
 | POST | `/api/orders` | 直接下单（幂等键：`Idempotency-Key`） |
@@ -214,6 +216,8 @@ docs/             项目文档
 
 进程重启即一次对账：单实例启动那一刻不可能有活 Run，于是启动时（`RunReconciler`，一次性的 `ApplicationRunner`，不是定时器）把库里残留的 `RUNNING` 一律标成 `INTERRUPTED` 并补上 `ended_at`，让状态列说真话。被中断的回合在历史里就是「有问无答」——客户消息早已落库、回复没有——SPA 给出一个**重试**入口：把那句话作为**全新的 Run** 重发，绝不续传半截。
 
+忙碌的会话**只有一个回合在跑**，后来的**流式**发送进这条会话的**内存队列**（FIFO，`ConversationRunQueue`，进程内注册表）：先补一发 `queued`（带位置与可删除的 `itemId`），轮到它时补发 `started`，然后照常吐字；删掉一条排队项（`DELETE .../queue/{itemId}`）**它就不会执行**（连接收 `dropped` 后关闭）。队列深度上限 `assistant.run.queue-depth`（5），排满再发 → `429 QUEUE_FULL`——满了是**容量**问题，所以不是 409。**同步**入口（`POST /{id}/messages`）带幂等键、承诺"要么立刻跑要么拒绝"，所以忙时直接 `409 CONFLICT`，不排队。排队项**不落库**、也不建 Run 行：它们只活在运行态注册表里，随进程重启一起丢。（[ADR-0012](docs/adr/0012-one-running-run-per-conversation.md)）
+
 ## 没有 Key 也能跑（离线模式）
 
 ```bash
@@ -230,3 +234,4 @@ SPRING_PROFILES_ACTIVE=mysql,offline ./mvnw -pl backend spring-boot:run
 - **E2E 只跑 Chromium**（`@playwright/test` 1.49.1，更新的版本不再发布 macOS 12 可用的 Chromium），WebKit / Firefox 未覆盖；且它假定常驻 MySQL 可用、助手走 `offline` 桩——真实模型下的流式与超时行为没有 E2E。
 - **`make test-frontend` / `make test-e2e` 没有接进 CI**：本仓库目前没有 CI 配置，`make check` 只是留给 CI 的入口。
 - Docker Compose 只起**单实例应用**：确认态的并发去重靠数据库行锁，多实例同样成立，但没有做过压测。
+- **「至多一个 RUNNING Run」只在进程内保证**：`ConversationRunQueue` 与队列都是内存注册表，库层不强制唯一 RUNNING，多实例下各算各的；队列中的项也随重启丢弃、且只有发起那条连接能看见并删除它（把队列推给**所有**客户端是 `/api/assistant/events` 的活）。不含每客户并发配额。

@@ -12,6 +12,7 @@ import static org.mockito.Mockito.when;
 
 import com.example.ordermgt.assistant.application.AssistantResult;
 import com.example.ordermgt.assistant.application.AssistantService;
+import com.example.ordermgt.assistant.application.ConversationRunQueue;
 import com.example.ordermgt.assistant.application.ConversationService;
 import com.example.ordermgt.assistant.domain.AiAssistantPort;
 import com.example.ordermgt.assistant.domain.AiUsage;
@@ -22,7 +23,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.time.Instant;
 import java.util.List;
-import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
@@ -56,9 +56,9 @@ class ConversationControllerTest {
     @Mock private ConversationService conversationService;
     @Mock private AssistantService assistantService;
     @Mock private ChatSender chatSender;
+    @Mock private ConversationRunQueue runQueue;
     @Mock private AiAssistantPort aiAssistantPort;
     @Mock private AssistantApiMapper mapper;
-    @Mock private Executor streamExecutor;
     @Mock private SseEmitter emitter;
 
     private ConversationController controller;
@@ -73,10 +73,10 @@ class ConversationControllerTest {
                         conversationService,
                         assistantService,
                         chatSender,
+                        runQueue,
                         aiAssistantPort,
                         new ObjectMapper(),
-                        mapper,
-                        streamExecutor);
+                        mapper);
         Conversation conversation =
                 Conversation.rehydrate(
                         CONVERSATION,
@@ -126,6 +126,8 @@ class ConversationControllerTest {
         verify(assistantService).executeTurn(eq(context), any()); // 回合照样走完
         verify(assistantService, never()).recordFailure(any(), any(), any());
         verify(emitter).complete();
+        // 会话的执行位是这一轮占的，收尾时无论成功失败都要交出去，否则这条会话就再也没人服务。
+        verify(runQueue).finished(CONVERSATION);
     }
 
     /** 容器先一步发现断线（onError/onTimeout 置位）时，一个事件都不该再往线上写，但回合照跑。 */

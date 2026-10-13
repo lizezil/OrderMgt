@@ -3,6 +3,7 @@ package com.example.ordermgt.assistant.api;
 import com.example.ordermgt.assistant.AiCallPolicy;
 import com.example.ordermgt.assistant.application.AssistantResult;
 import com.example.ordermgt.assistant.application.AssistantService;
+import com.example.ordermgt.assistant.application.ConversationRunQueue;
 import com.example.ordermgt.assistant.application.ConversationService;
 import com.example.ordermgt.assistant.application.ConversationView;
 import com.example.ordermgt.assistant.domain.AiAssistantPort;
@@ -10,18 +11,18 @@ import com.example.ordermgt.idempotency.application.IdempotencyGuard;
 import com.example.ordermgt.shared.api.ApiResponse;
 import com.example.ordermgt.shared.api.ErrorCode;
 import com.example.ordermgt.shared.error.BusinessException;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.validation.Valid;
 import java.io.IOException;
 import java.util.List;
-import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -49,12 +50,10 @@ public class ConversationController {
     private final ConversationService conversationService;
     private final AssistantService assistantService;
     private final ChatSender chatSender;
+    private final ConversationRunQueue runQueue;
     private final AiAssistantPort aiAssistantPort;
     private final ObjectMapper objectMapper;
     private final AssistantApiMapper mapper;
-
-    @Qualifier("assistantStreamExecutor")
-    private final Executor streamExecutor;
 
     /** 新对话. A conversation that just started has no Run and no card, so its state is IDLE. */
     @PostMapping
@@ -126,12 +125,23 @@ public class ConversationController {
      * {@code max-concurrent} running and the wait queue full -- the rejection is reported as a 503
      * before any event is sent, so a caller finds out immediately instead of holding a connection
      * open for a turn that would only time out in the queue.
+     *
+     * <p>And one more: a conversation runs one turn at a time (ADR-0012). If a turn is already in
+     * flight here, this request does not fail -- it waits, FIFO, behind {@code
+     * assistant.run.queue-depth} others, and a {@code queued} frame tells the caller which line
+     * item it got so it can be deleted. Past that depth the answer is 429 {@code QUEUE_FULL},
+     * before any frame.
      */
     @GetMapping(value = "/{conversationId}/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter stream(
             @RequestHeader("X-Customer-Id") Long customerId,
             @PathVariable Long conversationId,
             @RequestParam String message) {
+        // Ownership before admission: a stranger's request must not be able to tell a busy
+        // conversation from a quiet one, nor take a slot in its line. 403/404 arrives as JSON,
+        // before the response is committed to SSE.
+        conversationService.getOwned(customerId, conversationId);
+
         SseEmitter emitter = new SseEmitter(AiCallPolicy.STREAM_TIMEOUT_MS);
         // The container learns about a dead connection (or the 120s timeout) through these
         // callbacks, often before the next send would fail; either way this one flag decides
@@ -139,15 +149,73 @@ public class ConversationController {
         AtomicBoolean clientGone = new AtomicBoolean(false);
         emitter.onError(error -> clientGone.set(true));
         emitter.onTimeout(() -> clientGone.set(true));
+
+        ConversationRunQueue.Turn turn =
+                new ConversationRunQueue.Turn() {
+
+                    @Override
+                    public void start() {
+                        // "Out of the line, running now": the one moment the waiting client must be
+                        // told about, since a silent turn is otherwise indistinguishable from a
+                        // turn still waiting for the whole time before its first token.
+                        deliver(emitter, clientGone, "started", "{}");
+                        streamTurn(emitter, clientGone, customerId, conversationId, message);
+                    }
+
+                    @Override
+                    public void drop() {
+                        deliver(emitter, clientGone, "dropped", "{}");
+                        completeQuietly(emitter);
+                    }
+                };
+
+        ConversationRunQueue.Admission admission;
         try {
-            streamExecutor.execute(
-                    () -> streamTurn(emitter, clientGone, customerId, conversationId, message));
+            admission = runQueue.submitStreaming(conversationId, turn);
         } catch (RejectedExecutionException ex) {
             log.warn("streaming pool saturated; rejected turn for conversation {}", conversationId);
             throw new BusinessException(
                     ErrorCode.SERVICE_BUSY, "too many streaming turns in flight; retry shortly");
         }
+        if (admission instanceof ConversationRunQueue.Admission.Queued queued) {
+            deliver(emitter, clientGone, "queued", queuedPayload(queued));
+        }
         return emitter;
+    }
+
+    /**
+     * Deletes one waiting item from this conversation's line. Deleting is the only way to change
+     * the queue -- the line is FIFO and is never reordered (ADR-0012) -- and a deleted item never
+     * runs, not even late: its own stream gets a {@code dropped} frame and closes.
+     *
+     * <p>Idempotent in effect -- repeating it changes nothing more -- but not in response: the
+     * design pins a missing item to 404, which is also the honest answer to losing the race where
+     * the item reached the front and started between the click and this call.
+     */
+    @DeleteMapping("/{conversationId}/queue/{itemId}")
+    public ApiResponse<Void> cancelQueued(
+            @RequestHeader("X-Customer-Id") Long customerId,
+            @PathVariable Long conversationId,
+            @PathVariable String itemId) {
+        conversationService.getOwned(customerId, conversationId);
+        if (!runQueue.remove(conversationId, itemId)) {
+            throw new BusinessException(
+                    ErrorCode.NOT_FOUND, "no queued turn " + itemId + " in this conversation");
+        }
+        return ApiResponse.ok(null);
+    }
+
+    /** The itemId is what DELETE needs, so this frame is what makes a line item removable. */
+    private String queuedPayload(ConversationRunQueue.Admission.Queued queued) {
+        try {
+            return objectMapper.writeValueAsString(
+                    new QueuedTurnResponse(queued.itemId(), queued.position()));
+        } catch (JsonProcessingException ex) {
+            // Two primitives cannot fail to serialize; if they somehow did, an empty frame reads as
+            // "queued, but not removable" rather than breaking the stream.
+            log.warn("could not serialize the queued frame: {}", ex.getMessage());
+            return "{}";
+        }
     }
 
     /**
@@ -161,6 +229,10 @@ public class ConversationController {
      * the Run -- {@code executeTurn} owns the persistence, the audit row and the Run's terminal
      * state, on this transport exactly as on the blocking one. "Nobody was listening" is a log
      * line, not an audit failure.
+     *
+     * <p>The turn holds this conversation's slot for its whole life, which is what keeps a second
+     * turn in line (ADR-0012); the release happens whatever the outcome, so a failed turn hands the
+     * slot to the next waiter instead of wedging the conversation.
      */
     void streamTurn(
             SseEmitter emitter,
@@ -199,6 +271,8 @@ public class ConversationController {
                     "error",
                     ex.getMessage() == null ? "streaming response failed" : ex.getMessage());
             completeQuietly(emitter);
+        } finally {
+            runQueue.finished(conversationId);
         }
     }
 

@@ -2,7 +2,7 @@ import { ReadableStream } from 'node:stream/web'
 import { TextEncoder } from 'node:util'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { api, chatStream, getCustomerId, setCustomerId } from './api'
-import type { ChatResponse } from './types'
+import type { ChatResponse, QueuedTurn } from './types'
 
 /**
  * What this file pins is the SPA's half of two contracts the backend cannot enforce for it:
@@ -150,7 +150,7 @@ describe('流式回复的客户端契约', () => {
     )
     const deltas: string[] = []
 
-    const result = await chatStream('帮我下单', 7, (delta) => deltas.push(delta))
+    const result = await chatStream('帮我下单', 7, { onToken: (delta) => deltas.push(delta) })
 
     expect(deltas).toEqual(['我', '准备好了'])
     expect(result).toEqual(DONE)
@@ -166,7 +166,7 @@ describe('流式回复的客户端契约', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(streamResponse([body])))
     const deltas: string[] = []
 
-    await chatStream('x', 7, (delta) => deltas.push(delta))
+    await chatStream('x', 7, { onToken: (delta) => deltas.push(delta) })
 
     expect(deltas).toEqual(['Hello!', ' I can help'])
   })
@@ -181,7 +181,7 @@ describe('流式回复的客户端契约', () => {
     )
     const deltas: string[] = []
 
-    const result = await chatStream('你好', 7, (delta) => deltas.push(delta))
+    const result = await chatStream('你好', 7, { onToken: (delta) => deltas.push(delta) })
 
     expect(deltas).toEqual(['你好'])
     expect(result.reply).toBe(DONE.reply)
@@ -194,7 +194,7 @@ describe('流式回复的客户端契约', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(streamResponse([body])))
     const deltas: string[] = []
 
-    await chatStream('x', 7, (delta) => deltas.push(delta))
+    await chatStream('x', 7, { onToken: (delta) => deltas.push(delta) })
 
     expect(deltas).toEqual(['第一行\n第二行'])
   })
@@ -205,7 +205,7 @@ describe('流式回复的客户端契约', () => {
       vi.fn().mockResolvedValue(streamResponse([frame('error', '上游模型超时')])),
     )
 
-    await expect(chatStream('x', 7, () => {})).rejects.toMatchObject({
+    await expect(chatStream('x', 7, { onToken: () => {} })).rejects.toMatchObject({
       code: 'STREAM_ERROR',
       message: '上游模型超时',
     })
@@ -214,7 +214,9 @@ describe('流式回复的客户端契约', () => {
   it('流结束仍没有 done 时报错，而不是把半截回复当成回复', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(streamResponse([frame('token', '嗯')])))
 
-    await expect(chatStream('x', 7, () => {})).rejects.toMatchObject({ code: 'STREAM_ERROR' })
+    await expect(chatStream('x', 7, { onToken: () => {} })).rejects.toMatchObject({
+      code: 'STREAM_ERROR',
+    })
   })
 
   it('流式请求也带客户头并声明接受 SSE —— 这正是用 fetch 而不是 EventSource 的原因', async () => {
@@ -224,7 +226,7 @@ describe('流式回复的客户端契约', () => {
       .mockResolvedValue(streamResponse([frame('done', JSON.stringify(DONE))]))
     vi.stubGlobal('fetch', fetchMock)
 
-    await chatStream('我有哪些订单？', 3, () => {})
+    await chatStream('我有哪些订单？', 3, { onToken: () => {} })
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
     expect(url).toBe(
@@ -239,9 +241,77 @@ describe('流式回复的客户端契约', () => {
   it('会话不属于该客户时（403）直接失败，不进入解析', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(streamResponse([], 403, 'Forbidden')))
 
-    await expect(chatStream('x', 9, () => {})).rejects.toMatchObject({
+    await expect(chatStream('x', 9, { onToken: () => {} })).rejects.toMatchObject({
       code: 'HTTP_403',
       status: 403,
     })
+  })
+
+  it('queued 事件把「它在队伍里」和可删除的 id 一起报上来，回合照旧进行', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          streamResponse([
+            frame('queued', '{"itemId":"q3","position":2}'),
+            frame('token', '好了'),
+            frame('done', JSON.stringify(DONE)),
+          ]),
+        ),
+    )
+    const seen: QueuedTurn[] = []
+
+    const result = await chatStream('第二条', 7, {
+      onToken: () => {},
+      onQueued: (turn) => seen.push(turn),
+    })
+
+    expect(seen).toEqual([{ itemId: 'q3', position: 2 }])
+    expect(result).toEqual(DONE)
+  })
+
+  it('started 事件表示它已经离开队伍、开始作答 —— 抢在第一个 token 之前', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          streamResponse([
+            frame('queued', '{"itemId":"q1","position":1}'),
+            frame('started', '{}'),
+            frame('token', '好'),
+            frame('done', JSON.stringify(DONE)),
+          ]),
+        ),
+    )
+    const events: string[] = []
+
+    await chatStream('第二条', 7, {
+      onToken: () => {},
+      onQueued: () => events.push('queued'),
+      onStarted: () => events.push('started'),
+    })
+
+    expect(events).toEqual(['queued', 'started'])
+  })
+
+  it('dropped 是一次取舍而非失败：以 QUEUE_DROPPED 收尾，不再等一个永远不会来的回复', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(streamResponse([frame('dropped', '{}')])))
+
+    await expect(chatStream('被删掉的那条', 7, { onToken: () => {} })).rejects.toMatchObject({
+      code: 'QUEUE_DROPPED',
+    })
+  })
+
+  it('删一条排队项就是把它从这条会话的队列 URL 上 DELETE 掉', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(ok(null))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await api.cancelQueued(7, 'q3')
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('/api/assistant/conversations/7/queue/q3')
+    expect(init.method).toBe('DELETE')
   })
 })

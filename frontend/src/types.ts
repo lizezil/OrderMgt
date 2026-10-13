@@ -78,6 +78,16 @@ export interface ExecutedTool {
   resultJson: string
 }
 
+/**
+ * A streaming turn that had to wait its turn on a busy conversation, as reported by the `queued`
+ * frame on that turn's own stream (ADR-0012). `itemId` is a runtime handle with no row behind it --
+ * it is what `DELETE .../queue/{itemId}` needs, and it dies with the process.
+ */
+export interface QueuedTurn {
+  itemId: string
+  position: number
+}
+
 export interface ChatResponse {
   conversationId: number
   reply: string
