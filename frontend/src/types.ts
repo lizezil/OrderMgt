@@ -77,6 +77,8 @@ export interface ChatResponse {
   actions: ActionCard[]
   promptTokens: number
   completionTokens: number
+  model: string | null
+  latencyMs: number
 }
 
 export interface ActionResolution {

@@ -12,7 +12,7 @@ const activeId = ref<number | null>(null)
 const draft = ref('')
 const sending = ref(false)
 const loading = ref(false)
-const usage = ref<{ prompt: number; completion: number } | null>(null)
+const usage = ref<{ prompt: number; completion: number; latencyMs: number } | null>(null)
 const scroller = ref<HTMLElement | null>(null)
 
 let localId = -1
@@ -110,19 +110,49 @@ async function send(): Promise<void> {
     action: null,
   }
   messages.value.push(optimistic)
+  let streaming: Message | null = null
   await scrollToEnd()
 
   try {
-    const response = await api.chat(text, activeId.value)
-    if (activeId.value === null) {
-      activeId.value = response.conversationId
+    // The stream endpoint needs a conversation in its path, so start one when this is a fresh chat.
+    let conversationId = activeId.value
+    if (conversationId === null) {
+      const conversation = await api.startConversation()
+      conversations.value = [conversation, ...conversations.value]
+      activeId.value = conversation.id
+      conversationId = conversation.id
     }
-    usage.value = { prompt: response.promptTokens, completion: response.completionTokens }
+
+    // The reply is rendered as it arrives; the placeholder is swapped for the persisted turn once
+    // the stream's `done` event lands.
+    streaming = {
+      id: localId--,
+      role: 'ASSISTANT',
+      content: '',
+      createdAt: new Date().toISOString(),
+      action: null,
+    }
+    const placeholder = streaming
+    messages.value.push(placeholder)
+
+    const response = await api.chatStream(text, conversationId, (delta) => {
+      placeholder.content = (placeholder.content ?? '') + delta
+      void scrollToEnd()
+    })
+
+    usage.value = {
+      prompt: response.promptTokens,
+      completion: response.completionTokens,
+      latencyMs: response.latencyMs,
+    }
+    messages.value = messages.value.filter((message) => message !== placeholder)
     appendReply(response)
     // The first message is what titles the conversation, so the sidebar is now stale.
     await loadConversations()
   } catch (error) {
-    messages.value = messages.value.filter((message) => message !== optimistic)
+    messages.value = messages.value.filter(
+      (message) => message !== optimistic && message !== streaming,
+    )
     draft.value = text
     fail(error)
   } finally {
@@ -216,8 +246,8 @@ onMounted(async () => {
           </button>
         </div>
         <div v-if="usage" class="meter">
-          本轮 prompt {{ usage.prompt }} / completion {{ usage.completion }} tokens，记忆窗口
-          {{ messages.length }} 条
+          本轮 prompt {{ usage.prompt }} / completion {{ usage.completion }} tokens，模型耗时
+          {{ usage.latencyMs }} ms，记忆窗口 {{ messages.length }} 条
         </div>
       </div>
     </div>
