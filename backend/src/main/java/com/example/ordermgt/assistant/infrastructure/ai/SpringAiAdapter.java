@@ -20,7 +20,6 @@ import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.LongConsumer;
@@ -94,7 +93,6 @@ public class SpringAiAdapter implements AiAssistantPort {
     @Override
     public AssistantTurn respondStreaming(
             Long customerId, List<ChatMessage> memory, Consumer<String> onTextDelta) {
-        AtomicReference<ChatResponse> last = new AtomicReference<>();
         long start = System.nanoTime();
 
         // A replay is only safe while the client has seen nothing: retrying after the first
@@ -107,15 +105,16 @@ public class SpringAiAdapter implements AiAssistantPort {
                     onTextDelta.accept(delta);
                 };
 
+        // An OpenAI-style stream hands the prose over as deltas and closes on a textless finish
+        // chunk, so the turn is accumulated while the bytes flow -- never read off the final
+        // chunk alone, which would bill the reply (and its history) as nothing.
+        StreamedTurn streamed = new StreamedTurn();
         try {
             return retryBeforeFirstToken(
                     () -> {
-                        last.set(null);
-                        streamOnce(memory, tracked, last);
-                        // The final chunk of the stream carries the aggregated tool calls, so
-                        // the turn is built from it exactly like the non-streaming path -- one
-                        // extraction, two transports.
-                        return toTurn(last.get(), elapsedMs(start));
+                        streamed.reset();
+                        streamOnce(memory, tracked, streamed);
+                        return streamed.toTurn(model, elapsedMs(start));
                     },
                     emitted::get,
                     STREAM_RETRY_ATTEMPTS,
@@ -125,11 +124,45 @@ public class SpringAiAdapter implements AiAssistantPort {
         }
     }
 
+    /**
+     * What a stream accumulates while it runs: prose deltas in order, the newest non-empty tool
+     * calls, and the usage of the last chunk that carried any. Each fact lives on the chunk that
+     * carries it -- the finish chunk carries none of them.
+     */
+    private final class StreamedTurn {
+
+        private final StringBuilder prose = new StringBuilder();
+        private List<ProposedToolCall> toolCalls = List.of();
+        private AiUsage usage = AiUsage.EMPTY;
+
+        /** Adds one chunk to the turn and hands back its prose delta, for the wire. */
+        String accept(ChatResponse chunk) {
+            String delta = textOf(chunk);
+            prose.append(delta);
+            if (chunk.hasToolCalls()) {
+                toolCalls = toolCallsOf(chunk);
+            }
+            AiUsage chunkUsage = usageOf(chunk);
+            if (!AiUsage.EMPTY.equals(chunkUsage)) {
+                usage = chunkUsage;
+            }
+            return delta;
+        }
+
+        void reset() {
+            prose.setLength(0);
+            toolCalls = List.of();
+            usage = AiUsage.EMPTY;
+        }
+
+        AssistantTurn toTurn(String model, int latencyMs) {
+            return new AssistantTurn(prose.toString(), toolCalls, usage, model, latencyMs);
+        }
+    }
+
     /** One pass over the model stream; anything before the first delta is retryable. */
     private void streamOnce(
-            List<ChatMessage> memory,
-            Consumer<String> onTextDelta,
-            AtomicReference<ChatResponse> last) {
+            List<ChatMessage> memory, Consumer<String> onTextDelta, StreamedTurn streamed) {
         prompt(memory).stream()
                 .chatClientResponse()
                 .doOnNext(
@@ -138,8 +171,7 @@ public class SpringAiAdapter implements AiAssistantPort {
                             if (chunk == null) {
                                 return;
                             }
-                            last.set(chunk);
-                            String delta = textOf(chunk);
+                            String delta = streamed.accept(chunk);
                             if (!delta.isEmpty()) {
                                 onTextDelta.accept(delta);
                             }
@@ -282,8 +314,15 @@ public class SpringAiAdapter implements AiAssistantPort {
         if (chatResponse == null) {
             return new AssistantTurn("", List.of(), AiUsage.EMPTY, model, latencyMs);
         }
-        String text = textOf(chatResponse);
+        return new AssistantTurn(
+                textOf(chatResponse),
+                toolCallsOf(chatResponse),
+                usageOf(chatResponse),
+                model,
+                latencyMs);
+    }
 
+    private List<ProposedToolCall> toolCallsOf(ChatResponse chatResponse) {
         List<ProposedToolCall> calls = new ArrayList<>();
         if (chatResponse.hasToolCalls()) {
             for (AssistantMessage.ToolCall call :
@@ -295,8 +334,7 @@ public class SpringAiAdapter implements AiAssistantPort {
                 calls.add(new ProposedToolCall(call.name(), call.arguments(), mutating));
             }
         }
-
-        return new AssistantTurn(text, calls, usageOf(chatResponse), model, latencyMs);
+        return calls;
     }
 
     private static String textOf(ChatResponse chatResponse) {
