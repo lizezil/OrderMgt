@@ -97,11 +97,16 @@ docker compose up --build
 |---|---|---|
 | POST | `/api/assistant/chat?conversationId=` | 发消息；不带 `conversationId` 即开新对话。幂等键：请求头 `Idempotency-Key` |
 | POST | `/api/assistant/conversations` | 新对话 |
-| GET | `/api/assistant/conversations` | 会话列表；每项带 `status`（`ACTIVE`/`ARCHIVED`）与派生 `state`（`IDLE`/`RUNNING`/`WAITING_APPROVAL`，见 [ADR-0011](docs/adr/0011-run-is-the-unit-of-execution.md)） |
+| GET | `/api/assistant/conversations?includeArchived=true` | 会话列表；每项带 `status`（`ACTIVE`/`ARCHIVED`）与派生 `state`（`IDLE`/`RUNNING`/`WAITING_APPROVAL`，见 [ADR-0011](docs/adr/0011-run-is-the-unit-of-execution.md)），以及正在跑的 `runId`（无则 `null`）。默认不含归档，`includeArchived=true` 才带 |
+| POST | `/api/assistant/conversations/{id}/archive` | 归档（只改可见性，见 [ADR-0013](docs/adr/0013-archive-hides-does-not-delete.md)）；非静止（有 RUNNING Run 或未过期卡片）→ `409` |
+| POST | `/api/assistant/conversations/{id}/restore` | 恢复为 `ACTIVE`（幂等） |
 | GET | `/api/assistant/conversations/{id}/messages` | 历史（含每张卡片的当前状态） |
 | POST | `/api/assistant/conversations/{id}/messages` | 在指定会话里发消息；会话忙时 `409 CONFLICT`（见下） |
-| GET | `/api/assistant/conversations/{id}/stream?message=` | SSE：`token` 事件逐个吐字，最后一发 `done` 带完整结果。SPA 用它做增量渲染（`fetch` + `ReadableStream`，因为要带 `X-Customer-Id` 头）。会话忙时**入队**，先补发 `queued`（带可删除的 `itemId`），轮到它时补发 `started`；被删掉的排队项以 `dropped` 收尾 |
+| GET | `/api/assistant/conversations/{id}/stream?message=` | SSE：`token` 事件逐个吐字，最后一发 `done` 带完整结果。SPA 用它做增量渲染（`fetch` + `ReadableStream`，因为要带 `X-Customer-Id` 头）。会话忙时**入队**，先补发 `queued`（带可删除的 `itemId`），轮到它时补发 `started`；被删掉的排队项以 `dropped` 收尾；开始跑时会补发 `run`（带 `runId`，停止按钮要用），被停止则以 `cancelled`（带半截回复）收尾 |
+| POST | `/api/assistant/conversations/{id}/runs/{runId}/stop` | 停止一个 RUNNING 的 Run：真取消上游流、半截文本落库、Run 收 `CANCELLED`（见 [ADR-0012](docs/adr/0012-one-running-run-per-conversation.md)）；对已终态的 Run 幂等无副作用 |
+| GET | `/api/assistant/conversations/{id}/runs/{runId}/events` | 重订阅一个正在跑的 Run：首帧 `snapshot` 带当前累积文本，之后是 `token` 增量；Run 不在了则以 `closed` 收尾（不悬挂）。支持多个订阅者 |
 | DELETE | `/api/assistant/conversations/{id}/queue/{itemId}` | 删掉一条排队项（`itemId` 是内存态 id）；它**不会执行**，其连接收到 `dropped` 后关闭。不在队列里 → `404` |
+| GET | `/api/assistant/events` | 每客户一条长活 SSE（见 [ADR-0014](docs/adr/0014-conversation-state-is-pushed.md)）：首帧 `snapshot`（该客户全部会话，含归档），之后 `state`/`queue` 增量与 `ping` 心跳；重连重发快照，不做 `Last-Event-ID`。每客户连接数上限 4，超出 `503` |
 | POST | `/api/assistant/actions/{token}/confirm` | 确认并执行（重复确认返回 `replayed:true`，不会执行第二次） |
 | POST | `/api/assistant/actions/{token}/reject` | 拒绝 |
 | POST | `/api/orders` | 直接下单（幂等键：`Idempotency-Key`） |
@@ -218,6 +223,14 @@ docs/             项目文档
 
 忙碌的会话**只有一个回合在跑**，后来的**流式**发送进这条会话的**内存队列**（FIFO，`ConversationRunQueue`，进程内注册表）：先补一发 `queued`（带位置与可删除的 `itemId`），轮到它时补发 `started`，然后照常吐字；删掉一条排队项（`DELETE .../queue/{itemId}`）**它就不会执行**（连接收 `dropped` 后关闭）。队列深度上限 `assistant.run.queue-depth`（5），排满再发 → `429 QUEUE_FULL`——满了是**容量**问题，所以不是 409。**同步**入口（`POST /{id}/messages`）带幂等键、承诺"要么立刻跑要么拒绝"，所以忙时直接 `409 CONFLICT`，不排队。排队项**不落库**、也不建 Run 行：它们只活在运行态注册表里，随进程重启一起丢。（[ADR-0012](docs/adr/0012-one-running-run-per-conversation.md)）
 
+**停止是客户的显式意图，不是断线的副作用。** `POST .../runs/{runId}/stop` 只对 `RUNNING` 的 Run 生效、且幂等；它真的掐断上游流（`takeWhile` 到下一个 chunk 就取消订阅，之后的 token 不再被读取或计费），把已经吐出的**半截文本作为一条普通 ASSISTANT 消息**落库（不写 Message 状态），Run 收 `CANCELLED`，`ai_invocations` 记一行 `CANCELLED`（该列 `VARCHAR` 无 CHECK，**零迁移**）。前端在「助手正在拟…」那行给一个**停止**按钮；它与队列条的**删除**是两个动作——停止作用于正在跑的 Run，删除作用于排队项。（[ADR-0012](docs/adr/0012-one-running-run-per-conversation.md)）
+
+**切走再切回一个正在跑的会话**，能接着看它吐字：`GET .../runs/{runId}/events` 首帧给**当前累积文本快照**，之后是 `token` 增量，多个订阅者可以同时看同一条 Run。服务端只持有"当前累积文本"（不缓存逐 delta），所以快照是无状态的读、不是续传；Run 不在了（已终态 / 本进程没跑它）就以 `closed` 收尾，不悬挂。（[ADR-0014](docs/adr/0014-conversation-state-is-pushed.md)）
+
+**归档是可见性，不是删除。** `POST .../archive` 只改 `conversations.status`（`VARCHAR` 无 CHECK，**零迁移**），归档的会话从默认列表隐藏、仍可读、可一键恢复，**没有硬删除**；**非静止**（有 RUNNING Run 或未过期卡片）归档 → `409`——归档只管可见性，终止是上面那个显式的停止。向已归档会话发一条消息即**自动恢复**为 `ACTIVE`。（[ADR-0013](docs/adr/0013-archive-hides-does-not-delete.md)）
+
+**会话状态靠推送，不靠轮询。** `GET /api/assistant/events` 是每客户一条长活 SSE：首帧全量 `snapshot`（含归档），之后推 `state`（某会话派生状态或 `runId` 变了）与 `queue`（队列变了）增量，`ping` 保活；重连重发快照、客户端整体替换，不做 `Last-Event-ID`。这条流**不走回合池**——它由进程内的 `ConversationEventBus` 维护 emitter 注册表，不长期占线程，配每客户连接数上限（4，超出 `503`）。前端用一个**零依赖**的模块级单例 store（`useSessionStore`，仍只有 `vue` 一个运行时依赖）承载列表 / 运行态 / 队列 / 订阅，`AssistantView` 降为它的一个视图。（[ADR-0014](docs/adr/0014-conversation-state-is-pushed.md)）
+
 ## 没有 Key 也能跑（离线模式）
 
 ```bash
@@ -234,4 +247,7 @@ SPRING_PROFILES_ACTIVE=mysql,offline ./mvnw -pl backend spring-boot:run
 - **E2E 只跑 Chromium**（`@playwright/test` 1.49.1，更新的版本不再发布 macOS 12 可用的 Chromium），WebKit / Firefox 未覆盖；且它假定常驻 MySQL 可用、助手走 `offline` 桩——真实模型下的流式与超时行为没有 E2E。
 - **`make test-frontend` / `make test-e2e` 没有接进 CI**：本仓库目前没有 CI 配置，`make check` 只是留给 CI 的入口。
 - Docker Compose 只起**单实例应用**：确认态的并发去重靠数据库行锁，多实例同样成立，但没有做过压测。
-- **「至多一个 RUNNING Run」只在进程内保证**：`ConversationRunQueue` 与队列都是内存注册表，库层不强制唯一 RUNNING，多实例下各算各的；队列中的项也随重启丢弃、且只有发起那条连接能看见并删除它（把队列推给**所有**客户端是 `/api/assistant/events` 的活）。不含每客户并发配额。
+- **「至多一个 RUNNING Run」只在进程内保证**：`ConversationRunQueue` 与队列都是内存注册表，库层不强制唯一 RUNNING，多实例下各算各的；队列中的项也随重启丢弃。队列会通过 `/api/assistant/events` 的 `queue` 增量推给**所有**标签页，但只推内存态 `itemId` 与位置——排队消息的**文字只存在于发起它的那个标签页里**，另一个标签页能看见、也能删，但显示不出它写了什么。不含每客户并发配额。
+- **停止只掐得断流式那一路**：取消信号由流式模型调用逐 chunk 观测（`takeWhile`），所以 `POST .../stop` 对**流式**回合是真的取消上游；**阻塞**回合（`POST /{id}/messages`）是一次同步模型调用，服务端没有中途 abort 的钩子，对它调停止会被接受但取消不了那次调用（SPA 只发流式，所以实际不会遇到）。取消是"到下一个 chunk 为止"，不是瞬时。
+- **状态总线与运行态注册表都是进程内的**：`ConversationEventBus`（每客户 emitter 注册表）与 `RunRegistry` 不跨实例，多实例下同一客户的多个标签页连到不同实例就收不到对方的状态推送；`/events` 单条连接有个 1 小时上限，到点客户端重连并整体换快照（换来零服务端事件缓存）。
+- **重订阅是尽力而为**：`runStream` 只做"当前累积文本 + 之后增量"，不做断点续传（ADR-0009）；一条 Run 在重订阅的同一瞬间结束，客户端可能先收到 `closed` 再收到 `snapshot`，此时按"没东西可回放"处理。E2E 里离线桩的回合太快，**没有覆盖重订阅**——它由 L3（契约）与 L5（组件）钉住。

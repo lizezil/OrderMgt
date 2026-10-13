@@ -64,7 +64,11 @@ public class ActionConfirmationService {
         pendingActionRepository.save(action);
 
         return new ActionResolution(
-                action.getToken(), action.getStatus().name(), result.payloadJson(), false);
+                action.getToken(),
+                action.getStatus().name(),
+                result.payloadJson(),
+                false,
+                action.getConversationId());
     }
 
     @Transactional
@@ -84,7 +88,12 @@ public class ActionConfirmationService {
 
         action.resolve(PendingActionStatus.REJECTED, null, Instant.now());
         pendingActionRepository.save(action);
-        return new ActionResolution(action.getToken(), action.getStatus().name(), null, false);
+        return new ActionResolution(
+                action.getToken(),
+                action.getStatus().name(),
+                null,
+                false,
+                action.getConversationId());
     }
 
     private static BusinessException expired() {
@@ -112,7 +121,12 @@ public class ActionConfirmationService {
                 action.getResultRef() == null
                         ? null
                         : "{\"replayed\":true,\"ref\":\"" + action.getResultRef() + "\"}";
-        return new ActionResolution(action.getToken(), action.getStatus().name(), resultJson, true);
+        return new ActionResolution(
+                action.getToken(),
+                action.getStatus().name(),
+                resultJson,
+                true,
+                action.getConversationId());
     }
 
     private PendingAction lockOwned(Long customerId, String token) {

@@ -2,15 +2,18 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { api, ApiError, QUEUE_DROPPED, RUN_CANCELLED } from '../api'
+import type { RunStreamHandlers, SessionStreamHandlers } from '../api'
 import { RECONCILE_DELAY_MS } from '../constants'
 import type {
   ActionCard,
   ChatResponse,
   Conversation,
   ConversationState,
+  ConversationStatus,
   Message,
   QueuedTurn,
 } from '../types'
+import { useSessionStore } from '../store'
 import AssistantView from './AssistantView.vue'
 
 vi.mock('../api', async () => {
@@ -25,7 +28,13 @@ vi.mock('../api', async () => {
       listConversations: vi.fn(),
       history: vi.fn(),
       startConversation: vi.fn(),
+      archiveConversation: vi.fn(),
+      restoreConversation: vi.fn(),
       chatStream: vi.fn(),
+      // The status stream never settles here: the tests drive the sidebar through the REST list and
+      // the chat stream, not through pushes.
+      eventsStream: vi.fn(() => new Promise<void>(() => {})),
+      runStream: vi.fn(() => new Promise<void>(() => {})),
       cancelQueued: vi.fn(),
       stopRun: vi.fn(),
       confirm: vi.fn(),
@@ -40,12 +49,17 @@ const startConversationMock = vi.mocked(api.startConversation)
 const chatStreamMock = vi.mocked(api.chatStream)
 const cancelQueuedMock = vi.mocked(api.cancelQueued)
 const stopRunMock = vi.mocked(api.stopRun)
+const eventsStreamMock = vi.mocked(api.eventsStream)
+const runStreamMock = vi.mocked(api.runStream)
+const archiveConversationMock = vi.mocked(api.archiveConversation)
+const restoreConversationMock = vi.mocked(api.restoreConversation)
 
 function conversation(
   id: number,
   title: string | null,
   state: ConversationState = 'IDLE',
   runId: number | null = null,
+  status: ConversationStatus = 'ACTIVE',
 ): Conversation {
   const at = '2026-01-01T00:00:00'
   return {
@@ -54,7 +68,7 @@ function conversation(
     createdAt: at,
     updatedAt: at,
     lastMessageAt: at,
-    status: 'ACTIVE',
+    status,
     state,
     runId,
   }
@@ -109,6 +123,8 @@ async function flush() {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  // The store is a module singleton: without this, one test's conversations leak into the next.
+  useSessionStore().reset()
   startConversationMock.mockResolvedValue(conversation(7, null))
   historyMock.mockResolvedValue([])
 })
@@ -842,5 +858,150 @@ describe('停止运行中的一轮', () => {
     // Stopping the running turn is a different action from deleting a queued one.
     expect(wrapper.get('.queue-head').text()).toBe('排队中：1 条')
     expect(cancelQueuedMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('归档与恢复', () => {
+  beforeEach(() => {
+    listConversationsMock.mockResolvedValue([])
+    historyMock.mockResolvedValue([])
+  })
+
+  it('归档的会话收在底部折叠分组里，默认不展开', async () => {
+    listConversationsMock.mockResolvedValue([
+      conversation(7, '在用的'),
+      conversation(9, '压箱底的', 'IDLE', null, 'ARCHIVED'),
+    ])
+
+    const wrapper = await mountView()
+
+    expect(wrapper.text()).toContain('在用的')
+    expect(wrapper.get('.archived-toggle').text()).toContain('已归档 1')
+    // Hidden until asked for, but never gone.
+    expect(wrapper.text()).not.toContain('压箱底的')
+
+    await wrapper.get('.archived-toggle').trigger('click')
+
+    expect(wrapper.text()).toContain('压箱底的')
+  })
+
+  it('行溢出菜单里的「归档」把会话收进归档组', async () => {
+    listConversationsMock.mockResolvedValue([conversation(7, '要归档的')])
+    archiveConversationMock.mockResolvedValue(conversation(7, '要归档的', 'IDLE', null, 'ARCHIVED'))
+
+    const wrapper = await mountView()
+    await wrapper.get('.entry-more').trigger('click')
+    await wrapper.get('.menu-item').trigger('click')
+    await flushPromises()
+
+    expect(archiveConversationMock).toHaveBeenCalledWith(7)
+    expect(wrapper.get('.archived-toggle').text()).toContain('已归档 1')
+    expect(wrapper.find('.menu-item').exists()).toBe(false)
+  })
+
+  it('归档被 409 拒绝时如实报错，会话留在原处', async () => {
+    listConversationsMock.mockResolvedValue([conversation(7, '正忙的', 'RUNNING')])
+    archiveConversationMock.mockRejectedValue(new ApiError('CONFLICT', '正在跑，不能归档', 409))
+
+    const wrapper = await mountView()
+    await wrapper.get('.entry-more').trigger('click')
+    await wrapper.get('.menu-item').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.emitted('error')?.[0]).toEqual(['正在跑，不能归档'])
+    expect(wrapper.find('.archived-toggle').exists()).toBe(false)
+    expect(wrapper.text()).toContain('正忙的')
+  })
+
+  it('归档组里的「恢复」把会话放回主列表', async () => {
+    listConversationsMock.mockResolvedValue([conversation(9, '压箱底的', 'IDLE', null, 'ARCHIVED')])
+    restoreConversationMock.mockResolvedValue(conversation(9, '压箱底的'))
+
+    const wrapper = await mountView()
+    await wrapper.get('.archived-toggle').trigger('click')
+    await wrapper.get('.entry-more').trigger('click')
+    await wrapper.get('.menu-item').trigger('click')
+    await flushPromises()
+
+    expect(restoreConversationMock).toHaveBeenCalledWith(9)
+    expect(wrapper.find('.archived-toggle').exists()).toBe(false)
+    expect(wrapper.text()).toContain('压箱底的')
+  })
+})
+
+describe('状态推送', () => {
+  it('另一个会话的状态变化实时更新侧栏徽标，不必刷新', async () => {
+    listConversationsMock.mockResolvedValue([conversation(7, '在看的'), conversation(8, '另一段')])
+    historyMock.mockResolvedValue([])
+    let stream!: SessionStreamHandlers
+    eventsStreamMock.mockImplementation((handlers) => {
+      stream = handlers
+      return new Promise<void>(() => {})
+    })
+
+    const wrapper = await mountView()
+    expect(wrapper.findAll('.entry-state')).toHaveLength(0)
+
+    // Another tab's turn starts on conversation 8; the badge shows up here without a reload.
+    stream.onState(conversation(8, '另一段', 'RUNNING', 42))
+    await nextTick()
+
+    expect(wrapper.findAll('.entry-state').map((badge) => badge.text())).toEqual(['生成中…'])
+    // The conversation on screen was not disturbed.
+    expect(wrapper.get('.entry.active').text()).toContain('在看的')
+  })
+
+  it('首帧 snapshot 一次性填满侧栏（含归档分组）', async () => {
+    listConversationsMock.mockResolvedValue([])
+    historyMock.mockResolvedValue([])
+    let stream!: SessionStreamHandlers
+    eventsStreamMock.mockImplementation((handlers) => {
+      stream = handlers
+      return new Promise<void>(() => {})
+    })
+
+    const wrapper = await mountView()
+    stream.onSnapshot([
+      conversation(1, '在用的'),
+      conversation(2, '压箱底的', 'IDLE', null, 'ARCHIVED'),
+    ])
+    await nextTick()
+
+    expect(wrapper.get('.docket .row .entry-title').text()).toBe('在用的')
+    expect(wrapper.get('.archived-toggle').text()).toContain('已归档 1')
+  })
+})
+
+describe('切回一个正在跑的会话', () => {
+  it('重订阅拿到累积文本，之后继续跟着增量长', async () => {
+    listConversationsMock.mockResolvedValue([conversation(7, '在跑的', 'RUNNING', 42)])
+    historyMock.mockResolvedValue([
+      { id: 1, role: 'CUSTOMER', content: '帮我下单 2 个 GADGET-02', createdAt: '', action: null },
+    ])
+    let stream!: RunStreamHandlers
+    runStreamMock.mockImplementation((_conversationId, _runId, handlers) => {
+      stream = handlers
+      return new Promise<void>(() => {})
+    })
+
+    const wrapper = await mountView()
+
+    expect(runStreamMock).toHaveBeenCalledWith(7, 42, expect.any(Object), expect.anything())
+    stream.onSnapshot('我准备好')
+    await nextTick()
+    expect(wrapper.text()).toContain('我准备好')
+
+    stream.onToken('了一个下单操作。')
+    await nextTick()
+    expect(wrapper.text()).toContain('我准备好了一个下单操作。')
+  })
+
+  it('安静的会话不做重订阅', async () => {
+    listConversationsMock.mockResolvedValue([conversation(7, '安静的')])
+    historyMock.mockResolvedValue([])
+
+    await mountView()
+
+    expect(runStreamMock).not.toHaveBeenCalled()
   })
 })

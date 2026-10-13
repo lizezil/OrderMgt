@@ -24,6 +24,12 @@ export const RECONCILE_DELAY_MS = 1500
 export const RECONCILE_ATTEMPTS = 3
 
 /**
+ * How long to wait before reopening the status stream after it drops. The server re-sends a full
+ * snapshot on every connection, so reconnecting is all that is needed to catch up (ADR-0014).
+ */
+export const RECONNECT_DELAY_MS = 2000
+
+/**
  * How many sends may wait behind the running one, per conversation. Mirrors the backend's
  * `assistant.run.queue-depth`; keeping the composer under it only avoids firing a send the server
  * would answer with 429 QUEUE_FULL.

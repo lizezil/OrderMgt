@@ -1,6 +1,7 @@
 package com.example.ordermgt.assistant.api;
 
 import com.example.ordermgt.assistant.application.AssistantResult;
+import com.example.ordermgt.assistant.application.ConversationRunQueue;
 import com.example.ordermgt.assistant.application.ConversationView;
 import com.example.ordermgt.assistant.application.ExecutedTool;
 import com.example.ordermgt.assistant.application.MessageView;
@@ -36,6 +37,9 @@ public interface AssistantApiMapper {
     @Mapping(target = "content", source = "message.content")
     @Mapping(target = "createdAt", source = "message.createdAt")
     MessageResponse toResponse(MessageView view);
+
+    /** A waiting queue item as the wire reports it: the runtime id and its place in line. */
+    QueuedTurnResponse toResponse(ConversationRunQueue.QueuedItem item);
 
     @Mapping(target = "promptTokens", source = "usage.promptTokens")
     @Mapping(target = "completionTokens", source = "usage.completionTokens")

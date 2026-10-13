@@ -8,6 +8,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.example.ordermgt.assistant.api.AssistantApiMapper;
 import com.example.ordermgt.assistant.api.ChatSender;
 import com.example.ordermgt.assistant.api.ConversationController;
+import com.example.ordermgt.assistant.api.ConversationEventPublisher;
 import com.example.ordermgt.assistant.application.AssistantService;
 import com.example.ordermgt.assistant.application.ConversationRunQueue;
 import com.example.ordermgt.assistant.application.ConversationService;
@@ -51,6 +52,7 @@ class StreamSaturationContractTest {
                                         new ConversationRunQueue(saturated, 5),
                                         new RunRegistry(),
                                         mock(RunService.class),
+                                        mock(ConversationEventPublisher.class),
                                         mock(AiAssistantPort.class),
                                         new ObjectMapper(),
                                         Mappers.getMapper(AssistantApiMapper.class)))

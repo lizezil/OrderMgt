@@ -145,9 +145,13 @@ class RunPersistenceTest {
                                 customer, context.memory(), deltas::add, RunCancellation.NEVER));
 
         List<RunPO> runs = runsOf(context.conversation().getId());
-        assertThat(runs).hasSize(1);
-        assertThat(runs.get(0).getStatus()).isEqualTo("COMPLETED");
+        // 断线只停投递（这里表现为 delta 不再有人听），**不**产生 CANCELLED：只留下一条 COMPLETED，
+        // 审计记 OK。停止是用户的显式动作，不是断线的副作用（ADR-0009 / ADR-0012）。
+        assertThat(runs).extracting(RunPO::getStatus).containsExactly("COMPLETED");
         assertThat(runs.get(0).getEndedAt()).isNotNull();
+        assertThat(aiInvocationRepository.findByConversationId(context.conversation().getId()))
+                .extracting(AiInvocation::outcome)
+                .containsExactly(AiInvocationOutcome.OK);
     }
 
     @Test

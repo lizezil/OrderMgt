@@ -9,12 +9,24 @@ import {
 } from '../constants'
 import { errorMessage } from '../errors'
 import { renderMarkdown } from '../markdown'
-import type { ActionCard, ChatResponse, Conversation, ConversationState, Message } from '../types'
+import { useSessionStore } from '../store'
+import type { QueuedTurnView } from '../store'
+import type { ActionCard, ChatResponse, Conversation, Message } from '../types'
 import ActionCardPanel from '../components/ActionCardPanel.vue'
+import ConversationRow from '../components/ConversationRow.vue'
 
 const emit = defineEmits<{ (e: 'error', message: string): void }>()
 
-const conversations = ref<Conversation[]>([])
+/**
+ * The sidebar's conversation state lives in the shared store, not here: the status stream keeps it
+ * fresh for every conversation (ADR-0014), and this view is one reader of it. `messages`, the draft
+ * and the composer belong to the screen; the list, its buckets and the queue belong to the store.
+ */
+const store = useSessionStore()
+const conversations = store.conversations
+const archived = store.archived
+/** Whether the archived group at the bottom of the rail is expanded. */
+const showArchived = ref(false)
 const messages = ref<Message[]>([])
 const activeId = ref<number | null>(null)
 const draft = ref('')
@@ -33,25 +45,13 @@ const sending = computed(() => inFlight.value > 0)
 
 let localId = LOCAL_MESSAGE_ID_START
 
-/** One send waiting its turn on a busy conversation, keyed to the optimistic bubble it belongs to. */
-interface QueuedSend {
-  conversationId: number
-  itemId: string
-  messageId: number
-  text: string
-}
-
-/** Every send currently waiting in line, across conversations; the strip shows the active one's. */
-const queued = ref<QueuedSend[]>([])
-
 /**
- * The line for the conversation on screen. The server owns the real line (another tab can add to
- * it), so this is only what this screen knows about -- enough to show the count and delete an item,
- * and the server's 429 remains the authority on capacity.
+ * The line for the conversation on screen, from the store. The server owns the real line -- another
+ * tab can add to it, and a `queue` event tells this one -- so a waiting item with no words here is
+ * another tab's send; deleting still works, because the item id is the server's. The 429 remains the
+ * authority on capacity.
  */
-const activeQueue = computed(() =>
-  queued.value.filter((item) => item.conversationId === activeId.value),
-)
+const activeQueue = computed(() => store.queueFor(activeId.value))
 
 const queueFull = computed(() => activeQueue.value.length >= MAX_QUEUE_DEPTH)
 
@@ -94,27 +94,6 @@ async function scrollToEnd(): Promise<void> {
   }
 }
 
-function formatWhen(iso: string | null): string {
-  if (!iso) return ''
-  const date = new Date(iso)
-  const now = new Date()
-  const sameDay = date.toDateString() === now.toDateString()
-  return sameDay
-    ? date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
-    : date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
-}
-
-/**
- * The sidebar badge for a conversation's derived state. IDLE is the quiet default and shows
- * nothing -- a label on every row would only make the two that matter harder to spot. The server
- * derives the value; the screen just says it.
- */
-function stateLabel(state: ConversationState): string {
-  if (state === 'RUNNING') return '生成中…'
-  if (state === 'WAITING_APPROVAL') return '待确认'
-  return ''
-}
-
 /**
  * Where the thread ends on a question with no answer. That is the shape an interrupted Run leaves
  * behind -- its customer message was committed in `prepare`, its reply never arrived -- and a failed
@@ -146,11 +125,6 @@ function retry(message: Message): void {
   void send()
 }
 
-/** A queued marker is per-send: it goes away when the turn starts, fails, or is deleted. */
-function forgetQueued(messageId: number): void {
-  queued.value = queued.value.filter((item) => item.messageId !== messageId)
-}
-
 /** Whether a failed send was one the customer deleted from the line, rather than a real error. */
 function isQueueDropped(error: unknown): boolean {
   return error instanceof ApiError && error.code === QUEUE_DROPPED
@@ -166,17 +140,35 @@ function isRunCancelled(error: unknown): boolean {
  * running -- which is the server telling the truth, so it is reported like any other failure and
  * the turn simply proceeds.
  */
-async function cancelQueued(item: QueuedSend): Promise<void> {
+async function cancelQueued(item: QueuedTurnView): Promise<void> {
+  const conversationId = activeId.value
+  if (conversationId === null) return
   try {
-    await api.cancelQueued(item.conversationId, item.itemId)
-    forgetQueued(item.messageId)
+    await api.cancelQueued(conversationId, item.itemId)
+    store.forgetQueued(conversationId, item.itemId)
   } catch (error) {
     fail(error)
   }
 }
 
-async function loadConversations(): Promise<void> {
-  conversations.value = await api.listConversations()
+/**
+ * Archives a conversation -- hides it, never deletes it. The server refuses a non-quiescent one
+ * (a Run in flight or a live card) with a 409, reported like any other failure (ADR-0013).
+ */
+async function archive(conversation: Conversation): Promise<void> {
+  try {
+    store.upsert(await api.archiveConversation(conversation.id))
+  } catch (error) {
+    fail(error)
+  }
+}
+
+async function restore(conversation: Conversation): Promise<void> {
+  try {
+    store.upsert(await api.restoreConversation(conversation.id))
+  } catch (error) {
+    fail(error)
+  }
 }
 
 /**
@@ -185,10 +177,12 @@ async function loadConversations(): Promise<void> {
  * silently dropped while the last one awaited this) nor fail a turn that already landed.
  */
 function refreshConversations(): void {
-  loadConversations().catch((error) => fail(error))
+  store.refresh().catch((error) => fail(error))
 }
 
 async function open(conversation: Conversation): Promise<void> {
+  // Whatever this view was watching, it is not watching it any more.
+  stopWatchingRun()
   activeId.value = conversation.id
   usage.value = null
   loading.value = true
@@ -200,6 +194,68 @@ async function open(conversation: Conversation): Promise<void> {
     loading.value = false
   }
   await scrollToEnd()
+  // Coming back to a conversation whose turn is still running: reattach and keep watching it, so
+  // the customer sees the reply being written rather than an empty thread (ADR-0014).
+  if (
+    activeId.value === conversation.id &&
+    conversation.state === 'RUNNING' &&
+    conversation.runId
+  ) {
+    watchRun(conversation.id, conversation.runId)
+  }
+}
+
+/** The reattach in progress, if any; aborted when the view moves to another conversation. */
+let watching: AbortController | null = null
+
+function stopWatchingRun(): void {
+  watching?.abort()
+  watching = null
+}
+
+/**
+ * Subscribes to a Run that is already writing, rendering it into a live bubble: the first frame is
+ * the text so far, then the deltas. It is best-effort like every stream (ADR-0009) -- the server
+ * persists the turn regardless, so a dropped reattach loses nothing but the live view, and the
+ * bubble already holds whatever was rendered.
+ */
+function watchRun(conversationId: number, runId: number): void {
+  const controller = new AbortController()
+  watching = controller
+  messages.value.push({
+    id: localId--,
+    role: 'ASSISTANT',
+    content: '',
+    createdAt: new Date().toISOString(),
+    action: null,
+  })
+  const live = messages.value[messages.value.length - 1]!
+  void api
+    .runStream(
+      conversationId,
+      runId,
+      {
+        onSnapshot: (text) => {
+          live.content = text
+          void scrollToEnd()
+        },
+        onToken: (delta) => {
+          live.content = (live.content ?? '') + delta
+          void scrollToEnd()
+        },
+        // The Run settled. What is on screen already equals what was persisted, so the bubble
+        // stays; the sidebar's state comes from the status stream.
+        onClosed: () => stopWatchingRun(),
+      },
+      controller.signal,
+    )
+    .catch(() => {
+      // A reattach that cannot connect is not an error to report: history still holds the truth,
+      // and the thread is fully readable without the live view.
+      if (messages.value.includes(live) && !(live.content ?? '').trim()) {
+        messages.value = messages.value.filter((message) => message !== live)
+      }
+    })
 }
 
 /** Starts a conversation, files it at the top of the rail and makes it active. */
@@ -361,7 +417,9 @@ async function send(): Promise<void> {
   // Hoisted so the catch can reconcile the conversation this message went to, even if the customer
   // opened another one while the stream was dying.
   let conversationId = activeId.value
-  // Set by the stream: the run this send opened, and the half reply a stop leaves behind.
+  // Set by the stream: the queue item this send got, the run it opened, and the half reply a stop
+  // leaves behind.
+  let myItemId: string | null = null
   let myRunId: number | null = null
   let cancelledReply: string | null = null
   await scrollToEnd()
@@ -391,14 +449,15 @@ async function send(): Promise<void> {
         void scrollToEnd()
       },
       onQueued: (turn) => {
-        queued.value = [
-          ...queued.value,
-          { conversationId: target, itemId: turn.itemId, messageId: sent.id, text },
-        ]
+        // Remember the id so the turn's own frames (started / done / failed) can clear its marker.
+        myItemId = turn.itemId
+        store.noteQueued(target, turn.itemId, text)
       },
       // The turn is out of the line now; the server says so before its first token, so the count
       // never keeps calling a running turn "waiting".
-      onStarted: () => forgetQueued(sent.id),
+      onStarted: () => {
+        if (myItemId !== null) store.forgetQueued(target, myItemId)
+      },
       // The run exists now: this is the handle the stop button targets.
       onRun: (runId) => {
         myRunId = runId
@@ -410,7 +469,7 @@ async function send(): Promise<void> {
       },
     })
 
-    forgetQueued(sent.id)
+    if (myItemId !== null) store.forgetQueued(target, myItemId)
     // The turn belongs to the conversation it was asked in. A queued turn can land minutes after
     // the customer has moved on, so only a still-open thread gets its reply and its meter.
     if (activeId.value === target) {
@@ -427,7 +486,9 @@ async function send(): Promise<void> {
     // The half-rendered placeholder never survives a failure; what replaces it is not a guess but
     // the server's answer to "did this send actually land?" -- the stream dying says nothing
     // either way, because the backend finishes and persists the turn even with nobody listening.
-    forgetQueued(sent.id)
+    if (conversationId !== null && myItemId !== null) {
+      store.forgetQueued(conversationId, myItemId)
+    }
     if (isRunCancelled(error)) {
       // The customer stopped it: the half reply is already in the placeholder (the tokens that
       // arrived) and is now an ordinary ASSISTANT message on the server. Keep the bubble; the stop
@@ -463,7 +524,10 @@ function onResolved(message: Message, card: ActionCard): void {
 
 onMounted(async () => {
   try {
-    await track(loadConversations())
+    // Subscribe first, then read: the stream's snapshot and this REST read both fill the store, so
+    // a conversation created after the read still arrives as a `state` increment.
+    store.connect()
+    await track(store.refresh())
     if (conversations.value.length) {
       await open(conversations.value[0])
     }
@@ -479,28 +543,37 @@ onMounted(async () => {
       <button class="btn authority" @click="newConversation">＋ 新对话</button>
     </div>
     <ol class="docket">
-      <li v-if="!conversations.length" class="docket-empty">
+      <li v-if="!conversations.length && !archived.length" class="docket-empty">
         还没有对话。新建一段，问问你的订单。
       </li>
-      <li v-for="conversation in conversations" :key="conversation.id">
-        <button
-          class="entry"
-          :class="{ active: conversation.id === activeId }"
-          @click="open(conversation)"
-        >
-          <span class="entry-head">
-            <span class="entry-title">{{ conversation.title || '新对话' }}</span>
-            <span
-              v-if="stateLabel(conversation.state)"
-              class="entry-state"
-              :class="conversation.state.toLowerCase()"
-            >
-              {{ stateLabel(conversation.state) }}
-            </span>
-          </span>
-          <span class="entry-when data">{{ formatWhen(conversation.lastMessageAt) }}</span>
-        </button>
-      </li>
+      <ConversationRow
+        v-for="conversation in conversations"
+        :key="conversation.id"
+        :conversation="conversation"
+        :active="conversation.id === activeId"
+        @open="open"
+        @archive="archive"
+        @restore="restore"
+      />
+      <!-- Archived conversations: hidden by default, but readable and restorable in one click.
+           Archiving is the only lifecycle action -- there is no hard delete (ADR-0013). -->
+      <template v-if="archived.length">
+        <li class="archived-head">
+          <button class="archived-toggle" @click="showArchived = !showArchived">
+            已归档 {{ archived.length }}
+            <span class="archived-caret">{{ showArchived ? '▾' : '▸' }}</span>
+          </button>
+        </li>
+        <ConversationRow
+          v-for="conversation in showArchived ? archived : []"
+          :key="conversation.id"
+          :conversation="conversation"
+          :active="conversation.id === activeId"
+          @open="open"
+          @archive="archive"
+          @restore="restore"
+        />
+      </template>
     </ol>
   </aside>
 
@@ -549,7 +622,9 @@ onMounted(async () => {
         <div v-if="activeQueue.length" class="queue">
           <span class="queue-head">排队中：{{ activeQueue.length }} 条</span>
           <span v-for="item in activeQueue" :key="item.itemId" class="queue-item">
-            <span class="queue-text">{{ item.text }}</span>
+            <!-- Words are only ever known to the tab that typed them; another tab's item is still
+                 shown (and deletable) by its id, just without them. -->
+            <span class="queue-text">{{ item.text || '（另一处的发送）' }}</span>
             <button class="btn quiet" @click="cancelQueued(item)">删除</button>
           </span>
         </div>

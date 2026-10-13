@@ -64,7 +64,8 @@ class StopContractTest {
                                 mock(IdempotencyRepository.class), new ObjectMapper(), 24),
                         mapper,
                         conversationService,
-                        queue);
+                        queue,
+                        mock(ConversationEventPublisher.class));
 
         mvc =
                 MockMvcBuilders.standaloneSetup(
@@ -75,6 +76,7 @@ class StopContractTest {
                                         queue,
                                         runRegistry,
                                         new RunService(runRepository, runRegistry),
+                                        mock(ConversationEventPublisher.class),
                                         mock(AiAssistantPort.class),
                                         new ObjectMapper(),
                                         mapper))

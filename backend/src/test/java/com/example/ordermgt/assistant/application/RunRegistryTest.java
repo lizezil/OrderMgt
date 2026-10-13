@@ -85,9 +85,10 @@ class RunRegistryTest {
         handle.append("前半句，");
 
         Recorder late = new Recorder();
-        String snapshot = handle.attach(late);
+        RunRegistry.Handle.Attached attached = handle.attach(late);
 
-        assertThat(snapshot).isEqualTo("前半句，");
+        assertThat(attached.text()).isEqualTo("前半句，");
+        assertThat(attached.finished()).isFalse();
         assertThat(late.deltas).isEmpty(); // the snapshot is not replayed as deltas
 
         handle.append("后半句。");
@@ -118,11 +119,10 @@ class RunRegistryTest {
         registry.close(11L);
 
         assertThat(early.completed).isTrue();
-        // A subscriber that joins after the run ended is closed at once, so no connection is held
-        // open on a run that will never speak again.
+        // A subscriber that joins after the run ended is told so at once (finished on the attach
+        // result), so no connection is held open on a run that will never speak again.
         Recorder late = new Recorder();
-        handle.attach(late);
-        assertThat(late.completed).isTrue();
+        assertThat(handle.attach(late).finished()).isTrue();
         assertThat(handle.isFinished()).isTrue();
     }
 

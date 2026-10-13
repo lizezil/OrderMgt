@@ -3,9 +3,11 @@ package com.example.ordermgt.assistant.application;
 import com.example.ordermgt.shared.api.ErrorCode;
 import com.example.ordermgt.shared.error.BusinessException;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicLong;
@@ -194,6 +196,29 @@ public class ConversationRunQueue {
             return slot != null && slot.running;
         }
     }
+
+    /**
+     * The line for this conversation, front first: the items waiting and their 1-based positions.
+     * Read-only, for the status stream that pushes the queue to every client (ADR-0014) -- the item
+     * ids are the only handle a queued item has, since it is not in the database.
+     */
+    public List<QueuedItem> waiting(Long conversationId) {
+        synchronized (this) {
+            Slot slot = conversations.get(conversationId);
+            if (slot == null) {
+                return List.of();
+            }
+            List<QueuedItem> line = new ArrayList<>(slot.waiting.size());
+            int position = 1;
+            for (Item item : slot.waiting) {
+                line.add(new QueuedItem(item.id(), position++));
+            }
+            return line;
+        }
+    }
+
+    /** One waiting item as the status stream reports it: its runtime id and place in line. */
+    public record QueuedItem(String itemId, int position) {}
 
     /**
      * Hands back the next waiting turn, leaving the slot held for it; null means the line is empty

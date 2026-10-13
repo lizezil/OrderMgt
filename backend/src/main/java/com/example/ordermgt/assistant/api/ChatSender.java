@@ -30,6 +30,7 @@ public class ChatSender {
     private final AssistantApiMapper mapper;
     private final ConversationService conversationService;
     private final ConversationRunQueue runQueue;
+    private final ConversationEventPublisher events;
 
     public ChatResponse send(
             Long customerId, Long conversationId, String idempotencyKey, String message) {
@@ -45,16 +46,27 @@ public class ChatSender {
     /**
      * Runs the blocked turn under the conversation's single-run invariant. A {@code null}
      * conversationId starts a new one, which cannot be busy because it did not exist a moment ago.
+     *
+     * <p>The turn changed the conversation's state (a new message, and possibly a confirmation
+     * card), so the customer's status stream is told once it lands -- the same push the streaming
+     * transport does, so a badge on another tab does not depend on which transport sent.
      */
     private ChatResponse chat(Long customerId, Long conversationId, String message) {
         if (conversationId == null) {
-            return mapper.toResponse(assistantService.chat(customerId, null, message));
+            ChatResponse response =
+                    mapper.toResponse(assistantService.chat(customerId, null, message));
+            events.stateChanged(customerId, response.conversationId());
+            return response;
         }
         conversationService.getOwned(customerId, conversationId);
-        return runQueue.runBlocking(
-                conversationId,
-                () ->
-                        mapper.toResponse(
-                                assistantService.chat(customerId, conversationId, message)));
+        ChatResponse response =
+                runQueue.runBlocking(
+                        conversationId,
+                        () ->
+                                mapper.toResponse(
+                                        assistantService.chat(
+                                                customerId, conversationId, message)));
+        events.stateChanged(customerId, conversationId);
+        return response;
     }
 }

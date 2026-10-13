@@ -3,6 +3,8 @@ package com.example.ordermgt.assistant.application;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -187,6 +189,86 @@ class ConversationServiceTest {
                 .extracting(ChatMessage::content)
                 .containsExactly("first sentence", "second sentence");
         verify(conversationRepository).findRecentMessages(CONVERSATION, 2);
+    }
+
+    /** 归档只允许静止的会话（ADR-0013）：没有活 Run、也没有未过期卡片，才把可见性置 ARCHIVED。 */
+    @Test
+    void archivingAQuiescentConversationHidesIt() {
+        Conversation conversation = conversation(OWNER);
+        when(conversationRepository.findById(CONVERSATION)).thenReturn(Optional.of(conversation));
+        when(runRepository.runningConversationIds(List.of(CONVERSATION))).thenReturn(Set.of());
+        when(pendingActionRepository.livePendingConversationIds(eq(List.of(CONVERSATION)), any()))
+                .thenReturn(Set.of());
+        when(conversationRepository.save(any()))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        Conversation archived = service.archive(OWNER, CONVERSATION);
+
+        assertThat(archived.getStatus()).isEqualTo(ConversationStatus.ARCHIVED);
+        verify(conversationRepository).save(conversation);
+    }
+
+    /** 有 RUNNING 的 Run 就不是静止的：归档兼任终止会让它变成第二个半吊子停止开关。 */
+    @Test
+    void archivingAConversationWithARunningRunIsRejected() {
+        when(conversationRepository.findById(CONVERSATION))
+                .thenReturn(Optional.of(conversation(OWNER)));
+        when(runRepository.runningConversationIds(List.of(CONVERSATION)))
+                .thenReturn(Set.of(CONVERSATION));
+
+        assertThatThrownBy(() -> service.archive(OWNER, CONVERSATION))
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).errorCode())
+                .isEqualTo(ErrorCode.CONFLICT);
+        verify(conversationRepository, never()).save(any());
+    }
+
+    /** 未过期的待确认卡片同样让它不静止。 */
+    @Test
+    void archivingAConversationWithALiveCardIsRejected() {
+        when(conversationRepository.findById(CONVERSATION))
+                .thenReturn(Optional.of(conversation(OWNER)));
+        when(runRepository.runningConversationIds(List.of(CONVERSATION))).thenReturn(Set.of());
+        when(pendingActionRepository.livePendingConversationIds(eq(List.of(CONVERSATION)), any()))
+                .thenReturn(Set.of(CONVERSATION));
+
+        assertThatThrownBy(() -> service.archive(OWNER, CONVERSATION))
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).errorCode())
+                .isEqualTo(ErrorCode.CONFLICT);
+        verify(conversationRepository, never()).save(any());
+    }
+
+    /** 主动对已归档的会话说话 = 明确的恢复意图，于是它自动回到 ACTIVE（ADR-0013）。 */
+    @Test
+    void speakingToAnArchivedConversationRestoresIt() {
+        Instant now = Instant.now();
+        Conversation archived =
+                Conversation.rehydrate(
+                        CONVERSATION, OWNER, "title", ConversationStatus.ARCHIVED, now, now, now);
+        when(conversationRepository.findById(CONVERSATION)).thenReturn(Optional.of(archived));
+        when(conversationRepository.save(any()))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+        when(conversationRepository.append(any()))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        service.appendCustomerMessage(OWNER, CONVERSATION, "接着说");
+
+        assertThat(archived.getStatus()).isEqualTo(ConversationStatus.ACTIVE);
+        verify(conversationRepository).save(archived);
+    }
+
+    /** 越权先于一切：连它是不是静止都不该问，更不该动。 */
+    @Test
+    void archivingSomeoneElsesConversationIsForbidden() {
+        when(conversationRepository.findById(CONVERSATION))
+                .thenReturn(Optional.of(conversation(STRANGER)));
+
+        assertThatThrownBy(() -> service.archive(OWNER, CONVERSATION))
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).errorCode())
+                .isEqualTo(ErrorCode.FORBIDDEN);
+        verifyNoInteractions(runRepository, pendingActionRepository);
     }
 
     @Test

@@ -61,6 +61,7 @@ class ConversationControllerTest {
     @Mock private ConversationRunQueue runQueue;
     @Mock private RunRegistry runRegistry;
     @Mock private RunService runService;
+    @Mock private ConversationEventPublisher events;
     @Mock private AiAssistantPort aiAssistantPort;
     @Mock private AssistantApiMapper mapper;
     @Mock private SseEmitter emitter;
@@ -80,6 +81,7 @@ class ConversationControllerTest {
                         runQueue,
                         runRegistry,
                         runService,
+                        events,
                         aiAssistantPort,
                         new ObjectMapper(),
                         mapper);

@@ -82,6 +82,9 @@ public class RunRegistry {
             void completed();
         }
 
+        /** The result of joining a run: the text so far, and whether it had already ended. */
+        public record Attached(String text, boolean finished) {}
+
         private final Long runId;
         private final AtomicBoolean cancelled = new AtomicBoolean();
         private final StringBuilder text = new StringBuilder();
@@ -125,16 +128,17 @@ public class RunRegistry {
          * and no delta can slip between producing it and registering the subscriber -- the
          * reattach's first frame is exactly the text up to the moment it joined.
          *
-         * <p>A run that already ended delivers {@link Subscriber#completed()} immediately, so the
-         * caller never holds a connection open on a run that will never speak again.
+         * <p>{@link Attached#finished()} says the run had already ended when the subscriber joined,
+         * so the caller can close the connection predictably instead of holding one open on a run
+         * that will never speak again -- and no {@link Subscriber#completed()} fires for it,
+         * because the caller is the one doing the closing.
          */
-        public synchronized String attach(Subscriber subscriber) {
+        public synchronized Attached attach(Subscriber subscriber) {
             if (finished) {
-                notifyCompleted(subscriber);
-                return text.toString();
+                return new Attached(text.toString(), true);
             }
             subscribers.add(subscriber);
-            return text.toString();
+            return new Attached(text.toString(), false);
         }
 
         public synchronized void detach(Subscriber subscriber) {

@@ -9,6 +9,7 @@ import com.example.ordermgt.assistant.application.ConversationView;
 import com.example.ordermgt.assistant.application.RunRegistry;
 import com.example.ordermgt.assistant.application.RunService;
 import com.example.ordermgt.assistant.domain.AiAssistantPort;
+import com.example.ordermgt.assistant.domain.Run;
 import com.example.ordermgt.assistant.domain.RunCancellation;
 import com.example.ordermgt.assistant.domain.RunCancelledException;
 import com.example.ordermgt.idempotency.application.IdempotencyGuard;
@@ -58,6 +59,7 @@ public class ConversationController {
     private final ConversationRunQueue runQueue;
     private final RunRegistry runRegistry;
     private final RunService runService;
+    private final ConversationEventPublisher events;
     private final AiAssistantPort aiAssistantPort;
     private final ObjectMapper objectMapper;
     private final AssistantApiMapper mapper;
@@ -67,8 +69,11 @@ public class ConversationController {
     @ResponseStatus(HttpStatus.CREATED)
     public ApiResponse<ConversationResponse> start(
             @RequestHeader("X-Customer-Id") Long customerId) {
-        return ApiResponse.ok(
-                mapper.toResponse(ConversationView.idle(conversationService.start(customerId))));
+        ConversationResponse created =
+                mapper.toResponse(ConversationView.idle(conversationService.start(customerId)));
+        // Other tabs learn about the new conversation from the stream, not from a refresh.
+        events.stateChanged(customerId, created.id());
+        return ApiResponse.ok(created);
     }
 
     @GetMapping
@@ -126,6 +131,7 @@ public class ConversationController {
     public ApiResponse<ConversationResponse> archive(
             @RequestHeader("X-Customer-Id") Long customerId, @PathVariable Long conversationId) {
         conversationService.archive(customerId, conversationId);
+        events.stateChanged(customerId, conversationId);
         return ApiResponse.ok(
                 mapper.toResponse(conversationService.view(customerId, conversationId)));
     }
@@ -135,6 +141,7 @@ public class ConversationController {
     public ApiResponse<ConversationResponse> restore(
             @RequestHeader("X-Customer-Id") Long customerId, @PathVariable Long conversationId) {
         conversationService.restore(customerId, conversationId);
+        events.stateChanged(customerId, conversationId);
         return ApiResponse.ok(
                 mapper.toResponse(conversationService.view(customerId, conversationId)));
     }
@@ -153,6 +160,95 @@ public class ConversationController {
         conversationService.getOwned(customerId, conversationId);
         runService.stop(conversationId, runId);
         return ApiResponse.ok(null);
+    }
+
+    /**
+     * Subscribes to a Run that is already in flight: the "switch away and switch back" case
+     * (ADR-0014). The first frame is the text accumulated so far, then `token` deltas; several
+     * subscribers may watch one Run at once, because each is a read of the same accumulated text
+     * rather than an exclusive connection. There is no per-delta cache and no resume -- only the
+     * current text is held, so the snapshot is stateless (ADR-0009).
+     *
+     * <p>A Run that is not live in this process -- already terminal, or owned elsewhere -- is
+     * closed at once with a `closed` frame, so a late subscriber is told the truth instead of
+     * waiting on a stream that will never speak again.
+     */
+    @GetMapping(
+            value = "/{conversationId}/runs/{runId}/events",
+            produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter runEvents(
+            @RequestHeader("X-Customer-Id") Long customerId,
+            @PathVariable Long conversationId,
+            @PathVariable Long runId) {
+        conversationService.getOwned(customerId, conversationId);
+        Run run = runService.require(conversationId, runId);
+
+        SseEmitter emitter = new SseEmitter(AiCallPolicy.STREAM_TIMEOUT_MS);
+        AtomicBoolean clientGone = new AtomicBoolean(false);
+
+        RunRegistry.Handle live = runRegistry.find(runId).orElse(null);
+        if (live == null) {
+            // Nothing live here to watch -- the run is terminal, or another process owns it. The
+            // connection is closed right away, so a late subscriber is told rather than waiting.
+            emitter.onError(error -> clientGone.set(true));
+            emitter.onTimeout(() -> clientGone.set(true));
+            deliver(emitter, clientGone, "closed", closedPayload(run));
+            completeQuietly(emitter);
+            return emitter;
+        }
+
+        RunRegistry.Handle.Subscriber subscriber =
+                new RunRegistry.Handle.Subscriber() {
+
+                    @Override
+                    public void delta(String text) {
+                        deliver(emitter, clientGone, "token", text);
+                    }
+
+                    @Override
+                    public void completed() {
+                        deliver(emitter, clientGone, "closed", closedPayload(run));
+                        completeQuietly(emitter);
+                    }
+                };
+        // A watcher that leaves stops being a subscriber: this connection has no turn holding it,
+        // so nothing else would ever remove it before the run ends. One handler for all three ways
+        // a connection ends, so none is silently overwritten by the next.
+        Runnable stopWatching =
+                () -> {
+                    clientGone.set(true);
+                    live.detach(subscriber);
+                };
+        emitter.onCompletion(stopWatching);
+        emitter.onTimeout(stopWatching);
+        emitter.onError(error -> stopWatching.run());
+
+        RunRegistry.Handle.Attached attached = live.attach(subscriber);
+        deliver(emitter, clientGone, "snapshot", textPayload(attached.text()));
+        if (attached.finished()) {
+            deliver(emitter, clientGone, "closed", closedPayload(run));
+            completeQuietly(emitter);
+        }
+        return emitter;
+    }
+
+    private String textPayload(String text) {
+        try {
+            return objectMapper.writeValueAsString(new RunTextResponse(text));
+        } catch (JsonProcessingException ex) {
+            log.warn("could not serialize the run snapshot: {}", ex.getMessage());
+            return "{}";
+        }
+    }
+
+    private String closedPayload(Run run) {
+        try {
+            return objectMapper.writeValueAsString(
+                    new RunClosedResponse(run.id(), run.status().name()));
+        } catch (JsonProcessingException ex) {
+            log.warn("could not serialize the run-closed frame: {}", ex.getMessage());
+            return "{}";
+        }
     }
 
     /**
@@ -229,6 +325,9 @@ public class ConversationController {
         if (admission instanceof ConversationRunQueue.Admission.Queued queued) {
             deliver(emitter, clientGone, "queued", queuedPayload(queued));
         }
+        // The line changed for this conversation: let every open status stream see it, so another
+        // tab knows the send is waiting (and can delete it by the item id it was given).
+        events.queueChanged(customerId, conversationId);
         return emitter;
     }
 
@@ -251,6 +350,7 @@ public class ConversationController {
             throw new BusinessException(
                     ErrorCode.NOT_FOUND, "no queued turn " + itemId + " in this conversation");
         }
+        events.queueChanged(customerId, conversationId);
         return ApiResponse.ok(null);
     }
 
@@ -305,6 +405,8 @@ public class ConversationController {
                                 // The run id is minted here, after the stream is open, so it is
                                 // sent on its own frame: it is what the client's stop button needs.
                                 deliver(emitter, clientGone, "run", runPayload(run.id()));
+                                // The conversation is RUNNING now: tell every open status stream.
+                                events.stateChanged(customerId, conversationId);
                             },
                             () ->
                                     aiAssistantPort.respondStreaming(
@@ -350,6 +452,11 @@ public class ConversationController {
                 runRegistry.close(live.runId());
             }
             runQueue.finished(conversationId);
+            // The turn ended and the line advanced: push both, so every tab sees the new state
+            // (IDLE / WAITING_APPROVAL, or still RUNNING if a waiter just took over) and the new
+            // queue in one go.
+            events.stateChanged(customerId, conversationId);
+            events.queueChanged(customerId, conversationId);
         }
     }
 

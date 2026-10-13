@@ -20,6 +20,7 @@ import com.example.ordermgt.assistant.api.AssistantApiMapper;
 import com.example.ordermgt.assistant.api.AssistantController;
 import com.example.ordermgt.assistant.api.ChatSender;
 import com.example.ordermgt.assistant.api.ConversationController;
+import com.example.ordermgt.assistant.api.ConversationEventPublisher;
 import com.example.ordermgt.assistant.application.ActionConfirmationService;
 import com.example.ordermgt.assistant.application.AssistantResult;
 import com.example.ordermgt.assistant.application.AssistantService;
@@ -122,7 +123,12 @@ class ApiContractTest {
         ConversationRunQueue runQueue = new ConversationRunQueue(Runnable::run, 5);
         ChatSender chatSender =
                 new ChatSender(
-                        assistantService, guard, assistantMapper, conversationService, runQueue);
+                        assistantService,
+                        guard,
+                        assistantMapper,
+                        conversationService,
+                        runQueue,
+                        mock(ConversationEventPublisher.class));
 
         mvc =
                 MockMvcBuilders.standaloneSetup(
@@ -133,7 +139,9 @@ class ApiContractTest {
                                 new CatalogController(
                                         catalogRepository,
                                         Mappers.getMapper(CatalogApiMapper.class)),
-                                new ActionController(actionConfirmationService),
+                                new ActionController(
+                                        actionConfirmationService,
+                                        mock(ConversationEventPublisher.class)),
                                 new AssistantController(chatSender),
                                 new ConversationController(
                                         conversationService,
@@ -142,6 +150,7 @@ class ApiContractTest {
                                         runQueue,
                                         new RunRegistry(),
                                         mock(RunService.class),
+                                        mock(ConversationEventPublisher.class),
                                         mock(AiAssistantPort.class),
                                         new ObjectMapper(),
                                         assistantMapper))

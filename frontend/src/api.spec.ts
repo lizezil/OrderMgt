@@ -349,6 +349,45 @@ describe('流式回复的客户端契约', () => {
     expect(halves).toEqual(['我先说'])
   })
 
+  it('重订阅先收累积文本快照，再收 token 增量，最后 closed 收尾', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          streamResponse([
+            frame('snapshot', '{"text":"前半句"}'),
+            frame('token', '后半句'),
+            frame('closed', '{"runId":42,"status":"COMPLETED"}'),
+          ]),
+        ),
+    )
+    const snapshots: string[] = []
+    const tokens: string[] = []
+    const closed: string[] = []
+
+    await api.runStream(7, 42, {
+      onSnapshot: (text) => snapshots.push(text),
+      onToken: (delta) => tokens.push(delta),
+      onClosed: (status) => closed.push(status),
+    })
+
+    expect(snapshots).toEqual(['前半句'])
+    expect(tokens).toEqual(['后半句'])
+    expect(closed).toEqual(['COMPLETED'])
+  })
+
+  it('重订阅打的是这条会话那条 Run 的事件端点', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(streamResponse([]))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await api.runStream(7, 42, { onSnapshot: () => {}, onToken: () => {}, onClosed: () => {} })
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('/api/assistant/conversations/7/runs/42/events')
+    expect((init.headers as Record<string, string>).Accept).toBe('text/event-stream')
+  })
+
   it('停一个 Run 是 POST 到这条会话的 run 停止端点', async () => {
     const fetchMock = vi.fn().mockResolvedValue(ok(null))
     vi.stubGlobal('fetch', fetchMock)

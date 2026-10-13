@@ -119,39 +119,23 @@ export async function chatStream(
     )
   }
 
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
   let result: ChatResponse | null = null
   let failure: string | null = null
   let dropped = false
   let cancelled = false
 
-  for (;;) {
-    const { value, done } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-
-    // A frame may be split across reads, so only consume what is complete and keep the remainder
-    // buffered -- including a trailing "\r" that might still turn out to be "\r\n".
-    let boundary = FRAME_END.exec(buffer)
-    while (boundary) {
-      const frame = buffer.slice(0, boundary.index)
-      buffer = buffer.slice(boundary.index + boundary[0].length)
-      const event = parseSseFrame(frame)
-      if (event?.name === 'token') handlers.onToken(event.data)
-      else if (event?.name === 'queued') reportQueued(event.data, handlers)
-      else if (event?.name === 'started') handlers.onStarted?.()
-      else if (event?.name === 'run') reportRun(event.data, handlers)
-      else if (event?.name === 'cancelled') {
-        cancelled = true
-        reportCancelled(event.data, handlers)
-      } else if (event?.name === 'done') result = JSON.parse(event.data) as ChatResponse
-      else if (event?.name === 'dropped') dropped = true
-      else if (event?.name === 'error') failure = event.data
-      boundary = FRAME_END.exec(buffer)
-    }
-  }
+  await readSseFrames(response.body, (event) => {
+    if (event.name === 'token') handlers.onToken(event.data)
+    else if (event.name === 'queued') reportQueued(event.data, handlers)
+    else if (event.name === 'started') handlers.onStarted?.()
+    else if (event.name === 'run') reportRun(event.data, handlers)
+    else if (event.name === 'cancelled') {
+      cancelled = true
+      reportCancelled(event.data, handlers)
+    } else if (event.name === 'done') result = JSON.parse(event.data) as ChatResponse
+    else if (event.name === 'dropped') dropped = true
+    else if (event.name === 'error') failure = event.data
+  })
 
   if (cancelled) {
     // The customer stopped this turn: the half reply is on screen and on the server. A decision,
@@ -188,6 +172,96 @@ function reportCancelled(data: string, handlers: ChatStreamHandlers): void {
   }
 }
 
+/** What a reattach to a running Run reports (ADR-0014). */
+export interface RunStreamHandlers {
+  /** The text accumulated so far, as the first frame: what the turn has said up to now. */
+  onSnapshot: (text: string) => void
+  /** Prose deltas from here on, exactly like the chat stream's `token` frames. */
+  onToken: (delta: string) => void
+  /** The Run is no longer live; the stream ends right after. */
+  onClosed: (status: string) => void
+}
+
+/**
+ * Reattaches to a Run that is already in flight -- the "switched away and came back" case
+ * (ADR-0014). The first frame is the current accumulated text, then `token` deltas; the server
+ * holds only that text, so this is a stateless read, not a resume (ADR-0009). Several callers may
+ * watch one Run at once. Aborting the signal is how a view stops watching when it navigates away.
+ */
+export async function runStream(
+  conversationId: number,
+  runId: number,
+  handlers: RunStreamHandlers,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await fetch(
+    `/api/assistant/conversations/${conversationId}/runs/${runId}/events`,
+    {
+      headers: { 'X-Customer-Id': getCustomerId(), Accept: 'text/event-stream' },
+      signal,
+    },
+  )
+  if (!response.ok || !response.body) {
+    throw new ApiError(
+      `HTTP_${response.status}`,
+      response.statusText || '重订阅失败',
+      response.status,
+    )
+  }
+
+  await readSseFrames(response.body, (event) => {
+    if (event.name === 'snapshot') {
+      handlers.onSnapshot((JSON.parse(event.data) as { text?: string }).text ?? '')
+    } else if (event.name === 'token') handlers.onToken(event.data)
+    else if (event.name === 'closed') {
+      handlers.onClosed((JSON.parse(event.data) as { status?: string }).status ?? '')
+    }
+  })
+}
+
+/** What the customer's status stream reports (ADR-0014). */
+export interface SessionStreamHandlers {
+  /** The first frame of every connection: every conversation at once, archived included. */
+  onSnapshot: (conversations: Conversation[]) => void
+  /** One conversation's derived state (or run id) changed. */
+  onState: (conversation: Conversation) => void
+  /** A conversation's waiting line changed. */
+  onQueue: (queue: { conversationId: number; items: QueuedTurn[] }) => void
+}
+
+/**
+ * The customer's long-lived status stream. Same transport and frame format as {@link chatStream}
+ * (fetch + ReadableStream, because EventSource cannot set the customer header); the difference is
+ * that it never ends on its own -- it is closed by aborting the signal or by the server, and the
+ * caller reconnects, at which point the server re-sends the whole `snapshot`. There is no
+ * `Last-Event-ID` resume: the client replaces its state wholesale (ADR-0014).
+ */
+export async function eventsStream(
+  handlers: SessionStreamHandlers,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await fetch('/api/assistant/events', {
+    headers: { 'X-Customer-Id': getCustomerId(), Accept: 'text/event-stream' },
+    signal,
+  })
+  if (!response.ok || !response.body) {
+    throw new ApiError(
+      `HTTP_${response.status}`,
+      response.statusText || '状态流连接失败',
+      response.status,
+    )
+  }
+
+  await readSseFrames(response.body, (event) => {
+    // `ping` carries nothing: its whole job is to keep the connection open.
+    if (event.name === 'snapshot') handlers.onSnapshot(JSON.parse(event.data) as Conversation[])
+    else if (event.name === 'state') handlers.onState(JSON.parse(event.data) as Conversation)
+    else if (event.name === 'queue') {
+      handlers.onQueue(JSON.parse(event.data) as { conversationId: number; items: QueuedTurn[] })
+    }
+  })
+}
+
 /** Reports a `queued` frame, ignoring one that carries no usable id (then it is only visible). */
 function reportQueued(data: string, handlers: ChatStreamHandlers): void {
   try {
@@ -197,6 +271,33 @@ function reportQueued(data: string, handlers: ChatStreamHandlers): void {
     }
   } catch {
     // A malformed frame must not take the turn down with it; the line is simply not deletable.
+  }
+}
+
+/**
+ * Drains an SSE body, handing every complete frame to `onFrame`. All three streams (chat, a
+ * reattach, the customer status stream) speak the same wire format, so the buffering -- frames split
+ * across reads, the trailing "\r" that might still become "\r\n" -- lives here once.
+ */
+async function readSseFrames(
+  body: ReadableStream<Uint8Array>,
+  onFrame: (event: { name: string; data: string }) => void,
+): Promise<void> {
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (done) return
+    buffer += decoder.decode(value, { stream: true })
+    let boundary = FRAME_END.exec(buffer)
+    while (boundary) {
+      const frame = buffer.slice(0, boundary.index)
+      buffer = buffer.slice(boundary.index + boundary[0].length)
+      const event = parseSseFrame(frame)
+      if (event) onFrame(event)
+      boundary = FRAME_END.exec(buffer)
+    }
   }
 }
 
@@ -214,10 +315,28 @@ function parseSseFrame(frame: string): { name: string; data: string } | null {
 }
 
 export const api = {
-  listConversations: () => request<Conversation[]>('/api/assistant/conversations'),
+  /**
+   * The sidebar read. Archived conversations are hidden by default and fetched only when asked for
+   * (ADR-0013), which is what the collapsed archived group needs.
+   */
+  listConversations: (includeArchived = false) =>
+    request<Conversation[]>(
+      `/api/assistant/conversations${includeArchived ? '?includeArchived=true' : ''}`,
+    ),
 
   startConversation: () =>
     request<Conversation>('/api/assistant/conversations', { method: 'POST' }),
+
+  /** Hides a conversation from the default list; the server refuses a busy one with 409 (ADR-0013). */
+  archiveConversation: (conversationId: number) =>
+    request<Conversation>(`/api/assistant/conversations/${conversationId}/archive`, {
+      method: 'POST',
+    }),
+
+  restoreConversation: (conversationId: number) =>
+    request<Conversation>(`/api/assistant/conversations/${conversationId}/restore`, {
+      method: 'POST',
+    }),
 
   history: (conversationId: number) =>
     request<Message[]>(`/api/assistant/conversations/${conversationId}/messages`),
@@ -230,6 +349,12 @@ export const api = {
     ),
 
   chatStream,
+
+  /** The customer's status stream: sidebar state pushed, never polled (ADR-0014). */
+  eventsStream,
+
+  /** Reattaches to a Run already in flight, to keep watching a turn after returning to it. */
+  runStream,
 
   /** Takes one waiting turn off the conversation's line; it will then never run (ADR-0012). */
   cancelQueued: (conversationId: number, itemId: string) =>

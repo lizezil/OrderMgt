@@ -15,6 +15,10 @@ import org.springframework.web.bind.annotation.RestController;
  *
  * <p>A token that belongs to somebody else is answered with FORBIDDEN; a token nobody holds with
  * NOT_FOUND; an expired one with GONE.
+ *
+ * <p>Resolving a card moves its conversation out of WAITING_APPROVAL, so each endpoint pushes the
+ * conversation's new state to the customer's status stream (ADR-0014): the sidebar badge on every
+ * open tab updates without a refresh.
  */
 @RequiredArgsConstructor
 @RestController
@@ -22,16 +26,24 @@ import org.springframework.web.bind.annotation.RestController;
 public class ActionController {
 
     private final ActionConfirmationService actionConfirmationService;
+    private final ConversationEventPublisher events;
 
     @PostMapping("/{token}/confirm")
     public ApiResponse<ActionResolution> confirm(
             @RequestHeader("X-Customer-Id") Long customerId, @PathVariable String token) {
-        return ApiResponse.ok(actionConfirmationService.confirm(customerId, token));
+        return ApiResponse.ok(
+                publish(customerId, actionConfirmationService.confirm(customerId, token)));
     }
 
     @PostMapping("/{token}/reject")
     public ApiResponse<ActionResolution> reject(
             @RequestHeader("X-Customer-Id") Long customerId, @PathVariable String token) {
-        return ApiResponse.ok(actionConfirmationService.reject(customerId, token));
+        return ApiResponse.ok(
+                publish(customerId, actionConfirmationService.reject(customerId, token)));
+    }
+
+    private ActionResolution publish(Long customerId, ActionResolution resolution) {
+        events.stateChanged(customerId, resolution.conversationId());
+        return resolution;
     }
 }

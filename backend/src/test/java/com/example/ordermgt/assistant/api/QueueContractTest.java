@@ -68,7 +68,8 @@ class QueueContractTest {
                                 mock(IdempotencyRepository.class), new ObjectMapper(), 24),
                         mapper,
                         conversationService,
-                        queue);
+                        queue,
+                        mock(ConversationEventPublisher.class));
 
         return MockMvcBuilders.standaloneSetup(
                         new ConversationController(
@@ -78,6 +79,7 @@ class QueueContractTest {
                                 queue,
                                 new RunRegistry(),
                                 mock(RunService.class),
+                                mock(ConversationEventPublisher.class),
                                 mock(AiAssistantPort.class),
                                 new ObjectMapper(),
                                 mapper))

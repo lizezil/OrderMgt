@@ -307,6 +307,94 @@ textarea {
   color: var(--ink-faint);
 }
 
+/* Each row carries an overflow menu; the archived/restore action lives there, never as a delete. */
+.row {
+  position: relative;
+}
+
+.row .entry {
+  padding-right: 30px;
+}
+
+.entry-tools {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+}
+
+.entry-more {
+  border: none;
+  background: none;
+  padding: 0 4px;
+  color: var(--ink-faint);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.entry-more:hover {
+  color: var(--ink);
+}
+
+.entry-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 5;
+  min-width: 84px;
+  padding: 4px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 6px 18px rgb(0 0 0 / 12%);
+}
+
+.menu-item {
+  display: block;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: var(--radius);
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.menu-item:hover {
+  background: var(--wash);
+}
+
+/* The archived group sits at the bottom of the rail, collapsed until asked for. */
+.archived-head {
+  margin-top: 8px;
+  padding: 4px 0;
+  border-top: 1px dashed var(--rule);
+}
+
+.archived-toggle {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  background: none;
+  color: var(--ink-faint);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.archived-toggle:hover {
+  color: var(--ink);
+}
+
+.archived-caret {
+  font-size: 10px;
+}
+
 .docket-empty {
   padding: 20px 12px;
   color: var(--ink-faint);
