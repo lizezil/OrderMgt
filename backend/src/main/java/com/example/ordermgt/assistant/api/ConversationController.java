@@ -123,10 +123,11 @@ public class ConversationController {
     private void streamTurn(
             SseEmitter emitter, Long customerId, Long conversationId, String message) {
         AssistantService.TurnContext context = null;
+        AssistantTurn turn = null;
         try {
             context = assistantService.prepare(customerId, conversationId, message);
 
-            AssistantTurn turn =
+            turn =
                     aiAssistantPort.respondStreaming(
                             customerId, context.memory(), delta -> emit(emitter, "token", delta));
 
@@ -134,15 +135,20 @@ public class ConversationController {
             emit(emitter, "done", objectMapper.writeValueAsString(mapper.toResponse(result)));
             emitter.complete();
         } catch (Exception ex) {
-            // A stream that dies leaves no turn, so the audit row is written here rather than in
-            // complete(). The blocking path does the same in AssistantService.chat.
-            assistantService.recordFailure(context, ex);
+            // Any failure on this transport owes an audit row, whether the stream died mid-flight
+            // or the turn could not be completed after it. The blocking path does the same in
+            // AssistantService.chat. Passing the turn (null when the stream died) keeps the
+            // model and latency on rows for calls that did answer.
+            assistantService.recordFailure(context, turn, ex);
             log.warn(
                     "streaming turn failed for conversation {}: {}",
                     conversationId,
                     ex.getMessage());
             try {
-                emit(emitter, "error", ex.getMessage() == null ? "流式响应失败" : ex.getMessage());
+                emit(
+                        emitter,
+                        "error",
+                        ex.getMessage() == null ? "streaming response failed" : ex.getMessage());
             } catch (RuntimeException suppressed) {
                 log.debug("could not report the stream error, client probably gone", suppressed);
             }
@@ -154,7 +160,7 @@ public class ConversationController {
         try {
             emitter.send(SseEmitter.event().name(event).data(data));
         } catch (IOException | IllegalStateException ex) {
-            throw new IllegalStateException("SSE 连接已断开", ex);
+            throw new IllegalStateException("sse connection closed", ex);
         }
     }
 }

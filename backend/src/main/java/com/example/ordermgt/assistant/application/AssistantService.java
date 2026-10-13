@@ -86,10 +86,18 @@ public class AssistantService {
         try {
             turn = aiAssistantPort.respond(customerId, context.memory());
         } catch (RuntimeException ex) {
-            recordFailure(context, ex);
+            recordFailure(context, null, ex);
             throw ex;
         }
-        return complete(context, turn);
+        try {
+            return complete(context, turn);
+        } catch (RuntimeException ex) {
+            // The model call already happened and was billed, so a turn that cannot be completed
+            // (unregistered tool, invalid arguments, a readonly handler blowing up) still owes an
+            // audit row -- with the turn's model and latency, which the exception does not carry.
+            recordFailure(context, turn, ex);
+            throw ex;
+        }
     }
 
     /**
@@ -129,7 +137,8 @@ public class AssistantService {
                                     () ->
                                             new BusinessException(
                                                     ErrorCode.UPSTREAM_AI_ERROR,
-                                                    "模型调用了未注册的工具: " + call.name()));
+                                                    "model called an unregistered tool: "
+                                                            + call.name()));
             if (spec.mutating()) {
                 proposals.add(propose(customerId, conversation.getId(), spec, call));
             } else {
@@ -166,22 +175,25 @@ public class AssistantService {
     }
 
     /**
-     * Records a model call that never produced a turn. Called from the blocking path's catch and
-     * from the streaming endpoint, so a failed call is auditable on both transports.
+     * Records a model call that did not produce a usable result. Called from the blocking path's
+     * catches and from the streaming endpoint, so a failed call is auditable on both transports.
+     *
+     * <p>{@code turn} is null when the call itself failed; when the model did answer but the turn
+     * could not be completed, the row keeps the turn's model, latency and token spend -- the call
+     * happened and was billed either way, and an audit row reading "unknown" would hide that.
      */
-    public void recordFailure(TurnContext context, Exception ex) {
-        String model = ex instanceof AiUpstreamException upstream ? upstream.model() : null;
+    public void recordFailure(TurnContext context, AssistantTurn turn, Exception ex) {
+        AiUpstreamException upstream = ex instanceof AiUpstreamException u ? u : null;
+        String model = upstream != null ? upstream.model() : turn == null ? null : turn.model();
         Integer latencyMs =
-                ex instanceof AiUpstreamException upstream ? upstream.latencyMs() : null;
+                upstream != null ? upstream.latencyMs() : turn == null ? null : turn.latencyMs();
         AiInvocationOutcome outcome =
-                ex instanceof AiUpstreamException upstream
-                        ? upstream.outcome()
-                        : AiInvocationOutcome.ERROR;
+                upstream != null ? upstream.outcome() : AiInvocationOutcome.ERROR;
         auditAccount(
                 context == null ? null : context.conversation(),
                 model,
-                null,
-                null,
+                turn == null ? null : turn.usage().promptTokens(),
+                turn == null ? null : turn.usage().completionTokens(),
                 latencyMs,
                 outcome,
                 ex.getMessage(),
@@ -209,7 +221,8 @@ public class AssistantService {
             return pendingActionRepository.save(action);
         } catch (IllegalArgumentException ex) {
             throw new BusinessException(
-                    ErrorCode.VALIDATION_FAILED, "模型给出的操作参数不合法，已拒绝: " + ex.getMessage());
+                    ErrorCode.VALIDATION_FAILED,
+                    "model proposed invalid tool arguments, rejected: " + ex.getMessage());
         }
     }
 

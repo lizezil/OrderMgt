@@ -83,7 +83,7 @@ class AssistantServiceTest {
     }
 
     @Test
-    void 变更工具只落成待确认卡片绝不执行() {
+    void mutatingToolsOnlyBecomePendingCardsNeverExecute() {
         when(pendingActionRepository.save(any()))
                 .thenAnswer(
                         invocation -> {
@@ -92,9 +92,15 @@ class AssistantServiceTest {
                             return action;
                         });
         when(conversationService.appendAssistantMessage(eq(CONVERSATION), anyString()))
-                .thenReturn(Message.assistant(CONVERSATION, "我准备好了一个下单操作。", Instant.now()));
+                .thenReturn(
+                        Message.assistant(
+                                CONVERSATION,
+                                "I have prepared an order for you, please confirm.",
+                                Instant.now()));
         when(conversationService.appendAssistantMessage(eq(CONVERSATION), anyString(), any()))
-                .thenReturn(Message.assistantWithAction(CONVERSATION, "创建订单", 77L, Instant.now()));
+                .thenReturn(
+                        Message.assistantWithAction(
+                                CONVERSATION, "Place Order", 77L, Instant.now()));
         when(aiInvocationRepository.save(any()))
                 .thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -105,8 +111,8 @@ class AssistantServiceTest {
                 .satisfies(
                         card -> {
                             assertThat(card.status()).isEqualTo("PENDING");
-                            assertThat(card.title()).isEqualTo("创建订单");
-                            assertThat(card.summary()).isEqualTo("创建订单：GIZMO-03 × 3");
+                            assertThat(card.title()).isEqualTo("Create Order");
+                            assertThat(card.summary()).isEqualTo("Place order: GIZMO-03 × 3");
                         });
         assertThat(result.executed()).isEmpty();
         // 关掉自动执行的闸口：助手这一侧根本没有通往变更 handler 的路径。
@@ -114,7 +120,7 @@ class AssistantServiceTest {
     }
 
     @Test
-    void 只读工具当场执行并把结果带进回复() {
+    void readonlyToolsExecuteOnTheSpotAndCarryResultsIntoTheReply() {
         when(orderService.listByCustomer(CUSTOMER, 1, 20))
                 .thenReturn(PageResult.of(List.of(), 0, 1, 20));
         when(aiInvocationRepository.save(any()))
@@ -124,7 +130,7 @@ class AssistantServiceTest {
                 service.complete(
                         context(),
                         AssistantTurn.of(
-                                "我先查一下你自己的订单。",
+                                "Let me look up your own orders.",
                                 List.of(new ProposedToolCall("queryMyOrders", "{}", false)),
                                 AiUsage.EMPTY));
 
@@ -141,7 +147,7 @@ class AssistantServiceTest {
     }
 
     @Test
-    void 模型提出未注册的工具时整轮被拒() {
+    void proposingUnregisteredToolRejectsTheWholeTurn() {
         AssistantTurn turn =
                 AssistantTurn.of(
                         "",
@@ -156,7 +162,7 @@ class AssistantServiceTest {
     }
 
     @Test
-    void 参数无法描述的提议仍然落成一张可拒绝的卡片而不是把整轮打崩() {
+    void undescribableProposalStillBecomesRejectableCardNotACrash() {
         when(pendingActionRepository.save(any()))
                 .thenAnswer(
                         invocation -> {
@@ -165,7 +171,9 @@ class AssistantServiceTest {
                             return action;
                         });
         when(conversationService.appendAssistantMessage(eq(CONVERSATION), anyString(), any()))
-                .thenReturn(Message.assistantWithAction(CONVERSATION, "创建订单", 88L, Instant.now()));
+                .thenReturn(
+                        Message.assistantWithAction(
+                                CONVERSATION, "Place Order", 88L, Instant.now()));
         when(aiInvocationRepository.save(any()))
                 .thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -190,13 +198,13 @@ class AssistantServiceTest {
     }
 
     @Test
-    void 一次成功的模型调用留下带模型与耗时的审计行() {
+    void successfulModelCallLeavesAuditRowWithModelAndLatency() {
         when(aiInvocationRepository.save(any()))
                 .thenAnswer(invocation -> invocation.getArgument(0));
 
         service.complete(
                 context(),
-                new AssistantTurn("你好", List.of(), new AiUsage(10, 20), "qwen-max", 1234));
+                new AssistantTurn("hello", List.of(), new AiUsage(10, 20), "qwen-max", 1234));
 
         ArgumentCaptor<AiInvocation> captor = ArgumentCaptor.forClass(AiInvocation.class);
         verify(aiInvocationRepository).save(captor.capture());
@@ -207,28 +215,28 @@ class AssistantServiceTest {
     }
 
     @Test
-    void 审计写不进去也不能让这一轮回复失败() {
+    void auditWriteFailureMustNotFailTheTurn() {
         when(aiInvocationRepository.save(any()))
                 .thenThrow(new RuntimeException("audit store down"));
 
         AssistantResult result =
                 service.complete(
                         context(),
-                        new AssistantTurn("你好", List.of(), AiUsage.EMPTY, "qwen-max", 5));
+                        new AssistantTurn("hello", List.of(), AiUsage.EMPTY, "qwen-max", 5));
 
-        assertThat(result.reply()).isEqualTo("你好");
+        assertThat(result.reply()).isEqualTo("hello");
     }
 
     @Test
-    void 模型调用失败时抛出并把失败记进审计() {
+    void modelCallFailureIsRethrownAndRecordedInAudit() {
         when(conversationService.start(CUSTOMER)).thenReturn(conversation());
         when(conversationService.appendCustomerMessage(eq(CUSTOMER), eq(CONVERSATION), anyString()))
-                .thenReturn(Message.customer(CONVERSATION, "你好", Instant.now()));
+                .thenReturn(Message.customer(CONVERSATION, "hello", Instant.now()));
         when(conversationService.memory(CONVERSATION, MEMORY_WINDOW)).thenReturn(List.of());
         AiUpstreamException timeout =
                 new AiUpstreamException(
                         ErrorCode.UPSTREAM_AI_ERROR,
-                        "AI 服务调用失败",
+                        "AI upstream call failed",
                         new RuntimeException("read timeout"),
                         "qwen-max",
                         60000,
@@ -237,7 +245,7 @@ class AssistantServiceTest {
         when(aiInvocationRepository.save(any()))
                 .thenAnswer(invocation -> invocation.getArgument(0));
 
-        assertThatThrownBy(() -> service.chat(CUSTOMER, null, "你好")).isSameAs(timeout);
+        assertThatThrownBy(() -> service.chat(CUSTOMER, null, "hello")).isSameAs(timeout);
 
         ArgumentCaptor<AiInvocation> captor = ArgumentCaptor.forClass(AiInvocation.class);
         verify(aiInvocationRepository).save(captor.capture());
@@ -246,29 +254,59 @@ class AssistantServiceTest {
     }
 
     @Test
-    void 交给模型的记忆窗口取配置值() {
+    void modelAnsweredButCompletionFailedStillLeavesAuditRow() {
         when(conversationService.start(CUSTOMER)).thenReturn(conversation());
         when(conversationService.appendCustomerMessage(eq(CUSTOMER), eq(CONVERSATION), anyString()))
-                .thenReturn(Message.customer(CONVERSATION, "你好", Instant.now()));
+                .thenReturn(Message.customer(CONVERSATION, "hello", Instant.now()));
+        when(conversationService.memory(CONVERSATION, MEMORY_WINDOW)).thenReturn(List.of());
+        // 模型点了一个白名单外的工具：complete() 会拒绝，但这次调用已经发生、也计了费
+        AssistantTurn answered =
+                new AssistantTurn(
+                        "",
+                        List.of(new ProposedToolCall("deleteEverything", "{}", true)),
+                        new AiUsage(11, 22),
+                        "qwen-max",
+                        4242);
+        when(aiAssistantPort.respond(eq(CUSTOMER), anyList())).thenReturn(answered);
+        when(aiInvocationRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        assertThatThrownBy(() -> service.chat(CUSTOMER, null, "hello"))
+                .isInstanceOf(BusinessException.class);
+
+        ArgumentCaptor<AiInvocation> captor = ArgumentCaptor.forClass(AiInvocation.class);
+        verify(aiInvocationRepository).save(captor.capture());
+        AiInvocation row = captor.getValue();
+        assertThat(row.outcome()).isEqualTo(AiInvocationOutcome.ERROR);
+        assertThat(row.model()).isEqualTo("qwen-max");
+        assertThat(row.latencyMs()).isEqualTo(4242);
+        assertThat(row.promptTokens()).isEqualTo(11);
+        assertThat(row.error()).contains("deleteEverything");
+    }
+
+    @Test
+    void memoryWindowGivenToModelUsesConfiguredValue() {
+        when(conversationService.start(CUSTOMER)).thenReturn(conversation());
+        when(conversationService.appendCustomerMessage(eq(CUSTOMER), eq(CONVERSATION), anyString()))
+                .thenReturn(Message.customer(CONVERSATION, "hello", Instant.now()));
         when(conversationService.memory(CONVERSATION, MEMORY_WINDOW)).thenReturn(List.of());
         when(aiAssistantPort.respond(eq(CUSTOMER), anyList()))
-                .thenReturn(AssistantTurn.of("你好", List.of(), AiUsage.EMPTY));
+                .thenReturn(AssistantTurn.of("hello", List.of(), AiUsage.EMPTY));
         when(aiInvocationRepository.save(any()))
                 .thenAnswer(invocation -> invocation.getArgument(0));
 
-        service.chat(CUSTOMER, null, "你好");
+        service.chat(CUSTOMER, null, "hello");
 
         verify(conversationService).memory(CONVERSATION, MEMORY_WINDOW);
     }
 
     private static AssistantService.TurnContext context() {
         return new AssistantService.TurnContext(
-                conversation(), List.of(new ChatMessage(null, "帮我下单")));
+                conversation(), List.of(new ChatMessage(null, "help me order")));
     }
 
     private static AssistantTurn createOrderTurn() {
         return AssistantTurn.of(
-                "我准备好了一个下单操作。",
+                "I have prepared an order for you, please confirm.",
                 List.of(
                         new ProposedToolCall(
                                 "createOrder",
@@ -279,6 +317,6 @@ class AssistantServiceTest {
 
     private static Conversation conversation() {
         Instant now = Instant.now();
-        return Conversation.rehydrate(CONVERSATION, CUSTOMER, "标题", now, now, now);
+        return Conversation.rehydrate(CONVERSATION, CUSTOMER, "title", now, now, now);
     }
 }
