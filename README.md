@@ -134,8 +134,8 @@ make db-up                  # 测试跑在真实 MySQL 上，先把常驻容器�
 | 层 | 目标 | 用例 |
 |---|---|---|
 | L1 领域规则（纯单测） | 聚合与值对象的不变量 | `Money`、`Order`/`OrderLine` 状态机、`OrderNumber`、`ToolWhitelist`、`Message`、`Conversation`、`PendingAction`、`AiInvocation`（审计行的列约束） |
-| L2 应用用例（Mockito） | 编排与边界，不碰数据库 | `OrderService`、`ConversationService`、`AssistantService`、`ActionConfirmationService`、`ActionCardFactory`、`IdempotencyGuard`、`OrderToolSpecs` |
-| L3 API 契约（MockMvc） | 统一响应体、校验、状态码、幂等头 | `ApiContractTest`、`StreamSaturationContractTest`（流式池打满 → 503 `SERVICE_BUSY`，不无限排队；`AsyncConfigTest` 逼出线程/队列边界）、`ConversationControllerTest`（断线只终止投递，回合照常落库）、`SpringAiAdapter`（超时/异常归类成 `TIMEOUT`/`ERROR` + 首字节前重放策略） |
+| L2 应用用例（Mockito） | 编排与边界，不碰数据库 | `OrderService`、`ConversationService`、`AssistantService`（含跨会话记忆隔离）、`ActionConfirmationService`、`ActionCardFactory`、`IdempotencyGuard`、`OrderToolSpecs`、`CatalogGroundingProvider`（目录 grounding：每个在售 sku 与单价进提示词） |
+| L3 API 契约（MockMvc） | 统一响应体、校验、状态码、幂等头 | `ApiContractTest`、`StreamSaturationContractTest`（流式池打满 → 503 `SERVICE_BUSY`，不无限排队；`AsyncConfigTest` 逼出线程/队列边界）、`ConversationControllerTest`（断线只终止投递，回合照常落库）、`SpringAiAdapter`（超时/异常归类成 `TIMEOUT`/`ERROR` + 首字节前重放策略 + grounding facts 注入 system prompt） |
 | L4 集成（真 MySQL + 桩模型，不烧 Key） | 端到端业务流与并发正确性 | `AssistantFlowTest`（"提议→不执行→确认→落单→重复确认不重复落单→越权 403"、幂等键重放、每次调用落一行 `ai_invocations`、审计端点只许归属方读）、`OrderAssistantBusinessFlowTest`、`SmokeDemoFlowTest`、`OrderConcurrencyTest`（6 线程真实并发；含"幂等键 FAILED 重试只执行一次"，钉住并验证 `reclaim` 竞态修复） |
 | L5 SPA 单元与组件（Vitest + jsdom） | 后端替客户端保证不了的那半份契约 | `api.spec`（SSE 分帧 / 身份头 / 错误体）、`ActionCardPanel.spec`、`OrdersView.spec`、`AssistantView.spec`、`toast.spec`、`errors.spec` |
 | L6 浏览器端到端（Playwright + Chromium） | 真浏览器里走完"提议 → 确认 → 落单" | `catalog.spec`、`orders-identity.spec`、`assistant-flow.spec` |
@@ -166,18 +166,19 @@ L6 不信任 Vite dev server：`e2e/support/serve.mjs` 先把 SPA 构建进 `bac
 ```
 Makefile          常用命令入口（`make help` 看全部）
 backend/src/main/java/com/example/ordermgt/
-├── shared/       统一响应体、错误码、全局异常处理
+├── shared/       统一响应体、错误码、分页常量、全局异常处理
 ├── config/       MyBatis-Plus、OpenAPI、流式线程池
 ├── idempotency/  通用幂等组件（domain / application / infrastructure）
 ├── catalog/      商品目录（价格的唯一来源）
 ├── order/        订单领域（Order 聚合根、状态流转、事务边界）
 └── assistant/    助手领域（会话记忆、工具白名单、待确认动作、确认闭环）
+    ├── AiCallPolicy    模型调用的超时/重试常量（适配器与控制器共用）
     ├── domain/         无框架依赖：Conversation、Message、PendingAction、ToolSpec、ToolCard、ToolResult、AiAssistantPort
     ├── application/    AssistantService（编排）、ConversationService、ActionConfirmationService
-    ├── infrastructure/ Spring AI 适配器、MyBatis-Plus 持久化、过期清理任务
+    ├── infrastructure/ Spring AI 适配器（ai/prompt 下集中提示词）、MyBatis-Plus 持久化、过期清理任务
     └── api/            控制器、DTO 与 MapStruct 的 ApiMapper
 frontend/         Vue 3 SPA（产物直接构建进 backend/src/main/resources/static）
-├── src/          api.ts（含 SSE 客户端）、视图、组件；同名 *.spec.ts 是 L5 用例
+├── src/          api.ts（含 SSE 客户端）、constants.ts（屏级常量）、视图、组件；同名 *.spec.ts 是 L5 用例
 ├── e2e/          Playwright 用例（L6）+ support/serve.mjs（构建 SPA 并起离线后端）
 └── vitest.config.ts / playwright.config.ts
 docs/             项目文档
@@ -188,12 +189,21 @@ docs/             项目文档
 依赖方向：`api → application → domain`，`infrastructure → domain`（实现端口）。**domain 不依赖任何框架。**
 全仓有一处刻意的例外：`assistant/infrastructure/ai/tools/OrderToolDefinitions` 把只读工具接到 `order.application.OrderService` 上——工具定义本质是装配代码（哪个工具名对应哪个业务用例），这条 `infrastructure → application` 的边是单向的，`order` 侧不反向依赖 `assistant`，不构成环。
 
+## 提示词与常量放在哪
+
+"改措辞要翻遍适配器、改个超时要全仓 grep" 是这里要避免的。归置规则见 [ADR-0010](docs/adr/0010-prompts-and-constants-live-in-one-place.md)，一句话概括——**按"离得最近的原作者是谁"归置，而不是堆进一个全局 `Constants`**：
+
+- **提示词**：`assistant/infrastructure/ai/prompt/` 一处——`AiPrompts`（system prompt、catalog grounding 模板）与 `OfflinePrompts`（离线桩台词）。提示词只管措辞，填数据仍由 `CatalogGroundingProvider` 做。
+- **随环境调的数字**：`application.yml`（记忆窗口、卡片 TTL、流式并发/队列、幂等保留期、`spring.ai.retry`）。
+- **跨模块的固定数字**：`shared/api/Paging`（分页）、`assistant/AiCallPolicy`（流式时长、首 token 重试、阻塞传输的 5s/60s 超时）。前端对应 `src/constants.ts`。
+- **领域不变量**：留在拥有它的类型里（`Message.CONTENT_MAX`、`PendingAction.ARGUMENTS_MAX`、`OrderNumber.MAX_LENGTH`、`Money.SCALE` …），因为它和该类型的校验/截断是同一条规则的两半。
+
 ## 模型的超时、重试与审计
 
 三件事都集中在适配器与编排层，**不在业务事务里**（ADR-0002）：
 
-- **超时**：1.1.8 没有 `spring.ai.*.timeout` 属性，所以同步调用通过 `RestClientCustomizer` 换上一个带超时的 `JdkClientHttpRequestFactory`（连接 5s / 读取 60s，见 `AiHttpClientConfig`）；流式调用在 `SpringAiAdapter` 里用 Reactor `.timeout(2min)` + `.blockLast(2min)` 双上界（类路径上没有反应式连接器，WebClient 走 JDK HttpClient，没有全局响应超时可设）。
-- **重试**：Spring AI 自带 `RetryTemplate`，默认 10 次 / 退避 `2s×5` 上限 3 分钟——一个卡死的上游最坏能被拖近 19 分钟。我们只用属性把默认收到 **3 次 / 1s / ×2 / 上限 8s**。流式不被框架重试，所以 `respondStreaming` 自建**同款**退避：**首字节之前**失败整条重放（3 次 / 1s / ×2 / 上限 8s），首字节之后不再重试——重放会把已吐出的字再吐一遍。两处都**没有** jitter、没有熔断；重复执行的风险由幂等键与卡片行锁兜住。
+- **超时**：1.1.8 没有 `spring.ai.*.timeout` 属性，所以同步调用通过 `RestClientCustomizer` 换上一个带超时的 `JdkClientHttpRequestFactory`（连接 5s / 读取 60s，取自 `AiCallPolicy`，见 `AiHttpClientConfig`）；流式调用在 `SpringAiAdapter` 里用 Reactor `.timeout(2min)` + `.blockLast(2min)` 双上界，与 `ConversationController` 的 SSE 超时同读 `AiCallPolicy.STREAM_TIMEOUT_MS`（类路径上没有反应式连接器，WebClient 走 JDK HttpClient，没有全局响应超时可设）。
+- **重试**：Spring AI 自带 `RetryTemplate`，默认 10 次 / 退避 `2s×5` 上限 3 分钟——一个卡死的上游最坏能被拖近 19 分钟。我们只用属性把默认收到 **3 次 / 1s / ×2 / 上限 8s**。流式不被框架重试，所以 `respondStreaming` 自建**同款**退避（`AiCallPolicy`）：**首字节之前**失败整条重放（3 次 / 1s / ×2 / 上限 8s），首字节之后不再重试——重放会把已吐出的字再吐一遍。两处都**没有** jitter、没有熔断；重复执行的风险由幂等键与卡片行锁兜住。
 - **审计**：每次模型调用都往 `ai_invocations` 落一行——成功走 `AssistantService.complete`，失败与超时在 `recordFailure`（同步的 `chat` 与流式的 `streamTurn` 都会调用），失败行带上 model、latency 与 `ERROR`/`TIMEOUT`。审计是旁路：写不进去只记一条 warn，绝不影响本轮回复。读取走 `GET /api/assistant/conversations/{id}/invocations`（归属校验同历史，他人会话 403）。
 
 ## 没有 Key 也能跑（离线模式）

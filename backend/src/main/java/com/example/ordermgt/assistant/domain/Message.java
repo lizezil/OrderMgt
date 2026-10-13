@@ -22,6 +22,9 @@ public record Message(
      */
     public static final int CONTENT_MAX = 8000;
 
+    /** Appended when a reply is trimmed to fit the column, so nothing loses its tail silently. */
+    private static final String TRUNCATION_SUFFIX = "...[truncated]";
+
     public static Message customer(Long conversationId, String content, Instant at) {
         return new Message(null, conversationId, Role.CUSTOMER, cap(content), null, at);
     }
@@ -41,6 +44,7 @@ public record Message(
         }
         return content.length() <= CONTENT_MAX
                 ? content
-                : content.substring(0, CONTENT_MAX - 14) + "...[truncated]";
+                : content.substring(0, CONTENT_MAX - TRUNCATION_SUFFIX.length())
+                        + TRUNCATION_SUFFIX;
     }
 }

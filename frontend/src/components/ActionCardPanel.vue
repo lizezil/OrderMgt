@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import type { ActionCard, ActionResolution } from '../types'
 import { api } from '../api'
+import { EXPIRY_SOON_MINUTES, MS_PER_MINUTE } from '../constants'
 import { errorMessage } from '../errors'
 
 const props = defineProps<{ card: ActionCard }>()
@@ -43,8 +44,8 @@ const stampText = computed(() => (props.card.status === 'PENDING' ? '' : stateLa
 const expiryLabel = computed(() => {
   if (!isPending.value) return ''
   const at = new Date(props.card.expiresAt)
-  const minutes = Math.round((at.getTime() - Date.now()) / 60000)
-  return minutes > 1 ? `${minutes} 分钟后过期` : '即将过期'
+  const minutes = Math.round((at.getTime() - Date.now()) / MS_PER_MINUTE)
+  return minutes > EXPIRY_SOON_MINUTES ? `${minutes} 分钟后过期` : '即将过期'
 })
 
 async function resolve(kind: 'confirm' | 'reject'): Promise<void> {

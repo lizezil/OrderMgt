@@ -6,11 +6,13 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.example.ordermgt.assistant.domain.AiInvocationOutcome;
 import com.example.ordermgt.assistant.domain.AiUsage;
 import com.example.ordermgt.assistant.domain.AssistantTurn;
+import com.example.ordermgt.assistant.domain.GroundingProvider;
 import com.example.ordermgt.assistant.domain.ProposedToolCall;
 import com.example.ordermgt.assistant.domain.ToolRegistry;
 import java.io.IOException;
@@ -22,6 +24,7 @@ import java.util.Map;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.ChatClientResponse;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -77,6 +80,36 @@ class SpringAiAdapterTest {
     void nonTimeoutUpstreamFailureIsRecordedAsError() {
         assertThat(SpringAiAdapter.outcomeOf(new RuntimeException("connection refused")))
                 .isEqualTo(AiInvocationOutcome.ERROR);
+    }
+
+    /**
+     * Grounding only works if the facts actually reach the model: building them and then dropping
+     * them on the floor would leave the prompt exactly as ungrounded as before. The system prompt
+     * the model is handed must carry what the provider served.
+     */
+    @Test
+    void theSystemPromptCarriesTheGroundingFacts() {
+        GroundingProvider grounding =
+                () ->
+                        "Available items (take skus exactly from here):\n- WIDGET-01 unit price 19.90";
+        ChatClient.Builder builder = mock(ChatClient.Builder.class);
+        ChatClient client = mock(ChatClient.class);
+        ChatClient.ChatClientRequestSpec spec = mock(ChatClient.ChatClientRequestSpec.class);
+        ChatClient.CallResponseSpec call = mock(ChatClient.CallResponseSpec.class);
+        when(builder.build()).thenReturn(client);
+        when(client.prompt()).thenReturn(spec);
+        when(spec.system(anyString())).thenReturn(spec);
+        when(spec.messages(anyList())).thenReturn(spec);
+        when(spec.options(any(ChatOptions.class))).thenReturn(spec);
+        when(spec.call()).thenReturn(call);
+        when(call.chatClientResponse()).thenReturn(chunk("hello"));
+
+        new SpringAiAdapter(builder, new ToolRegistry(List.of()), grounding, "test-model")
+                .respond(1001L, List.of());
+
+        ArgumentCaptor<String> systemPrompt = ArgumentCaptor.forClass(String.class);
+        verify(spec).system(systemPrompt.capture());
+        assertThat(systemPrompt.getValue()).contains("WIDGET-01 unit price 19.90");
     }
 
     @Test

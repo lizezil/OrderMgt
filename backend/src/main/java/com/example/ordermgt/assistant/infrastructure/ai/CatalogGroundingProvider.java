@@ -1,6 +1,7 @@
 package com.example.ordermgt.assistant.infrastructure.ai;
 
 import com.example.ordermgt.assistant.domain.GroundingProvider;
+import com.example.ordermgt.assistant.infrastructure.ai.prompt.AiPrompts;
 import com.example.ordermgt.catalog.domain.CatalogItem;
 import com.example.ordermgt.catalog.domain.CatalogRepository;
 import lombok.RequiredArgsConstructor;
@@ -18,15 +19,11 @@ public class CatalogGroundingProvider implements GroundingProvider {
 
     @Override
     public String facts() {
-        StringBuilder sb = new StringBuilder("Available items (take skus exactly from here):\n");
+        StringBuilder sb = new StringBuilder(AiPrompts.CATALOG_HEADER).append('\n');
         for (CatalogItem item : catalogRepository.findAllActive()) {
-            sb.append("- ")
-                    .append(item.sku())
-                    .append(' ')
-                    .append(item.name())
-                    .append(" unit price ")
-                    .append(item.unitPrice())
-                    .append('\n');
+            sb.append(
+                    String.format(
+                            AiPrompts.CATALOG_ROW, item.sku(), item.name(), item.unitPrice()));
         }
         return sb.toString();
     }

@@ -265,12 +265,39 @@ textarea {
   box-shadow: inset 3px 0 0 var(--authority);
 }
 
+.entry-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .entry-title {
-  display: block;
+  flex: 1;
+  min-width: 0;
   font-weight: 550;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Derived state badge: only RUNNING and WAITING_APPROVAL appear (see ADR-0011). */
+.entry-state {
+  flex: none;
+  padding: 1px 5px;
+  border-radius: var(--radius);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.entry-state.running {
+  color: var(--authority);
+  background: var(--authority-soft);
+}
+
+.entry-state.waiting_approval {
+  color: var(--proposal);
+  background: var(--proposal-soft);
 }
 
 .entry-when {
@@ -318,52 +345,213 @@ textarea {
   text-align: center;
 }
 
+/* ---------- the conversation ---------- */
+
+/* Who is speaking is a position before it is a word: the customer sits on the right in ink, the
+   system answers on the left on paper. The label above each turn stays as the quieter second
+   signal — two voices on one sheet are told apart at a glance, without reading a thing. */
 .line {
-  margin-bottom: 24px;
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 26px;
+}
+
+.line.customer {
+  align-items: flex-end;
+}
+
+.line.assistant {
+  align-items: flex-start;
 }
 
 .line .speaker {
   margin: 0 0 6px;
+  padding: 0 2px;
   font-size: 11.5px;
   color: var(--ink-faint);
 }
 
 .said {
-  white-space: pre-wrap;
-  word-break: break-word;
+  max-width: min(84%, 44rem);
+  padding: 9px 13px;
+  border-radius: var(--radius);
+  overflow-wrap: break-word;
 }
 
-/* The customer speaks plainly; the system speaks in serif, as if printed. */
+/* The customer speaks plainly: sans, set in ink. */
 .line.customer .said {
-  padding-left: 14px;
-  border-left: 2px solid var(--ink);
-  font-size: 14.5px;
+  background: var(--ink);
+  color: var(--paper);
+  font-size: 14px;
 }
 
+/* The system speaks in serif, on a sheet of its own. */
 .line.assistant .said {
+  background: var(--surface);
+  border: 1px solid var(--rule);
   font-family: var(--serif);
-  font-size: 15.5px;
+  font-size: 15px;
   line-height: 1.75;
 }
 
-.line.tool .said {
-  padding: 8px 12px;
+/* An authorization slip is a document, not a turn: it keeps the full measure, wherever it sits. */
+.line .slip {
+  align-self: stretch;
+  max-width: 100%;
+}
+
+/* ---------- markdown inside a turn ---------- */
+
+.said > :first-child {
+  margin-top: 0;
+}
+
+.said > :last-child {
+  margin-bottom: 0;
+}
+
+.said p {
+  margin: 0 0 9px;
+}
+
+.said h1,
+.said h2,
+.said h3,
+.said h4,
+.said h5,
+.said h6 {
+  margin: 14px 0 7px;
+  font-family: var(--serif);
+  line-height: 1.4;
+}
+
+/* A heading inside a turn is a heading of the turn, not of the page. */
+.said h1 {
+  font-size: 18px;
+}
+
+.said h2 {
+  font-size: 17px;
+}
+
+.said h3 {
+  font-size: 16px;
+}
+
+.said h4,
+.said h5,
+.said h6 {
+  font-size: 15px;
+}
+
+.said ul,
+.said ol {
+  margin: 0 0 9px;
+  padding-left: 1.45em;
+}
+
+.said li {
+  margin: 3px 0;
+}
+
+.said li > ul,
+.said li > ol {
+  margin: 3px 0 0;
+}
+
+.said blockquote {
+  margin: 0 0 9px;
+  padding: 1px 0 1px 12px;
+  border-left: 2px solid var(--rule-strong);
+  color: var(--ink-soft);
+}
+
+.said hr {
+  margin: 14px 0;
+  border: none;
+  border-top: 1px solid var(--rule-strong);
+}
+
+.said code {
+  padding: 1px 5px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--wash);
+  font-family: var(--mono);
+  font-size: 0.86em;
+}
+
+/* Machine text on a line of its own, and fenced code: preformatted, and not chip-sized. */
+.said pre.md-code,
+.said pre.md-machine {
+  margin: 8px 0;
+  padding: 8px 11px;
   border-radius: var(--radius);
   background: var(--wash);
   color: var(--ink-soft);
   font-family: var(--mono);
   font-size: 12.5px;
+  line-height: 1.5;
   white-space: pre;
   overflow-x: auto;
 }
 
-.said .data {
-  display: block;
-  font-size: 12.5px;
-  color: var(--ink-soft);
-  white-space: pre;
-  overflow-x: auto;
-  margin: 6px 0;
+.said pre code {
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: inherit;
+  color: inherit;
+}
+
+/* The ledger's own rules, at reading size: a table in a reply is still a ledger. */
+.said table {
+  width: 100%;
+  margin: 10px 0;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.said th {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--rule-strong);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--ink-faint);
+  text-align: left;
+}
+
+.said td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.said a {
+  color: var(--authority);
+}
+
+/* On ink the links and the chips have to be told to come forward. */
+.line.customer .said a {
+  color: #b9c9ff;
+}
+
+.line.customer .said code,
+.line.customer .said pre.md-code,
+.line.customer .said pre.md-machine {
+  border-color: transparent;
+  background: rgba(255, 255, 255, 0.14);
+  color: var(--paper);
+}
+
+.line.customer .said th,
+.line.customer .said td {
+  border-bottom-color: rgba(255, 255, 255, 0.24);
+}
+
+.line.customer .said th,
+.line.customer .said blockquote {
+  color: var(--paper);
+  border-left-color: rgba(255, 255, 255, 0.4);
 }
 
 .thinking {

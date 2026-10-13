@@ -6,6 +6,7 @@ import com.example.ordermgt.assistant.domain.AssistantTurn;
 import com.example.ordermgt.assistant.domain.ChatMessage;
 import com.example.ordermgt.assistant.domain.ProposedToolCall;
 import com.example.ordermgt.assistant.domain.Role;
+import com.example.ordermgt.assistant.infrastructure.ai.prompt.OfflinePrompts;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
@@ -43,15 +44,19 @@ public class MockAiAdapter implements AiAssistantPort {
 
     private static final Pattern ORDER_NUMBER = Pattern.compile("ORD[0-9A-Z]+");
 
-    /** Named so an audit row and the UI can tell a mock turn from a real one. */
-    private static final String MODEL = "offline-mock";
+    /** How many characters of the canned reply arrive per streamed delta. */
+    private static final int CHUNK_SIZE = 6;
 
     @Override
     public AssistantTurn respond(Long customerId, List<ChatMessage> memory) {
         long start = System.nanoTime();
         AssistantTurn canned = turn(lastCustomerMessage(memory));
         return new AssistantTurn(
-                canned.text(), canned.toolCalls(), canned.usage(), MODEL, elapsedMs(start));
+                canned.text(),
+                canned.toolCalls(),
+                canned.usage(),
+                OfflinePrompts.MODEL,
+                elapsedMs(start));
     }
 
     @Override
@@ -59,7 +64,7 @@ public class MockAiAdapter implements AiAssistantPort {
             Long customerId, List<ChatMessage> memory, Consumer<String> onTextDelta) {
         AssistantTurn turn = respond(customerId, memory);
         // Real deltas, so the SPA's incremental rendering is exercised, not just faked.
-        for (String chunk : chunks(turn.text(), 6)) {
+        for (String chunk : chunks(turn.text(), CHUNK_SIZE)) {
             onTextDelta.accept(chunk);
         }
         return turn;
@@ -71,7 +76,7 @@ public class MockAiAdapter implements AiAssistantPort {
             if (orderNumber.find()) {
                 String found = orderNumber.group();
                 return AssistantTurn.of(
-                        "Sure, I am ready to cancel order " + found + ", please confirm.",
+                        OfflinePrompts.cancelProposal(found),
                         List.of(
                                 new ProposedToolCall(
                                         "cancelOrder",
@@ -88,7 +93,7 @@ public class MockAiAdapter implements AiAssistantPort {
                 || message.contains("query")
                 || message.contains("show")) {
             return AssistantTurn.of(
-                    "Let me look up your own orders.",
+                    OfflinePrompts.LOOKING_UP_ORDERS,
                     List.of(new ProposedToolCall("queryMyOrders", "{}", false)),
                     AiUsage.EMPTY);
         }
@@ -97,24 +102,16 @@ public class MockAiAdapter implements AiAssistantPort {
             String lines = linesJson(message);
             if (lines != null) {
                 return AssistantTurn.of(
-                        "I have prepared an order for you, please confirm.",
+                        OfflinePrompts.ORDER_PREPARED,
                         List.of(
                                 new ProposedToolCall(
                                         "createOrder", "{\"lines\":[" + lines + "]}", true)),
                         AiUsage.EMPTY);
             }
-            return AssistantTurn.of(
-                    "(offline mode) Please tell me the SKU and quantity, for example "
-                            + "\"help me order 2 DOODAD-04\".",
-                    List.of(),
-                    AiUsage.EMPTY);
+            return AssistantTurn.of(OfflinePrompts.ASK_FOR_SKU, List.of(), AiUsage.EMPTY);
         }
 
-        return AssistantTurn.of(
-                "(offline mode) I am a stub assistant without a real model. Try "
-                        + "\"what orders do I have\" or \"help me order 2 DOODAD-04\".",
-                List.of(),
-                AiUsage.EMPTY);
+        return AssistantTurn.of(OfflinePrompts.UNKNOWN_REQUEST, List.of(), AiUsage.EMPTY);
     }
 
     /**

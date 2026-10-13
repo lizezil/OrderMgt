@@ -10,6 +10,7 @@ import com.example.ordermgt.order.application.OrderService;
 import com.example.ordermgt.order.domain.Order;
 import com.example.ordermgt.order.domain.OrderStatus;
 import com.example.ordermgt.shared.api.ErrorCode;
+import com.example.ordermgt.shared.api.Paging;
 import com.example.ordermgt.shared.error.BusinessException;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -55,7 +56,13 @@ public class OrderToolDefinitions {
                         {"type":"object","properties":{}}""",
                         (customerId, args) -> {
                             List<Map<String, Object>> rows =
-                                    orderService.listByCustomer(customerId, 1, 20).items().stream()
+                                    orderService
+                                            .listByCustomer(
+                                                    customerId,
+                                                    Paging.FIRST_PAGE,
+                                                    Paging.DEFAULT_SIZE)
+                                            .items()
+                                            .stream()
                                             .map(OrderToolDefinitions::summarise)
                                             .toList();
                             return ToolResult.of(write(objectMapper, rows));

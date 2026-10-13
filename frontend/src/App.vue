@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { getCustomerId, setCustomerId } from './api'
+import { DEFAULT_CUSTOMER_ID } from './constants'
 import { useToast } from './toast'
 import AssistantView from './views/AssistantView.vue'
 import CatalogView from './views/CatalogView.vue'
@@ -17,7 +18,7 @@ const reload = ref(0)
 const viewerKey = computed(() => `${customer.value}-${reload.value}`)
 
 function applyCustomer(): void {
-  const next = customer.value.trim() || '1001'
+  const next = customer.value.trim() || DEFAULT_CUSTOMER_ID
   customer.value = next
   setCustomerId(next)
   reload.value += 1

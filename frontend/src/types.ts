@@ -30,12 +30,20 @@ export interface CatalogItem {
   unitPrice: number
 }
 
+/** Stored conversation lifecycle. */
+export type ConversationStatus = 'ACTIVE' | 'ARCHIVED'
+
+/** Derived runtime state, computed server-side on every read (see ADR-0011). */
+export type ConversationState = 'IDLE' | 'RUNNING' | 'WAITING_APPROVAL'
+
 export interface Conversation {
   id: number
   title: string | null
   createdAt: string
   updatedAt: string
   lastMessageAt: string | null
+  status: ConversationStatus
+  state: ConversationState
 }
 
 export interface ActionField {

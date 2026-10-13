@@ -1,4 +1,5 @@
 import { ref } from 'vue'
+import { TOAST_DURATION_MS } from './constants'
 
 const current = ref('')
 const isError = ref(false)
@@ -15,7 +16,7 @@ export function useToast() {
     window.clearTimeout(timer)
     timer = window.setTimeout(() => {
       current.value = ''
-    }, 5000)
+    }, TOAST_DURATION_MS)
   }
 
   return { current, isError, push }

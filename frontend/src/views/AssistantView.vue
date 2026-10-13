@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { nextTick, onMounted, ref } from 'vue'
 import { api } from '../api'
+import { LOCAL_MESSAGE_ID_START, RECONCILE_ATTEMPTS, RECONCILE_DELAY_MS } from '../constants'
 import { errorMessage } from '../errors'
-import type { ActionCard, ChatResponse, Conversation, Message } from '../types'
+import { renderMarkdown } from '../markdown'
+import type { ActionCard, ChatResponse, Conversation, ConversationState, Message } from '../types'
 import ActionCardPanel from '../components/ActionCardPanel.vue'
 
 const emit = defineEmits<{ (e: 'error', message: string): void }>()
@@ -16,7 +18,7 @@ const loading = ref(false)
 const usage = ref<{ prompt: number; completion: number; latencyMs: number } | null>(null)
 const scroller = ref<HTMLElement | null>(null)
 
-let localId = -1
+let localId = LOCAL_MESSAGE_ID_START
 
 function fail(error: unknown): void {
   emit('error', errorMessage(error, '请求失败'))
@@ -40,9 +42,15 @@ function formatWhen(iso: string | null): string {
     : date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
 }
 
-/** Tool output lines are machine text; everything else is prose. */
-function isMachine(line: string): boolean {
-  return /^\[[a-zA-Z]/.test(line.trim())
+/**
+ * The sidebar badge for a conversation's derived state. IDLE is the quiet default and shows
+ * nothing -- a label on every row would only make the two that matter harder to spot. The server
+ * derives the value; the screen just says it.
+ */
+function stateLabel(state: ConversationState): string {
+  if (state === 'RUNNING') return '生成中…'
+  if (state === 'WAITING_APPROVAL') return '待确认'
+  return ''
 }
 
 async function loadConversations(): Promise<void> {
@@ -123,10 +131,6 @@ function appendReply(response: ChatResponse): void {
     })
   }
 }
-
-/** How long reconcile waits between reads: the server may still be finishing the turn. */
-const RECONCILE_DELAY_MS = 1500
-const RECONCILE_ATTEMPTS = 3
 
 type ReconcileOutcome = 'recovered' | 'landed' | 'not-sent' | 'unknown'
 
@@ -308,7 +312,16 @@ onMounted(async () => {
           :class="{ active: conversation.id === activeId }"
           @click="open(conversation)"
         >
-          <span class="entry-title">{{ conversation.title || '新对话' }}</span>
+          <span class="entry-head">
+            <span class="entry-title">{{ conversation.title || '新对话' }}</span>
+            <span
+              v-if="stateLabel(conversation.state)"
+              class="entry-state"
+              :class="conversation.state.toLowerCase()"
+            >
+              {{ stateLabel(conversation.state) }}
+            </span>
+          </span>
           <span class="entry-when data">{{ formatWhen(conversation.lastMessageAt) }}</span>
         </button>
       </li>
@@ -323,6 +336,8 @@ onMounted(async () => {
           <span class="data">帮我下单 2 个 GADGET-02</span>
         </p>
 
+        <!-- Markdown, rendered by `renderMarkdown`: it escapes its input first, so the HTML below
+             is only ever the tags that module wrote. -->
         <article
           v-for="message in messages"
           :key="message.id"
@@ -330,12 +345,7 @@ onMounted(async () => {
           :class="message.role.toLowerCase()"
         >
           <p class="speaker">{{ message.role === 'CUSTOMER' ? '你' : '助手' }}</p>
-          <div class="said">
-            <template v-for="(line, index) in (message.content || '').split('\n')" :key="index">
-              <code v-if="isMachine(line)" class="data">{{ line }}</code>
-              <template v-else>{{ line }}<br /></template>
-            </template>
-          </div>
+          <div class="said" v-html="renderMarkdown(message.content || '')" />
           <ActionCardPanel
             v-if="message.action"
             :card="message.action"

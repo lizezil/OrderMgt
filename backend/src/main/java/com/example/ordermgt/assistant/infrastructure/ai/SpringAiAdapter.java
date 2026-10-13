@@ -1,5 +1,6 @@
 package com.example.ordermgt.assistant.infrastructure.ai;
 
+import com.example.ordermgt.assistant.AiCallPolicy;
 import com.example.ordermgt.assistant.domain.AiAssistantPort;
 import com.example.ordermgt.assistant.domain.AiInvocationOutcome;
 import com.example.ordermgt.assistant.domain.AiUpstreamException;
@@ -10,11 +11,11 @@ import com.example.ordermgt.assistant.domain.GroundingProvider;
 import com.example.ordermgt.assistant.domain.ProposedToolCall;
 import com.example.ordermgt.assistant.domain.ToolRegistry;
 import com.example.ordermgt.assistant.domain.ToolSpec;
+import com.example.ordermgt.assistant.infrastructure.ai.prompt.AiPrompts;
 import com.example.ordermgt.shared.api.ErrorCode;
 import com.example.ordermgt.shared.error.BusinessException;
 import java.net.SocketTimeoutException;
 import java.net.http.HttpTimeoutException;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -45,30 +46,6 @@ import org.springframework.stereotype.Component;
 @Profile("!offline")
 @RequiredArgsConstructor
 public class SpringAiAdapter implements AiAssistantPort {
-
-    /** Streaming calls are bounded so a stalled upstream cannot pin a thread forever. */
-    private static final Duration STREAM_TIMEOUT = Duration.ofMinutes(2);
-
-    /** First-token retry, aligned with spring.ai.retry: 3 attempts / 1s / ×2 / 8s cap. */
-    private static final int STREAM_RETRY_ATTEMPTS = 3;
-
-    private static final Duration RETRY_INITIAL_BACKOFF = Duration.ofSeconds(1);
-
-    private static final Duration RETRY_MAX_BACKOFF = Duration.ofSeconds(8);
-
-    private static final String SYSTEM_PROMPT =
-            """
-            You are an order management assistant. You may call tools to query or change
-            a customer's orders.
-            Rules:
-            - Use only the provided tools; do not invent tools or arguments.
-            - Mutating tools (create / cancel / change status) are only "proposals"; the
-              real execution happens after the customer confirms, so when calling them say
-              in the text what you intend to do.
-            - Never guess or fabricate order numbers, skus or amounts; placing an order
-              fills in only sku and quantity.
-            - Answer in concise English.
-            """;
 
     private final ChatClient.Builder builder;
     private final ToolRegistry registry;
@@ -117,7 +94,7 @@ public class SpringAiAdapter implements AiAssistantPort {
                         return streamed.toTurn(model, elapsedMs(start));
                     },
                     emitted::get,
-                    STREAM_RETRY_ATTEMPTS,
+                    AiCallPolicy.STREAM_RETRY_ATTEMPTS,
                     SpringAiAdapter::sleepForRetry);
         } catch (RuntimeException ex) {
             throw upstreamFailure("respondStreaming", ex, elapsedMs(start));
@@ -180,8 +157,8 @@ public class SpringAiAdapter implements AiAssistantPort {
                 // minutes), `.blockLast` bounds the total wall clock even if the upstream keeps
                 // trickling tokens. The framework never retries a stream -- the whole-stream
                 // replay before the first token is ours (see retryBeforeFirstToken).
-                .timeout(STREAM_TIMEOUT)
-                .blockLast(STREAM_TIMEOUT);
+                .timeout(AiCallPolicy.STREAM_TIMEOUT)
+                .blockLast(AiCallPolicy.STREAM_TIMEOUT);
     }
 
     /**
@@ -222,8 +199,8 @@ public class SpringAiAdapter implements AiAssistantPort {
     /** 1s, 2s, 4s, ... clamped at the 8s cap -- same schedule spring.ai.retry uses. */
     private static long backoffMs(int failedAttempt) {
         return Math.min(
-                RETRY_INITIAL_BACKOFF.toMillis() * (1L << (failedAttempt - 1)),
-                RETRY_MAX_BACKOFF.toMillis());
+                AiCallPolicy.RETRY_INITIAL_BACKOFF.toMillis() * (1L << (failedAttempt - 1)),
+                AiCallPolicy.RETRY_MAX_BACKOFF.toMillis());
     }
 
     private static void sleepForRetry(long delayMs) {
@@ -357,7 +334,7 @@ public class SpringAiAdapter implements AiAssistantPort {
      * baked in at startup.
      */
     private String systemPrompt() {
-        return SYSTEM_PROMPT + "\n" + groundingProvider.facts();
+        return AiPrompts.SYSTEM + "\n" + groundingProvider.facts();
     }
 
     private List<Message> toSpringMessages(List<ChatMessage> memory) {

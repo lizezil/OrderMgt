@@ -8,12 +8,15 @@ public record Money(BigDecimal amount) {
 
     public static final Money ZERO = new Money(BigDecimal.ZERO);
 
+    /** CNY has two minor units; every amount is normalised to this scale on construction. */
+    public static final int SCALE = 2;
+
     public Money {
         Objects.requireNonNull(amount, "amount is required");
         if (amount.signum() < 0) {
             throw new IllegalArgumentException("amount must not be negative");
         }
-        amount = amount.setScale(2, RoundingMode.HALF_UP);
+        amount = amount.setScale(SCALE, RoundingMode.HALF_UP);
     }
 
     public static Money of(BigDecimal value) {

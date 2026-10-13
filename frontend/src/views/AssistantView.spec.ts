@@ -2,7 +2,8 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { api } from '../api'
-import type { ActionCard, ChatResponse, Conversation, Message } from '../types'
+import { RECONCILE_DELAY_MS } from '../constants'
+import type { ActionCard, ChatResponse, Conversation, ConversationState, Message } from '../types'
 import AssistantView from './AssistantView.vue'
 
 vi.mock('../api', () => ({
@@ -21,9 +22,13 @@ const historyMock = vi.mocked(api.history)
 const startConversationMock = vi.mocked(api.startConversation)
 const chatStreamMock = vi.mocked(api.chatStream)
 
-function conversation(id: number, title: string | null): Conversation {
+function conversation(
+  id: number,
+  title: string | null,
+  state: ConversationState = 'IDLE',
+): Conversation {
   const at = '2026-01-01T00:00:00'
-  return { id, title, createdAt: at, updatedAt: at, lastMessageAt: at }
+  return { id, title, createdAt: at, updatedAt: at, lastMessageAt: at, status: 'ACTIVE', state }
 }
 
 function pendingCard(): ActionCard {
@@ -52,9 +57,6 @@ async function mountView() {
   await flushPromises()
   return wrapper
 }
-
-/** 与 AssistantView 里的对账等待间隔保持一致；改动那边记得同步这里。 */
-const RECONCILE_DELAY_MS = 1500
 
 /** 假计时器下的 flushPromises：VTU 内部走 setImmediate，靠推进时钟把它放出来。 */
 async function flush() {
@@ -107,6 +109,67 @@ describe('打开助手', () => {
 
     expect(wrapper.findAll('code.data').map((code) => code.text())).toEqual([
       '[queryMyOrders] {"total":0}',
+    ])
+  })
+})
+
+describe('一轮的排版', () => {
+  it('回复按 markdown 落成元素：标题、列表、行内代码各归其位', async () => {
+    listConversationsMock.mockResolvedValue([conversation(7, '渲染')])
+    historyMock.mockResolvedValue([
+      {
+        id: 1,
+        role: 'ASSISTANT',
+        content: '## 你有 2 张订单\n\n- ORD1 `99.00`\n- **ORD2** 待确认',
+        createdAt: '',
+        action: null,
+      } as Message,
+    ])
+
+    const wrapper = await mountView()
+
+    const said = wrapper.get('article.assistant .said')
+    expect(said.get('h2').text()).toBe('你有 2 张订单')
+    expect(said.findAll('li').map((item) => item.text())).toEqual(['ORD1 99.00', 'ORD2 待确认'])
+    expect(said.get('li code').text()).toBe('99.00')
+    expect(said.get('li strong').text()).toBe('ORD2')
+  })
+
+  it('客户的话走同一层渲染，标记不会原样贴到屏幕上', async () => {
+    listConversationsMock.mockResolvedValue([conversation(7, '下单')])
+    historyMock.mockResolvedValue([
+      {
+        id: 1,
+        role: 'CUSTOMER',
+        content: '帮我下单 `GADGET-02` 两个，别动 <b>ORD1</b>',
+        createdAt: '',
+        action: null,
+      } as Message,
+    ])
+
+    const wrapper = await mountView()
+
+    const said = wrapper.get('article.customer .said')
+    expect(said.get('code').text()).toBe('GADGET-02')
+    // Escaped, not parsed: a customer cannot inject an element with their own words.
+    expect(said.find('b').exists()).toBe(false)
+    expect(said.text()).toContain('别动 <b>ORD1</b>')
+  })
+})
+
+describe('侧栏状态徽标', () => {
+  it('只有生成中与待确认显示徽标，安静（IDLE）的会话不显示', async () => {
+    listConversationsMock.mockResolvedValue([
+      conversation(1, '待我确认的', 'WAITING_APPROVAL'),
+      conversation(2, '正在生成的', 'RUNNING'),
+      conversation(3, '安静的', 'IDLE'),
+    ])
+
+    const wrapper = await mountView()
+
+    expect(wrapper.findAll('.entry-state').map((badge) => badge.text())).toEqual([
+      '待确认',
+      '生成中…',
     ])
   })
 })

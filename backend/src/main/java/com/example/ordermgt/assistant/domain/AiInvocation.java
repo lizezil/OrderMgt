@@ -22,6 +22,9 @@ public record AiInvocation(
         String toolCallsJson,
         Instant createdAt) {
 
+    /** ai_invocations.error is VARCHAR(1000); a long provider message must not fail the insert. */
+    public static final int ERROR_MAX = 1000;
+
     public static AiInvocation record(
             Long conversationId,
             Long customerId,
@@ -43,7 +46,6 @@ public record AiInvocation(
                 completionTokens,
                 latencyMs,
                 outcome,
-                // error is VARCHAR(1000); a long provider message must not fail the insert.
                 truncate(error),
                 toolCallsJson,
                 Instant.now());
@@ -53,6 +55,6 @@ public record AiInvocation(
         if (value == null) {
             return null;
         }
-        return value.length() <= 1000 ? value : value.substring(0, 1000);
+        return value.length() <= ERROR_MAX ? value : value.substring(0, ERROR_MAX);
     }
 }

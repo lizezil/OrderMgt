@@ -7,6 +7,7 @@ import type {
   Order,
   PageResult,
 } from './types'
+import { DEFAULT_CUSTOMER_ID, DEFAULT_PAGE_SIZE, FIRST_PAGE } from './constants'
 
 /**
  * The customer is simulated by a header, so it is a per-browser setting rather than a
@@ -15,7 +16,7 @@ import type {
 const CUSTOMER_KEY = 'ordermgt.customerId'
 
 export function getCustomerId(): string {
-  return localStorage.getItem(CUSTOMER_KEY) ?? '1001'
+  return localStorage.getItem(CUSTOMER_KEY) ?? DEFAULT_CUSTOMER_ID
 }
 
 export function setCustomerId(id: string): void {
@@ -159,7 +160,7 @@ export const api = {
   reject: (token: string) =>
     request<ActionResolution>(`/api/assistant/actions/${token}/reject`, { method: 'POST' }),
 
-  listOrders: (page = 1, size = 20) =>
+  listOrders: (page = FIRST_PAGE, size = DEFAULT_PAGE_SIZE) =>
     request<PageResult<Order>>(`/api/orders?page=${page}&size=${size}`),
 
   getOrder: (orderNo: string) => request<Order>(`/api/orders/${orderNo}`),

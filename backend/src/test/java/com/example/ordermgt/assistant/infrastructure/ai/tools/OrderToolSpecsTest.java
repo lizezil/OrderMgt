@@ -124,6 +124,18 @@ class OrderToolSpecsTest {
     }
 
     @Test
+    void getOrderByNumberReturnsTheSummaryOfAnOrderedOrder() {
+        when(orderService.getByNumber(CUSTOMER, "ORD-1")).thenReturn(order(OrderStatus.CREATED));
+
+        ToolResult result = execute("getOrderByNumber", "{\"orderNumber\":\"ORD-1\"}");
+
+        // 查的是发起人的单：customerId 来自登录态，模型只能给订单号，替不了别人查。
+        verify(orderService).getByNumber(CUSTOMER, "ORD-1");
+        assertThat(result.payloadJson()).contains("\"orderNo\":\"ORD-1\"");
+        assertThat(result.payloadJson()).contains("\"WIDGET-01\"");
+    }
+
+    @Test
     void getOrderByNumberRejectsMissingOrderNumber() {
         assertThatThrownBy(() -> execute("getOrderByNumber", "{}"))
                 .isInstanceOf(BusinessException.class)

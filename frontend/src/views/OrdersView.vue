@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { api } from '../api'
+import { DEFAULT_PAGE_SIZE, FIRST_PAGE } from '../constants'
 import { errorMessage } from '../errors'
 import type { Order } from '../types'
 
 const orders = ref<Order[]>([])
-const page = ref(1)
-const size = 20
+const page = ref(FIRST_PAGE)
+const size = DEFAULT_PAGE_SIZE
 const total = ref(0)
 const selected = ref<Order | null>(null)
 const error = ref('')

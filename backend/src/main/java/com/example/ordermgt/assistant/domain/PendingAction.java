@@ -26,6 +26,9 @@ public class PendingAction {
      */
     public static final int ARGUMENTS_MAX = 4000;
 
+    /** 24 random bytes = a 192-bit, unguessable confirmation token (48 hex chars). */
+    private static final int TOKEN_BYTES = 24;
+
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private Long id;
@@ -174,7 +177,7 @@ public class PendingAction {
     }
 
     private static String newToken() {
-        byte[] bytes = new byte[24];
+        byte[] bytes = new byte[TOKEN_BYTES];
         RANDOM.nextBytes(bytes);
         return HexFormat.of().formatHex(bytes);
     }

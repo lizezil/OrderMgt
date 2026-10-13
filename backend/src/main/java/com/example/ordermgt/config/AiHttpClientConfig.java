@@ -1,7 +1,7 @@
 package com.example.ordermgt.config;
 
+import com.example.ordermgt.assistant.AiCallPolicy;
 import java.net.http.HttpClient;
-import java.time.Duration;
 import org.springframework.boot.web.client.RestClientCustomizer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -21,9 +21,9 @@ import org.springframework.http.client.JdkClientHttpRequestFactory;
  * no reactive connector (reactor-netty) is on the classpath here, so it resolves to the JDK
  * HttpClient connector, which has no global response timeout to set.
  *
- * <p>Values assume a chat completion: 5s to connect, 60s to read. Combined with the narrowed retry
- * policy (3 attempts, 1s/2s backoff) the worst case is a little over three minutes, not the ~19
- * minutes the framework defaults allowed.
+ * <p>Values assume a chat completion: 5s to connect, 60s to read (both from {@link AiCallPolicy}).
+ * Combined with the narrowed retry policy (3 attempts, 1s/2s backoff) the worst case is a little
+ * over three minutes, not the ~19 minutes the framework defaults allowed.
  */
 @Configuration
 public class AiHttpClientConfig {
@@ -31,9 +31,9 @@ public class AiHttpClientConfig {
     @Bean
     RestClientCustomizer aiRestClientTimeoutCustomizer() {
         HttpClient httpClient =
-                HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
+                HttpClient.newBuilder().connectTimeout(AiCallPolicy.HTTP_CONNECT_TIMEOUT).build();
         JdkClientHttpRequestFactory requestFactory = new JdkClientHttpRequestFactory(httpClient);
-        requestFactory.setReadTimeout(Duration.ofSeconds(60));
+        requestFactory.setReadTimeout(AiCallPolicy.HTTP_READ_TIMEOUT);
         return builder -> builder.requestFactory(requestFactory);
     }
 }

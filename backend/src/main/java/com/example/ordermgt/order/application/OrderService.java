@@ -9,6 +9,7 @@ import com.example.ordermgt.order.domain.OrderRepository;
 import com.example.ordermgt.order.domain.OrderStatus;
 import com.example.ordermgt.shared.api.ErrorCode;
 import com.example.ordermgt.shared.api.PageResult;
+import com.example.ordermgt.shared.api.Paging;
 import com.example.ordermgt.shared.error.BusinessException;
 import java.util.ArrayList;
 import java.util.List;
@@ -34,8 +35,8 @@ public class OrderService {
 
     @Transactional(readOnly = true)
     public PageResult<Order> listByCustomer(Long customerId, long page, long size) {
-        long safePage = Math.max(page, 1);
-        long safeSize = size <= 0 || size > 100 ? 20 : size;
+        long safePage = Math.max(page, Paging.FIRST_PAGE);
+        long safeSize = size <= 0 || size > Paging.MAX_SIZE ? Paging.DEFAULT_SIZE : size;
         List<Order> items =
                 orderRepository.findByCustomer(customerId, (safePage - 1) * safeSize, safeSize);
         long total = orderRepository.countByCustomer(customerId);

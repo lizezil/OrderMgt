@@ -1,5 +1,6 @@
 package com.example.ordermgt.assistant.api;
 
+import com.example.ordermgt.assistant.AiCallPolicy;
 import com.example.ordermgt.assistant.application.AssistantResult;
 import com.example.ordermgt.assistant.application.AssistantService;
 import com.example.ordermgt.assistant.application.ConversationService;
@@ -44,8 +45,6 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 @RestController
 @RequestMapping("/api/assistant/conversations")
 public class ConversationController {
-
-    private static final long STREAM_TIMEOUT_MS = 120_000L;
 
     private final ConversationService conversationService;
     private final AssistantService assistantService;
@@ -133,7 +132,7 @@ public class ConversationController {
             @RequestHeader("X-Customer-Id") Long customerId,
             @PathVariable Long conversationId,
             @RequestParam String message) {
-        SseEmitter emitter = new SseEmitter(STREAM_TIMEOUT_MS);
+        SseEmitter emitter = new SseEmitter(AiCallPolicy.STREAM_TIMEOUT_MS);
         // The container learns about a dead connection (or the 120s timeout) through these
         // callbacks, often before the next send would fail; either way this one flag decides
         // whether anything else goes on the wire.

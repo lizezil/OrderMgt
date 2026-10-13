@@ -5,6 +5,7 @@ import com.example.ordermgt.order.application.OrderService;
 import com.example.ordermgt.order.domain.Order;
 import com.example.ordermgt.shared.api.ApiResponse;
 import com.example.ordermgt.shared.api.PageResult;
+import com.example.ordermgt.shared.api.Paging;
 import jakarta.validation.Valid;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
@@ -61,9 +62,13 @@ public class OrderController {
     @GetMapping
     public ApiResponse<PageResult<OrderResponse>> list(
             @RequestHeader("X-Customer-Id") Long customerId,
-            @RequestParam(defaultValue = "1") long page,
-            @RequestParam(defaultValue = "20") long size) {
-        PageResult<Order> result = orderService.listByCustomer(customerId, page, size);
+            @RequestParam(required = false) Long page,
+            @RequestParam(required = false) Long size) {
+        PageResult<Order> result =
+                orderService.listByCustomer(
+                        customerId,
+                        page == null ? Paging.FIRST_PAGE : page,
+                        size == null ? Paging.DEFAULT_SIZE : size);
         return ApiResponse.ok(
                 PageResult.of(
                         result.items().stream().map(mapper::toResponse).toList(),
