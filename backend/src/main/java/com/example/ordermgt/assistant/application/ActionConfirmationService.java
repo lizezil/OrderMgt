@@ -9,6 +9,7 @@ import com.example.ordermgt.assistant.domain.ToolSpec;
 import com.example.ordermgt.shared.api.ErrorCode;
 import com.example.ordermgt.shared.error.BusinessException;
 import java.time.Instant;
+import java.util.Locale;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -36,21 +37,14 @@ public class ActionConfirmationService {
         PendingAction action = lockOwned(customerId, token);
         Instant now = Instant.now();
 
-        switch (action.getStatus()) {
-            case CONFIRMED -> {
+        switch (action.adjudicate(PendingActionStatus.CONFIRMED, now)) {
+            case REPLAY -> {
                 return replayed(action);
             }
-            case REJECTED ->
-                    throw new BusinessException(
-                            ErrorCode.CONFLICT, "the pending action has already been rejected");
-            case EXPIRED ->
-                    throw new BusinessException(
-                            ErrorCode.ACTION_EXPIRED, "the pending action has expired");
-            case PENDING -> {
-                if (action.isExpiredAt(now)) {
-                    throw new BusinessException(
-                            ErrorCode.ACTION_EXPIRED, "the pending action has expired");
-                }
+            case EXPIRED -> throw expired();
+            case CONFLICT -> throw conflict(action);
+            case PROCEED -> {
+                /* the action is live: run it below */
             }
         }
 
@@ -77,27 +71,35 @@ public class ActionConfirmationService {
     public ActionResolution reject(Long customerId, String token) {
         PendingAction action = lockOwned(customerId, token);
 
-        switch (action.getStatus()) {
-            case REJECTED -> {
+        switch (action.adjudicate(PendingActionStatus.REJECTED, Instant.now())) {
+            case REPLAY -> {
                 return replayed(action);
             }
-            case CONFIRMED ->
-                    throw new BusinessException(
-                            ErrorCode.CONFLICT, "the pending action has already been confirmed");
-            case EXPIRED ->
-                    throw new BusinessException(
-                            ErrorCode.ACTION_EXPIRED, "the pending action has expired");
-            case PENDING -> {
-                if (action.isExpiredAt(Instant.now())) {
-                    throw new BusinessException(
-                            ErrorCode.ACTION_EXPIRED, "the pending action has expired");
-                }
+            case EXPIRED -> throw expired();
+            case CONFLICT -> throw conflict(action);
+            case PROCEED -> {
+                /* the action is live: reject it below */
             }
         }
 
         action.resolve(PendingActionStatus.REJECTED, null, Instant.now());
         pendingActionRepository.save(action);
         return new ActionResolution(action.getToken(), action.getStatus().name(), null, false);
+    }
+
+    private static BusinessException expired() {
+        return new BusinessException(ErrorCode.ACTION_EXPIRED, "the pending action has expired");
+    }
+
+    /**
+     * The conflicting status (CONFIRMED or REJECTED) is exactly what the caller is not doing, so
+     * the message needs no direction from the domain.
+     */
+    private static BusinessException conflict(PendingAction action) {
+        return new BusinessException(
+                ErrorCode.CONFLICT,
+                "the pending action has already been "
+                        + action.getStatus().name().toLowerCase(Locale.ROOT));
     }
 
     /**

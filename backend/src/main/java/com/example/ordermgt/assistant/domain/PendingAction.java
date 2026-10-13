@@ -126,6 +126,41 @@ public class PendingAction {
         return expiresAt != null && !now.isBefore(expiresAt);
     }
 
+    /** Outcome of {@link #adjudicate}: what a resolution attempt may do right now. */
+    public enum Verdict {
+        /** The action is live and this resolution may be applied. */
+        PROCEED,
+        /** The same resolution already happened -- report the earlier outcome, execute nothing. */
+        REPLAY,
+        /** The opposite resolution already happened -- refuse. */
+        CONFLICT,
+        /** The action is dead (swept, or past its TTL) -- refuse as expired. */
+        EXPIRED
+    }
+
+    /**
+     * The state-machine gate both resolutions share (ADR-0001): applying one resolution twice must
+     * not run the action twice, the opposite resolution must never apply, and a dead action is
+     * never resolvable. Translating a verdict into an error and an HTTP status belongs to the
+     * caller; the decision itself lives here, next to the status invariants it enforces.
+     *
+     * @param outcome the terminal state this call wants to reach (CONFIRMED or REJECTED)
+     * @param now the resolution time, checked against the TTL
+     */
+    public Verdict adjudicate(PendingActionStatus outcome, Instant now) {
+        if (outcome != PendingActionStatus.CONFIRMED && outcome != PendingActionStatus.REJECTED) {
+            throw new IllegalArgumentException("only CONFIRMED or REJECTED can resolve an action");
+        }
+        if (status == outcome) {
+            return Verdict.REPLAY;
+        }
+        if (status != PendingActionStatus.PENDING) {
+            // Not ours and not PENDING: the opposite terminal state, or a dead row.
+            return status == PendingActionStatus.EXPIRED ? Verdict.EXPIRED : Verdict.CONFLICT;
+        }
+        return isExpiredAt(now) ? Verdict.EXPIRED : Verdict.PROCEED;
+    }
+
     public void resolve(PendingActionStatus terminal, String resultRef, Instant at) {
         if (!isPending()) {
             throw new IllegalStateException("action " + token + " is already " + status);
