@@ -14,6 +14,9 @@ target/
 # editor / agent workspace
 .zcode/
 
+# local issue tracker + scratch workspace (see docs/agents/issue-tracker.md)
+.scratch/
+
 # OS
 .DS_Store
 

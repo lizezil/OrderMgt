@@ -42,6 +42,10 @@ _Avoid_: Session, Thread, Chat, Dialog
 Conversation 中的一条发言，角色为 CUSTOMER / ASSISTANT / TOOL。
 _Avoid_: Turn, Utterance, Entry
 
+**Run**:
+一次被调度的执行实例——一条客户消息触发的一次「准备 → 模型调用 → 落库」，也是停止、重订阅与队列的粒度。同一 Conversation 至多一个处于 RUNNING 的 Run。
+_Avoid_: Session, Turn, Job, Task
+
 **ToolCall**:
 助手为完成请求而要求执行的一个业务动作，分只读与变更两类。
 _Avoid_: Intent, Function, Command, Skill
