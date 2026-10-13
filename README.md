@@ -53,6 +53,8 @@ cd frontend && pnpm install && pnpm build && cd ..          # 可选：把界面
 
 打开 <http://localhost:8081>。数据落在容器里的 `ordermgt` 库（compose 的 `mysql-data` 卷），Flyway 会自动建表并写入 5 条商品种子数据。默认 profile 就是 `mysql`，连接参数取自 `MYSQL_*` 环境变量（`.env` 里的缺省值与 compose 一致）；容器没起时应用会直接启动失败，而不是悄悄换一个本地库。没有 Key 也能启动，但助手功能会调不通——想在没有 Key 的情况下把助手整条闭环走一遍，加上 `offline` profile（见「没有 Key 也能跑」）。
 
+> **改了已发布的迁移文件怎么办**：`V1__init.sql` 这类文件的 checksum 记在 `flyway_schema_history` 里,改动之后已有数据库会在下次启动时报 `Migration checksum mismatch` 拒绝启动。本地重建即可:`docker compose down -v && make db-up`——整卷重建,商品种子由 Flyway 重新写入,演示数据可用冒烟用例重生成。测试库每次 `clean` + `migrate`,天然不受影响。
+
 `.env` 是环境变量的唯一入口：compose 启动时插值读取，`make dev` / `make test` 等目标会整份导出给子进程，应用本身也通过 `spring.config.import` 直接加载它——所以 `./mvnw` 裸跑同样生效。已存在的真实环境变量优先于 `.env`。
 
 想确认整条链路是否正常，跑冒烟用例（`make test` 里的 `SmokeDemoFlowTest`，模型用桩、不花 API 配额）：

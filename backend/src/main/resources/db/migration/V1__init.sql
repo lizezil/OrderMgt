@@ -1,13 +1,16 @@
--- OrderMgt schema (Flyway V1)
--- Dialect-portable on purpose: runs on MySQL 8 and on H2 in MODE=MySQL.
--- No ENGINE/CHARSET clauses, no ON UPDATE triggers, no inline KEY clauses,
--- no MySQL-only types -- so the same script bootstraps both profiles.
+-- OrderMgt schema (Flyway V1). MySQL 8 only -- no H2, no compatibility mode
+-- anywhere in the stack (ADR-0008): local dev, tests and delivery all run
+-- against the real database.
 --
 -- Every TIMESTAMP(n) default spells out the same precision, i.e. CURRENT_TIMESTAMP(3)
 -- and never a bare CURRENT_TIMESTAMP: MySQL rejects the mismatch with error 1067
--- ("Invalid default value"), while H2's MySQL mode accepts it silently. Keeping the
--- precision explicit is what makes this script genuinely portable rather than
--- H2-portable only.
+-- ("Invalid default value") when the declared precision and the default disagree.
+-- Pinning the same precision in both places is what keeps a fresh migration
+-- reproducible (ADR-0008).
+--
+-- This file has shipped: editing it changes its Flyway checksum and databases
+-- that already ran it will refuse to start. See the README quick-start note for
+-- the rebuild procedure.
 
 CREATE TABLE catalog_items (
     id         BIGINT        NOT NULL AUTO_INCREMENT,
