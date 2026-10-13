@@ -17,6 +17,9 @@ public class Order {
     private final Instant createdAt;
     private Instant updatedAt;
 
+    /** Optimistic lock token: the write only applies if the row still has this version. */
+    private Integer version;
+
     private Order(
             Long id,
             OrderNumber orderNumber,
@@ -24,7 +27,8 @@ public class Order {
             OrderStatus status,
             List<OrderLine> lines,
             Instant createdAt,
-            Instant updatedAt) {
+            Instant updatedAt,
+            Integer version) {
         this.id = id;
         this.orderNumber = orderNumber;
         this.customerId = customerId;
@@ -34,6 +38,7 @@ public class Order {
                 this.lines.stream().map(OrderLine::lineAmount).reduce(Money.ZERO, Money::plus);
         this.createdAt = createdAt;
         this.updatedAt = updatedAt;
+        this.version = version;
     }
 
     public static Order create(Long customerId, List<OrderLine> lines) {
@@ -45,7 +50,7 @@ public class Order {
         }
         Instant now = Instant.now();
         return new Order(
-                null, OrderNumber.generate(), customerId, OrderStatus.CREATED, lines, now, now);
+                null, OrderNumber.generate(), customerId, OrderStatus.CREATED, lines, now, now, 0);
     }
 
     public static Order rehydrate(
@@ -55,12 +60,17 @@ public class Order {
             OrderStatus status,
             List<OrderLine> lines,
             Instant createdAt,
-            Instant updatedAt) {
-        return new Order(id, orderNumber, customerId, status, lines, createdAt, updatedAt);
+            Instant updatedAt,
+            Integer version) {
+        return new Order(id, orderNumber, customerId, status, lines, createdAt, updatedAt, version);
     }
 
     public void assignId(Long id) {
         this.id = id;
+    }
+
+    public void assignVersion(Integer version) {
+        this.version = version;
     }
 
     public boolean canTransitionTo(OrderStatus target) {

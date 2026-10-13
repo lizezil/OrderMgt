@@ -15,3 +15,11 @@ backend/src/main/resources/static
 .vscode
 *.log
 .env
+# .env.* too: a local override next to the real .env must not travel to the daemon either.
+.env.*
+# agent workspace and Playwright artifacts, never build inputs. Traces and videos land in
+# test-results only when a run fails, and they can reach tens of MB.
+.zcode
+frontend/test-results
+frontend/playwright-report
+.DS_Store

@@ -4,6 +4,14 @@ server:
 spring:
   application:
     name: ordermgt
+  # Single source of environment variables: the git-ignored .env at the repo root. The
+  # `[.properties]` suffix is Spring Boot's extension hint -- without it a file named `.env`
+  # has no extension any PropertySourceLoader recognises and the import is rejected. Both the
+  # repo root (jar run from there, `make dev` after cd) and the backend module dir
+  # (spring-boot:run forks the JVM with ${project.basedir} as cwd) are covered; `optional`
+  # means the container, which gets its variables from docker-compose, is unaffected.
+  config:
+    import: "optional:file:./.env[.properties],optional:file:../.env[.properties]"
   profiles:
     active: mysql
   flyway:

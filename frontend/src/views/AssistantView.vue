@@ -102,15 +102,17 @@ async function send(): Promise<void> {
 
   draft.value = ''
   sending.value = true
-  const optimistic: Message = {
+  messages.value.push({
     id: localId--,
     role: 'CUSTOMER',
     content: text,
     createdAt: new Date().toISOString(),
     action: null,
-  }
-  messages.value.push(optimistic)
-  let streaming: Message | null = null
+  })
+  // The array holds the object we pushed, but the template renders Vue's reactive proxy of it;
+  // only mutating *that* reference repaints, and it is the identity the cleanup below matches.
+  const sent = messages.value[messages.value.length - 1]!
+  let placeholder: Message | null = null
   await scrollToEnd()
 
   try {
@@ -125,18 +127,18 @@ async function send(): Promise<void> {
 
     // The reply is rendered as it arrives; the placeholder is swapped for the persisted turn once
     // the stream's `done` event lands.
-    streaming = {
+    messages.value.push({
       id: localId--,
       role: 'ASSISTANT',
       content: '',
       createdAt: new Date().toISOString(),
       action: null,
-    }
-    const placeholder = streaming
-    messages.value.push(placeholder)
+    })
+    const reply = messages.value[messages.value.length - 1]!
+    placeholder = reply
 
     const response = await api.chatStream(text, conversationId, (delta) => {
-      placeholder.content = (placeholder.content ?? '') + delta
+      reply.content = (reply.content ?? '') + delta
       void scrollToEnd()
     })
 
@@ -145,14 +147,12 @@ async function send(): Promise<void> {
       completion: response.completionTokens,
       latencyMs: response.latencyMs,
     }
-    messages.value = messages.value.filter((message) => message !== placeholder)
+    messages.value = messages.value.filter((message) => message !== reply)
     appendReply(response)
     // The first message is what titles the conversation, so the sidebar is now stale.
     await loadConversations()
   } catch (error) {
-    messages.value = messages.value.filter(
-      (message) => message !== optimistic && message !== streaming,
-    )
+    messages.value = messages.value.filter((message) => message !== sent && message !== placeholder)
     draft.value = text
     fail(error)
   } finally {

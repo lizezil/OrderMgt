@@ -3,6 +3,8 @@
 #   make            same as `make help`
 #   make dev        backend on :8081 against the resident MySQL
 #   make test       backend test suite (needs the resident MySQL)
+#   make test-frontend  SPA unit + component tests (Vitest)
+#   make test-e2e   browser suite (Playwright + Chromium; needs the resident MySQL)
 #
 # Maven is always invoked through the wrapper, so the checked-in version is what runs.
 # `JAVA_HOME=/path/to/jdk17 make ...` overrides the JDK if the default is not 17.
@@ -10,12 +12,18 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
+# Load .env (git-ignored) so every target -- dev, test, e2e -- picks up
+# DASHSCOPE_API_KEY and MYSQL_* without exporting them by hand. A real environment variable
+# still wins: make does not override variables that are already set.
+-include .env
+export
+
 MVNW       := ./mvnw
 PNPM       := pnpm
 BACKEND    := -pl backend -am
 
 .PHONY: help dev dev-frontend install build build-backend build-frontend \
-        test format check smoke db-up docker-up docker-down docker-logs clean
+        test test-frontend test-e2e format check db-up docker-up docker-down docker-logs clean
 
 help: ## List the available targets
 	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -48,6 +56,12 @@ build-frontend: ## Build the SPA into backend/src/main/resources/static
 test: ## Run the backend test suite (needs the resident MySQL running)
 	$(MVNW) $(BACKEND) test
 
+test-frontend: ## Run the SPA unit and component tests (Vitest, jsdom)
+	cd frontend && $(PNPM) test
+
+test-e2e: ## Run the browser suite (Playwright + Chromium; builds the SPA and boots the app itself)
+	cd frontend && $(PNPM) test:e2e
+
 format: ## Rewrite formatting: Spotless for Java, Prettier for the frontend
 	$(MVNW) $(BACKEND) spotless:apply
 	cd frontend && $(PNPM) format
@@ -55,9 +69,6 @@ format: ## Rewrite formatting: Spotless for Java, Prettier for the frontend
 check: ## Verify formatting without rewriting anything (CI-friendly)
 	$(MVNW) $(BACKEND) spotless:check
 	cd frontend && $(PNPM) format:check
-
-smoke: ## End-to-end smoke test against a running app on :8081
-	./scripts/smoke-demo.sh
 
 # --- containers --------------------------------------------------------------
 

@@ -32,12 +32,10 @@ public class ConversationService {
     private final PendingActionRepository pendingActionRepository;
     private final ActionCardFactory actionCardFactory;
 
-    @Transactional
     public Conversation start(Long customerId) {
         return conversationRepository.save(Conversation.start(customerId));
     }
 
-    @Transactional(readOnly = true)
     public List<Conversation> listFor(Long customerId) {
         return conversationRepository.findByCustomer(customerId);
     }
@@ -120,7 +118,6 @@ public class ConversationService {
     }
 
     /** Records which message carried a card, so history can render it. */
-    @Transactional
     public void linkActionToMessage(PendingAction action, Long messageId) {
         action.attachToMessage(messageId);
         pendingActionRepository.save(action);

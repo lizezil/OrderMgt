@@ -6,6 +6,8 @@ import com.example.ordermgt.order.domain.Order;
 import com.example.ordermgt.order.domain.OrderLine;
 import com.example.ordermgt.order.domain.OrderNumber;
 import com.example.ordermgt.order.domain.OrderRepository;
+import com.example.ordermgt.shared.api.ErrorCode;
+import com.example.ordermgt.shared.error.BusinessException;
 import java.util.List;
 import java.util.Optional;
 import lombok.RequiredArgsConstructor;
@@ -32,7 +34,26 @@ public class OrderRepositoryImpl implements OrderRepository {
                 lineMapper.insert(lpo);
             }
         } else {
-            orderMapper.updateById(po);
+            // Optimistic lock: the update carries the version the aggregate was read at, and the
+            // WHERE clause rejects the write if anyone committed a change since. That is what keeps
+            // two racing status transitions from both winning -- the plain read in changeStatus
+            // (unlike confirm's SELECT ... FOR UPDATE) locks nothing, so the check and the write
+            // have to be tied together by the version.
+            Integer validated = po.getVersion();
+            po.setVersion(validated + 1);
+            int updated =
+                    orderMapper.update(
+                            po,
+                            Wrappers.<OrderPO>lambdaUpdate()
+                                    .eq(OrderPO::getId, po.getId())
+                                    .eq(OrderPO::getVersion, validated));
+            if (updated == 0) {
+                throw new BusinessException(
+                        ErrorCode.CONFLICT,
+                        "order was modified by another operation, please retry: "
+                                + po.getOrderNo());
+            }
+            order.assignVersion(validated + 1);
         }
         return order;
     }

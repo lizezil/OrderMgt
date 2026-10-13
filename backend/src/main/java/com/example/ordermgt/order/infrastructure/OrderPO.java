@@ -20,4 +20,5 @@ public class OrderPO {
     private BigDecimal totalAmount;
     private Instant createdAt;
     private Instant updatedAt;
+    private Integer version;
 }

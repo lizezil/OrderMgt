@@ -6,7 +6,6 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Reopens keys that were left behind by a crash.
@@ -28,7 +27,6 @@ public class IdempotencySweeper {
     @Scheduled(
             fixedDelayString = "${idempotency.sweep-interval-ms:60000}",
             initialDelayString = "${idempotency.sweep-interval-ms:60000}")
-    @Transactional
     public void expireStaleInProgress() {
         try {
             int failed = idempotencyRepository.expireStaleInProgress(Instant.now());

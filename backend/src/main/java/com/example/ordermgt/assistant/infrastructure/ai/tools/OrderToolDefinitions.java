@@ -120,9 +120,7 @@ public class OrderToolDefinitions {
                                     orderService.changeStatus(
                                             customerId,
                                             requireText(objectMapper, args, "orderNumber"),
-                                            OrderStatus.valueOf(
-                                                    requireText(
-                                                            objectMapper, args, "targetStatus")));
+                                            targetStatus(objectMapper, args));
                             return ToolResult.of(
                                     write(objectMapper, summarise(order)),
                                     order.getOrderNumber().value());
@@ -220,6 +218,20 @@ public class OrderToolDefinitions {
                                                 l.lineAmount().amount()))
                         .toList());
         return row;
+    }
+
+    /**
+     * The model can ignore the schema's enum, so an unknown status is a bad request to reject --
+     * not an {@link IllegalArgumentException} that would surface as a 500.
+     */
+    private static OrderStatus targetStatus(ObjectMapper mapper, String args) {
+        String raw = requireText(mapper, args, "targetStatus");
+        try {
+            return OrderStatus.valueOf(raw);
+        } catch (IllegalArgumentException ex) {
+            throw new BusinessException(
+                    ErrorCode.VALIDATION_FAILED, "unsupported target status: " + raw);
+        }
     }
 
     private static String requireText(ObjectMapper mapper, String args, String field) {

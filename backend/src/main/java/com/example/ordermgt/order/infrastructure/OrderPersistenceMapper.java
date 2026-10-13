@@ -45,7 +45,8 @@ public interface OrderPersistenceMapper {
                 OrderStatus.valueOf(po.getStatus()),
                 lines,
                 po.getCreatedAt(),
-                po.getUpdatedAt());
+                po.getUpdatedAt(),
+                po.getVersion());
     }
 
     default String map(OrderNumber number) {

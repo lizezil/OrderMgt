@@ -30,7 +30,6 @@ make build          # 打包「带前端界面」的 jar（-Pfrontend，需要 N
 make build-backend  # 只打后端 jar（不需要 Node）
 make format         # 格式化：后端 Spotless、前端 Prettier
 make check          # 只校验格式化、不改写（CI 用）
-make smoke          # 对 :8081 跑一遍端到端冒烟脚本
 make db-up          # 只起常驻 MySQL 容器（:3306），dev 和 test 都依赖它
 make docker-up      # Compose 起 MySQL + 应用
 make clean          # 清掉 target/ 与构建出的前端产物
@@ -46,24 +45,27 @@ make clean          # 清掉 target/ 与构建出的前端产物
 
 ```bash
 make db-up                                                  # 或 docker compose up -d mysql
+cp .env.example .env                                        # 填入 DASHSCOPE_API_KEY：环境变量的唯一入口
 export JAVA_HOME="$HOME/.jdks/temurin-17/Contents/Home"     # 或任意 JDK 17
-export DASHSCOPE_API_KEY=sk-...                             # 缺省时应用仍能启动，只是调用模型会失败
 cd frontend && pnpm install && pnpm build && cd ..          # 可选：把界面也构建进去
 ./mvnw -pl backend spring-boot:run
 ```
 
-打开 <http://localhost:8081>。数据落在容器里的 `ordermgt` 库（compose 的 `mysql-data` 卷），Flyway 会自动建表并写入 5 条商品种子数据。默认 profile 就是 `mysql`，连接参数取自 `MYSQL_*` 环境变量（默认值与 compose 一致）；容器没起时应用会直接启动失败，而不是悄悄换一个本地库。没有 Key 也能启动，但助手功能会调不通——想在没有 Key 的情况下把助手整条闭环走一遍，加上 `offline` profile（见「没有 Key 也能跑」）。
+打开 <http://localhost:8081>。数据落在容器里的 `ordermgt` 库（compose 的 `mysql-data` 卷），Flyway 会自动建表并写入 5 条商品种子数据。默认 profile 就是 `mysql`，连接参数取自 `MYSQL_*` 环境变量（`.env` 里的缺省值与 compose 一致）；容器没起时应用会直接启动失败，而不是悄悄换一个本地库。没有 Key 也能启动，但助手功能会调不通——想在没有 Key 的情况下把助手整条闭环走一遍，加上 `offline` profile（见「没有 Key 也能跑」）。
 
-想确认整条链路是否正常，用自带脚本打一遍（真调模型，约 10 秒）：
+`.env` 是环境变量的唯一入口：compose 启动时插值读取，`make dev` / `make test` 等目标会整份导出给子进程，应用本身也通过 `spring.config.import` 直接加载它——所以 `./mvnw` 裸跑同样生效。已存在的真实环境变量优先于 `.env`。
+
+想确认整条链路是否正常，跑冒烟用例（`make test` 里的 `SmokeDemoFlowTest`，模型用桩、不花 API 配额）：
 
 ```bash
-./scripts/smoke-demo.sh      # 只读查询 → 提议不执行 → 确认落单 → 重复确认不重复 → 越权 403 → 记忆
+./mvnw -pl backend test -Dtest=SmokeDemoFlowTest
+# 只读查询 → 提议不执行 → 确认落单 → 重复确认不重复 → 越权 403 → 记忆
 ```
 
 ### 方式二：Docker Compose（MySQL + 应用）
 
 ```bash
-cp .env.example .env      # 填入 DASHSCOPE_API_KEY
+cp .env.example .env      # 填入 DASHSCOPE_API_KEY；与方式一的本地运行共用同一份 .env
 docker compose up --build
 ```
 
@@ -125,13 +127,29 @@ make db-up                  # 测试跑在真实 MySQL 上，先把常驻容器�
 
 测试连的是常驻 MySQL 里的独立库 `ordermgt_test`（用 `root` + `createDatabaseIfNotExist` 创建），每次运行前由 Flyway `clean` + `migrate` 重建 schema——测试断言精确条数、并复用固定幂等键，必须从干净结构开始。它不碰开发库 `ordermgt`。
 
-| 层次 | 覆盖 |
-|---|---|
-| 领域单测 | `PendingAction`（归属/一次性流转/过期/超长参数）、`Conversation`（标题派生） |
-| 应用单测 | `IdempotencyGuard`（重放、键挪用、并发重复、失败重试）、`ActionConfirmationService`（执行一次、重放、越权、过期） |
-| 集成（真 MySQL，不烧 Key） | `AssistantFlowTest`：真库 + 桩模型，跑通"提议→不执行→确认→落单→重复确认不重复落单→越权 403"、幂等键重放、每次调用落一行 `ai_invocations`、过期 `IN_PROGRESS` 键被清理任务刷成 `FAILED` |
+| 层 | 目标 | 用例 |
+|---|---|---|
+| L1 领域规则（纯单测） | 聚合与值对象的不变量 | `Money`、`Order`/`OrderLine` 状态机、`OrderNumber`、`ToolWhitelist`、`Message` |
+| L2 应用用例（Mockito） | 编排与边界，不碰数据库 | `OrderService`、`ConversationService`、`AssistantService`、`OrderToolSpecs` |
+| L3 API 契约（MockMvc） | 统一响应体、校验、状态码、幂等头 | `ApiContractTest` |
+| L4 集成（真 MySQL + 桩模型，不烧 Key） | 端到端业务流 | `AssistantFlowTest`（"提议→不执行→确认→落单→重复确认不重复落单→越权 403"、幂等键重放、每次调用落一行 `ai_invocations`）、`OrderAssistantBusinessFlowTest` |
+| L5 SPA 单元与组件（Vitest + jsdom） | 后端替客户端保证不了的那半份契约 | `api.spec`（SSE 分帧 / 身份头 / 错误体）、`ActionCardPanel.spec`、`OrdersView.spec`、`AssistantView.spec`、`toast.spec` |
+| L6 浏览器端到端（Playwright + Chromium） | 真浏览器里走完"提议 → 确认 → 落单" | `catalog.spec`、`orders-identity.spec`、`assistant-flow.spec` |
 
-前端：`cd frontend && pnpm typecheck && pnpm build`（`build` 会先跑 Prettier，再交给 Vite）。
+后两层是各自独立的命令：
+
+```bash
+make test-frontend   # L5：纯前端，不需要 MySQL
+make test-e2e        # L6：自己去构建 SPA 并起应用（:8082），所以要先 make db-up
+```
+
+L5 里含金量最高的是一份 `api.spec.ts`：流式回复的分帧（一帧跨两次 `read`、CRLF、多行 `data`）、`done` 事件的整轮语义、每个请求都带 `X-Customer-Id`——这些都是**服务端无法替客户端保证**的契约，也正是这次补齐用例时揪出下面两个真实缺陷的地方。
+
+L6 不信任 Vite dev server：`e2e/support/serve.mjs` 先把 SPA 构建进 `backend/src/main/resources/static`，再以 `mysql,offline` 两个 profile 起后端，于是浏览器访问的就是打包产物本身，与 API 同源、没有代理；助手是 `offline` 的桩适配器，所以每条流都确定、也不产生模型费用。E2E 连的是独立库 `ordermgt_e2e`，每个用例现取一个没人用过的客户号，因此可以反复跑而不必清库。
+
+首次在另一台机器上跑 L6 要先装浏览器：`cd frontend && pnpm exec playwright install chromium`。（`@playwright/test` 钉在 1.49.1 —— 更新的版本已不再发布 macOS 12 可用的 Chromium。）
+
+前端其余检查：`cd frontend && pnpm typecheck`（`vue-tsc`，覆盖 `e2e/` 与三个配置文件）。`pnpm build` 会先跑 Prettier，再交给 Vite。
 
 ## 代码风格
 
@@ -155,7 +173,9 @@ backend/src/main/java/com/example/ordermgt/
     ├── infrastructure/ Spring AI 适配器、MyBatis-Plus 持久化、过期清理任务
     └── api/            控制器、DTO 与 MapStruct 的 ApiMapper
 frontend/         Vue 3 SPA（产物直接构建进 backend/src/main/resources/static）
-scripts/          smoke-demo.sh 等运维脚本
+├── src/          api.ts（含 SSE 客户端）、视图、组件；同名 *.spec.ts 是 L5 用例
+├── e2e/          Playwright 用例（L6）+ support/serve.mjs（构建 SPA 并起离线后端）
+└── vitest.config.ts / playwright.config.ts
 docs/             项目文档
 ├── adr/          架构决策记录
 └── 面试作业-*.md  需求梳理 / 设计定稿 / 演示脚本
@@ -185,4 +205,6 @@ SPRING_PROFILES_ACTIVE=mysql,offline ./mvnw -pl backend spring-boot:run
 - **超时与重试没有自动化测试**：重试发生在 Spring AI 内部，要断言就得起一个假上游，当前选择是不引入假上游、只靠真上游冒烟观察日志。
 - `ai_invocations` 现在**会写**（成功与失败各一行），但**没有读取端点**——审计全貌要用 SQL 查，接口里只回带了 `model`/`latencyMs` 供界面显示耗时。
 - 离线适配器 `MockAiAdapter` 是**关键词驱动的桩**，只用于没有 Key 的演示，不理解真实语义。
+- **E2E 只跑 Chromium**（`@playwright/test` 1.49.1，更新的版本不再发布 macOS 12 可用的 Chromium），WebKit / Firefox 未覆盖；且它假定常驻 MySQL 可用、助手走 `offline` 桩——真实模型下的流式与超时行为没有 E2E。
+- **`make test-frontend` / `make test-e2e` 没有接进 CI**：本仓库目前没有 CI 配置，`make check` 只是留给 CI 的入口。
 - Docker Compose 只起**单实例应用**：确认态的并发去重靠数据库行锁，多实例同样成立，但没有做过压测。

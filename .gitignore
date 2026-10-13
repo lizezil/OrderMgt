@@ -1,7 +1,5 @@
 # build output
 target/
-!**/src/main/**/target/
-!**/src/test/**/target/
 
 # IDE
 .idea/
@@ -21,11 +19,20 @@ target/
 
 # secrets
 .env
+.env.*
+!.env.example
+
+# local config overrides. Spring names profile files application-local.yml (hyphen), which
+# `*.local.yml` alone would not catch.
 *.local.yml
+application-local.*
 
 # frontend
 node_modules/
-frontend/dist/
+
+# playwright traces, screenshots and reports (written only when a run fails)
+frontend/test-results/
+frontend/playwright-report/
 
 # built frontend copied into backend static (produced by the build)
 backend/src/main/resources/static/*

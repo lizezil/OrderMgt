@@ -61,6 +61,13 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 /**
+ * A blank line ends an SSE frame. The line ending may be LF, CRLF or CR, so the boundary has to
+ * accept all three -- splitting on "\n\n" alone silently never completes a frame that ends CRLF,
+ * which is what a proxy in front of the app may well produce.
+ */
+const FRAME_END = /\r\n\r\n|\n\n|\r\r/
+
+/**
  * Streaming send. The endpoint is a GET carrying the message in the query string, so the customer
  * header still rides on the request — which is why this reads the body with fetch and a
  * ReadableStream rather than EventSource: EventSource cannot set request headers.
@@ -96,17 +103,17 @@ export async function chatStream(
     if (done) break
     buffer += decoder.decode(value, { stream: true })
 
-    // SSE frames are separated by a blank line; a frame may be split across reads, so only consume
-    // what is complete and keep the remainder buffered.
-    let boundary = buffer.indexOf('\n\n')
-    while (boundary >= 0) {
-      const frame = buffer.slice(0, boundary)
-      buffer = buffer.slice(boundary + 2)
+    // A frame may be split across reads, so only consume what is complete and keep the remainder
+    // buffered -- including a trailing "\r" that might still turn out to be "\r\n".
+    let boundary = FRAME_END.exec(buffer)
+    while (boundary) {
+      const frame = buffer.slice(0, boundary.index)
+      buffer = buffer.slice(boundary.index + boundary[0].length)
       const event = parseSseFrame(frame)
       if (event?.name === 'token') onToken(event.data)
       else if (event?.name === 'done') result = JSON.parse(event.data) as ChatResponse
       else if (event?.name === 'error') failure = event.data
-      boundary = buffer.indexOf('\n\n')
+      boundary = FRAME_END.exec(buffer)
     }
   }
 
@@ -118,7 +125,7 @@ export async function chatStream(
 function parseSseFrame(frame: string): { name: string; data: string } | null {
   let name = 'message'
   const data: string[] = []
-  for (const line of frame.split(/\r?\n/)) {
+  for (const line of frame.split(/\r\n|\r|\n/)) {
     if (line.startsWith('event:')) name = line.slice(6).trim()
     else if (line.startsWith('data:')) data.push(line.slice(5).replace(/^ /, ''))
   }

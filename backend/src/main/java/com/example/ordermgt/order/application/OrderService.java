@@ -42,7 +42,6 @@ public class OrderService {
         return PageResult.of(items, total, safePage, safeSize);
     }
 
-    @Transactional(readOnly = true)
     public Order getByNumber(Long customerId, String orderNumber) {
         Order order =
                 orderRepository
@@ -50,9 +49,10 @@ public class OrderService {
                         .orElseThrow(
                                 () ->
                                         new BusinessException(
-                                                ErrorCode.NOT_FOUND, "订单不存在: " + orderNumber));
+                                                ErrorCode.NOT_FOUND,
+                                                "order not found: " + orderNumber));
         if (!order.getCustomerId().equals(customerId)) {
-            throw new BusinessException(ErrorCode.FORBIDDEN, "无权访问该订单");
+            throw new BusinessException(ErrorCode.FORBIDDEN, "access to this order is forbidden");
         }
         return order;
     }
@@ -63,7 +63,12 @@ public class OrderService {
         if (!order.canTransitionTo(target)) {
             throw new BusinessException(
                     ErrorCode.CONFLICT,
-                    "订单 " + orderNumber + " 当前状态 " + order.getStatus() + " 不能变更为 " + target);
+                    "order "
+                            + orderNumber
+                            + " in status "
+                            + order.getStatus()
+                            + " cannot change to "
+                            + target);
         }
         order.transitionTo(target);
         return orderRepository.save(order);
@@ -72,7 +77,8 @@ public class OrderService {
     /** Prices are resolved here, server-side, from the catalog. */
     private List<OrderLine> resolveLines(List<LineCommand> commands) {
         if (commands == null || commands.isEmpty()) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "订单至少需要一行商品");
+            throw new BusinessException(
+                    ErrorCode.VALIDATION_FAILED, "order needs at least one line");
         }
         List<OrderLine> lines = new ArrayList<>();
         for (LineCommand command : commands) {
@@ -84,7 +90,8 @@ public class OrderService {
                                     () ->
                                             new BusinessException(
                                                     ErrorCode.VALIDATION_FAILED,
-                                                    "未知或已下架商品: " + command.sku()));
+                                                    "unknown or discontinued item: "
+                                                            + command.sku()));
             try {
                 lines.add(
                         OrderLine.of(

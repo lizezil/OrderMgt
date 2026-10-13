@@ -46,7 +46,7 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(MissingRequestHeaderException.class)
     public ResponseEntity<ApiResponse<Void>> handleMissingHeader(MissingRequestHeaderException ex) {
-        return badRequest("缺少请求头: " + ex.getHeaderName());
+        return badRequest("missing request header: " + ex.getHeaderName());
     }
 
     // Let Spring's own web exceptions keep their status instead of becoming a 500.
@@ -55,14 +55,18 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(ErrorCode.NOT_FOUND.status())
                 .body(
                         ApiResponse.error(
-                                ErrorCode.NOT_FOUND.name(), "接口不存在: " + ex.getResourcePath()));
+                                ErrorCode.NOT_FOUND.name(),
+                                "no such endpoint: " + ex.getResourcePath()));
     }
 
     @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
     public ResponseEntity<ApiResponse<Void>> handleMethodNotAllowed(
             HttpRequestMethodNotSupportedException ex) {
         return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED)
-                .body(ApiResponse.error("METHOD_NOT_ALLOWED", "不支持的请求方法: " + ex.getMethod()));
+                .body(
+                        ApiResponse.error(
+                                "METHOD_NOT_ALLOWED",
+                                "unsupported request method: " + ex.getMethod()));
     }
 
     @ExceptionHandler(Exception.class)
