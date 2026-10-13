@@ -1,10 +1,16 @@
 package com.example.ordermgt.shared.api;
 
+import lombok.Getter;
+import lombok.RequiredArgsConstructor;
+import lombok.experimental.Accessors;
 import org.springframework.http.HttpStatus;
 
 /**
  * Business error codes. HTTP status is carried here so the exception handler never has to guess.
  */
+@Getter
+@RequiredArgsConstructor
+@Accessors(fluent = true)
 public enum ErrorCode {
     VALIDATION_FAILED(HttpStatus.BAD_REQUEST, "请求参数校验失败"),
     NOT_FOUND(HttpStatus.NOT_FOUND, "资源不存在"),
@@ -17,17 +23,4 @@ public enum ErrorCode {
 
     private final HttpStatus status;
     private final String defaultMessage;
-
-    ErrorCode(HttpStatus status, String defaultMessage) {
-        this.status = status;
-        this.defaultMessage = defaultMessage;
-    }
-
-    public HttpStatus status() {
-        return status;
-    }
-
-    public String defaultMessage() {
-        return defaultMessage;
-    }
 }

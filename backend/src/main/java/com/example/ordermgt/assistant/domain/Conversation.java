@@ -1,6 +1,8 @@
 package com.example.ordermgt.assistant.domain;
 
 import java.time.Instant;
+import lombok.AccessLevel;
+import lombok.AllArgsConstructor;
 import lombok.Getter;
 
 /**
@@ -8,6 +10,7 @@ import lombok.Getter;
  * never crosses conversations.
  */
 @Getter
+@AllArgsConstructor(access = AccessLevel.PRIVATE)
 public class Conversation {
 
     /** Title is derived from the first customer message, truncated to this many chars. */
@@ -19,21 +22,6 @@ public class Conversation {
     private final Instant createdAt;
     private Instant updatedAt;
     private Instant lastMessageAt;
-
-    private Conversation(
-            Long id,
-            Long customerId,
-            String title,
-            Instant createdAt,
-            Instant updatedAt,
-            Instant lastMessageAt) {
-        this.id = id;
-        this.customerId = customerId;
-        this.title = title;
-        this.createdAt = createdAt;
-        this.updatedAt = updatedAt;
-        this.lastMessageAt = lastMessageAt;
-    }
 
     public static Conversation start(Long customerId) {
         if (customerId == null) {

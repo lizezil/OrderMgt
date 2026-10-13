@@ -2,12 +2,16 @@ package com.example.ordermgt.assistant.domain;
 
 import com.example.ordermgt.shared.api.ErrorCode;
 import com.example.ordermgt.shared.error.BusinessException;
+import lombok.Getter;
+import lombok.experimental.Accessors;
 
 /**
  * The model call itself failed. Carries the audit facts the caller would otherwise lose when the
  * exception unwinds: which model, how long it took, and how it ended -- so the failure can still be
  * written to {@code ai_invocations} by whoever owns the conversation id.
  */
+@Getter
+@Accessors(fluent = true)
 public class AiUpstreamException extends BusinessException {
 
     private final String model;
@@ -25,17 +29,5 @@ public class AiUpstreamException extends BusinessException {
         this.model = model;
         this.latencyMs = latencyMs;
         this.outcome = outcome;
-    }
-
-    public String model() {
-        return model;
-    }
-
-    public int latencyMs() {
-        return latencyMs;
-    }
-
-    public AiInvocationOutcome outcome() {
-        return outcome;
     }
 }

@@ -4,6 +4,8 @@ import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.HexFormat;
+import lombok.AccessLevel;
+import lombok.AllArgsConstructor;
 import lombok.Getter;
 
 /**
@@ -14,6 +16,7 @@ import lombok.Getter;
  * token is not enough -- the caller must also be that customer.
  */
 @Getter
+@AllArgsConstructor(access = AccessLevel.PRIVATE)
 public class PendingAction {
 
     /**
@@ -38,35 +41,6 @@ public class PendingAction {
     private Instant resolvedAt;
     private String resultRef;
     private final Instant createdAt;
-
-    private PendingAction(
-            Long id,
-            String token,
-            Long customerId,
-            Long conversationId,
-            Long sourceMessageId,
-            String toolName,
-            String argumentsJson,
-            String summary,
-            PendingActionStatus status,
-            Instant expiresAt,
-            Instant resolvedAt,
-            String resultRef,
-            Instant createdAt) {
-        this.id = id;
-        this.token = token;
-        this.customerId = customerId;
-        this.conversationId = conversationId;
-        this.sourceMessageId = sourceMessageId;
-        this.toolName = toolName;
-        this.argumentsJson = argumentsJson;
-        this.summary = summary;
-        this.status = status;
-        this.expiresAt = expiresAt;
-        this.resolvedAt = resolvedAt;
-        this.resultRef = resultRef;
-        this.createdAt = createdAt;
-    }
 
     public static PendingAction propose(
             Long customerId,

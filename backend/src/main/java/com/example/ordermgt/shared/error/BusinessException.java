@@ -1,7 +1,11 @@
 package com.example.ordermgt.shared.error;
 
 import com.example.ordermgt.shared.api.ErrorCode;
+import lombok.Getter;
+import lombok.experimental.Accessors;
 
+@Getter
+@Accessors(fluent = true)
 public class BusinessException extends RuntimeException {
 
     private final ErrorCode errorCode;
@@ -18,9 +22,5 @@ public class BusinessException extends RuntimeException {
     public BusinessException(ErrorCode errorCode, String message, Throwable cause) {
         super(message, cause);
         this.errorCode = errorCode;
-    }
-
-    public ErrorCode errorCode() {
-        return errorCode;
     }
 }
