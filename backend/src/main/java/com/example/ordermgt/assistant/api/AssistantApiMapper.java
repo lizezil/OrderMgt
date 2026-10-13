@@ -3,6 +3,7 @@ package com.example.ordermgt.assistant.api;
 import com.example.ordermgt.assistant.application.AssistantResult;
 import com.example.ordermgt.assistant.application.ExecutedTool;
 import com.example.ordermgt.assistant.application.MessageView;
+import com.example.ordermgt.assistant.domain.AiInvocation;
 import com.example.ordermgt.assistant.domain.Conversation;
 import org.mapstruct.Mapper;
 import org.mapstruct.Mapping;
@@ -28,4 +29,6 @@ public interface AssistantApiMapper {
     ChatResponse toResponse(AssistantResult result);
 
     ChatResponse.ToolCallView toResponse(ExecutedTool executed);
+
+    InvocationResponse toResponse(AiInvocation invocation);
 }

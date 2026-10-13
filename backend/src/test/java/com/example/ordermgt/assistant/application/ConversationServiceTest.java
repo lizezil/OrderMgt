@@ -6,6 +6,9 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.example.ordermgt.assistant.domain.AiInvocation;
+import com.example.ordermgt.assistant.domain.AiInvocationOutcome;
+import com.example.ordermgt.assistant.domain.AiInvocationRepository;
 import com.example.ordermgt.assistant.domain.ChatMessage;
 import com.example.ordermgt.assistant.domain.Conversation;
 import com.example.ordermgt.assistant.domain.ConversationRepository;
@@ -43,6 +46,8 @@ class ConversationServiceTest {
 
     @Mock private PendingActionRepository pendingActionRepository;
 
+    @Mock private AiInvocationRepository aiInvocationRepository;
+
     private ConversationService service;
 
     @BeforeEach
@@ -51,6 +56,7 @@ class ConversationServiceTest {
                 new ConversationService(
                         conversationRepository,
                         pendingActionRepository,
+                        aiInvocationRepository,
                         new ActionCardFactory(new ToolRegistry(List.of()), new ObjectMapper()));
     }
 
@@ -70,6 +76,38 @@ class ConversationServiceTest {
                 .thenReturn(Optional.of(conversation(STRANGER)));
 
         assertThatThrownBy(() -> service.getOwned(OWNER, CONVERSATION))
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).errorCode())
+                .isEqualTo(ErrorCode.FORBIDDEN);
+    }
+
+    @Test
+    void theAuditReadsOnlyTheOwnConversationModelCalls() {
+        when(conversationRepository.findById(CONVERSATION))
+                .thenReturn(Optional.of(conversation(OWNER)));
+        AiInvocation invocation =
+                AiInvocation.record(
+                        CONVERSATION,
+                        OWNER,
+                        "qwen-max",
+                        12,
+                        34,
+                        4242,
+                        AiInvocationOutcome.OK,
+                        null,
+                        null);
+        when(aiInvocationRepository.findByConversationId(CONVERSATION))
+                .thenReturn(List.of(invocation));
+
+        assertThat(service.invocations(OWNER, CONVERSATION)).containsExactly(invocation);
+    }
+
+    @Test
+    void aStrangerCannotReadTheAuditTrail() {
+        when(conversationRepository.findById(CONVERSATION))
+                .thenReturn(Optional.of(conversation(STRANGER)));
+
+        assertThatThrownBy(() -> service.invocations(OWNER, CONVERSATION))
                 .isInstanceOf(BusinessException.class)
                 .extracting(e -> ((BusinessException) e).errorCode())
                 .isEqualTo(ErrorCode.FORBIDDEN);

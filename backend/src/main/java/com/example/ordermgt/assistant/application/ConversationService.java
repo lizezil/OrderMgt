@@ -1,5 +1,7 @@
 package com.example.ordermgt.assistant.application;
 
+import com.example.ordermgt.assistant.domain.AiInvocation;
+import com.example.ordermgt.assistant.domain.AiInvocationRepository;
 import com.example.ordermgt.assistant.domain.ChatMessage;
 import com.example.ordermgt.assistant.domain.Conversation;
 import com.example.ordermgt.assistant.domain.ConversationRepository;
@@ -30,6 +32,7 @@ public class ConversationService {
 
     private final ConversationRepository conversationRepository;
     private final PendingActionRepository pendingActionRepository;
+    private final AiInvocationRepository aiInvocationRepository;
     private final ActionCardFactory actionCardFactory;
 
     public Conversation start(Long customerId) {
@@ -117,6 +120,17 @@ public class ConversationService {
         return messages.stream()
                 .map(message -> new MessageView(message, cards.get(message.pendingActionId())))
                 .toList();
+    }
+
+    /**
+     * The model calls this conversation produced, newest first -- the operations read of the rows
+     * {@link AssistantService} writes. Ownership is checked exactly like {@link #history}, so a
+     * stranger gets 403 rather than an outline of someone else's traffic.
+     */
+    @Transactional(readOnly = true)
+    public List<AiInvocation> invocations(Long customerId, Long conversationId) {
+        getOwned(customerId, conversationId);
+        return aiInvocationRepository.findByConversationId(conversationId);
     }
 
     /** Records which message carried a card, so history can render it. */

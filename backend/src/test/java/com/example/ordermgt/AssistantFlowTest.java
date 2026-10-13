@@ -2,6 +2,7 @@ package com.example.ordermgt;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -123,6 +124,32 @@ class AssistantFlowTest {
         // The proposal the model asked for lands on the row too: audit shows intent, not just
         // tokens.
         assertThat(rows.get(0).getToolCallsJson()).contains("createOrder");
+    }
+
+    @Test
+    void theAuditEndpointIsReadableByItsOwnerAndNobodyElse() throws Exception {
+        Long owner = OWNER + 7;
+        Long conversationId =
+                assistantService.chat(owner, null, "help me order 3 GIZMO-03").conversationId();
+
+        mockMvc.perform(
+                        get("/api/assistant/conversations/{id}/invocations", conversationId)
+                                .header("X-Customer-Id", String.valueOf(owner)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value("OK"))
+                .andExpect(jsonPath("$.data.length()").value(1))
+                .andExpect(jsonPath("$.data[0].model").value("offline-mock"))
+                .andExpect(jsonPath("$.data[0].outcome").value("OK"))
+                .andExpect(jsonPath("$.data[0].latencyMs").isNumber())
+                .andExpect(jsonPath("$.data[0].createdAt").isNotEmpty());
+
+        // Someone else's conversation is indistinguishable from one that does not exist -- 403,
+        // never an outline of their model traffic.
+        mockMvc.perform(
+                        get("/api/assistant/conversations/{id}/invocations", conversationId)
+                                .header("X-Customer-Id", String.valueOf(owner + 1)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
     }
 
     @Test

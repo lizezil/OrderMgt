@@ -19,9 +19,13 @@ import com.example.ordermgt.assistant.api.ActionController;
 import com.example.ordermgt.assistant.api.AssistantApiMapper;
 import com.example.ordermgt.assistant.api.AssistantController;
 import com.example.ordermgt.assistant.api.ChatSender;
+import com.example.ordermgt.assistant.api.ConversationController;
 import com.example.ordermgt.assistant.application.ActionConfirmationService;
 import com.example.ordermgt.assistant.application.AssistantResult;
 import com.example.ordermgt.assistant.application.AssistantService;
+import com.example.ordermgt.assistant.application.ConversationService;
+import com.example.ordermgt.assistant.domain.AiAssistantPort;
+import com.example.ordermgt.assistant.domain.AiInvocation;
 import com.example.ordermgt.assistant.domain.AiInvocationOutcome;
 import com.example.ordermgt.assistant.domain.AiUpstreamException;
 import com.example.ordermgt.assistant.domain.AiUsage;
@@ -44,6 +48,9 @@ import com.example.ordermgt.shared.api.ErrorCode;
 import com.example.ordermgt.shared.error.BusinessException;
 import com.example.ordermgt.shared.error.GlobalExceptionHandler;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.databind.json.JsonMapper;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
@@ -52,6 +59,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mapstruct.factory.Mappers;
 import org.springframework.http.MediaType;
+import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.validation.beanvalidation.LocalValidatorFactoryBean;
@@ -76,6 +84,8 @@ class ApiContractTest {
 
     private AssistantService assistantService;
 
+    private ConversationService conversationService;
+
     private MockMvc mvc;
 
     @BeforeEach
@@ -85,12 +95,24 @@ class ApiContractTest {
         actionConfirmationService = mock(ActionConfirmationService.class);
         catalogRepository = mock(CatalogRepository.class);
         assistantService = mock(AssistantService.class);
+        conversationService = mock(ConversationService.class);
 
         IdempotencyGuard guard =
                 new IdempotencyGuard(idempotencyRepository, new ObjectMapper(), 24);
 
         LocalValidatorFactoryBean validator = new LocalValidatorFactoryBean();
         validator.afterPropertiesSet();
+
+        // Standalone MockMvc defaults to epoch-second dates; the running app writes ISO-8601
+        // (Jackson2ObjectMapperBuilder disables WRITE_DATES_AS_TIMESTAMPS). The contract must be
+        // pinned in the format customers actually receive.
+        ObjectMapper wire =
+                JsonMapper.builder()
+                        .addModule(new JavaTimeModule())
+                        .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
+                        .build();
+
+        AssistantApiMapper assistantMapper = Mappers.getMapper(AssistantApiMapper.class);
 
         mvc =
                 MockMvcBuilders.standaloneSetup(
@@ -103,12 +125,18 @@ class ApiContractTest {
                                         Mappers.getMapper(CatalogApiMapper.class)),
                                 new ActionController(actionConfirmationService),
                                 new AssistantController(
-                                        new ChatSender(
-                                                assistantService,
-                                                guard,
-                                                Mappers.getMapper(AssistantApiMapper.class))))
+                                        new ChatSender(assistantService, guard, assistantMapper)),
+                                new ConversationController(
+                                        conversationService,
+                                        assistantService,
+                                        new ChatSender(assistantService, guard, assistantMapper),
+                                        mock(AiAssistantPort.class),
+                                        new ObjectMapper(),
+                                        assistantMapper,
+                                        Runnable::run))
                         .setControllerAdvice(new GlobalExceptionHandler())
                         .setValidator(validator)
+                        .setMessageConverters(new MappingJackson2HttpMessageConverter(wire))
                         .build();
     }
 
@@ -306,6 +334,36 @@ class ApiContractTest {
                                 .content("{\"message\":\"hello\"}"))
                 .andExpect(status().isBadGateway())
                 .andExpect(jsonPath("$.code").value("UPSTREAM_AI_ERROR"));
+    }
+
+    @Test
+    void conversationAuditExposesModelLatencyOutcomeAndWhen() throws Exception {
+        when(conversationService.invocations(CUSTOMER, 7L))
+                .thenReturn(
+                        List.of(
+                                new AiInvocation(
+                                        11L,
+                                        7L,
+                                        CUSTOMER,
+                                        "qwen-max",
+                                        12,
+                                        34,
+                                        4242,
+                                        AiInvocationOutcome.TIMEOUT,
+                                        "read timed out",
+                                        null,
+                                        Instant.parse("2026-10-13T05:04:05Z"))));
+
+        mvc.perform(
+                        get("/api/assistant/conversations/7/invocations")
+                                .header("X-Customer-Id", CUSTOMER))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value("OK"))
+                .andExpect(jsonPath("$.data.length()").value(1))
+                .andExpect(jsonPath("$.data[0].model").value("qwen-max"))
+                .andExpect(jsonPath("$.data[0].latencyMs").value(4242))
+                .andExpect(jsonPath("$.data[0].outcome").value("TIMEOUT"))
+                .andExpect(jsonPath("$.data[0].createdAt").value("2026-10-13T05:04:05Z"));
     }
 
     private static Order order(String orderNumber) {

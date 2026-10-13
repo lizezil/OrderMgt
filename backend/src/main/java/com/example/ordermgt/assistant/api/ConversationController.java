@@ -81,6 +81,20 @@ public class ConversationController {
                         .toList());
     }
 
+    /**
+     * The model calls behind this conversation: model, latency, outcome, when. Scoped by the same
+     * ownership rule as history, so someone else's conversation is a 403, not an outline of their
+     * traffic.
+     */
+    @GetMapping("/{conversationId}/invocations")
+    public ApiResponse<List<InvocationResponse>> invocations(
+            @RequestHeader("X-Customer-Id") Long customerId, @PathVariable Long conversationId) {
+        return ApiResponse.ok(
+                conversationService.invocations(customerId, conversationId).stream()
+                        .map(mapper::toResponse)
+                        .toList());
+    }
+
     @PostMapping("/{conversationId}/messages")
     public ApiResponse<ChatResponse> send(
             @RequestHeader("X-Customer-Id") Long customerId,
