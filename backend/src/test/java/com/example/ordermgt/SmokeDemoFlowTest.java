@@ -11,6 +11,7 @@ import com.example.ordermgt.assistant.domain.AiAssistantPort;
 import com.example.ordermgt.assistant.domain.AssistantTurn;
 import com.example.ordermgt.assistant.domain.ChatMessage;
 import com.example.ordermgt.assistant.infrastructure.ai.MockAiAdapter;
+import com.example.ordermgt.support.CleanSchemaConfiguration;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.ArrayList;
@@ -21,11 +22,11 @@ import java.util.function.Consumer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.autoconfigure.flyway.FlywayMigrationStrategy;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.ActiveProfiles;
@@ -42,6 +43,7 @@ import org.springframework.test.web.servlet.MvcResult;
 @SpringBootTest
 @ActiveProfiles("test")
 @AutoConfigureMockMvc
+@Import(CleanSchemaConfiguration.class)
 class SmokeDemoFlowTest {
 
     private static final AtomicLong CUSTOMER_SEQUENCE = new AtomicLong(7300);
@@ -71,19 +73,6 @@ class SmokeDemoFlowTest {
                     LAST_MEMORY.set(List.copyOf(memory));
                     return DELEGATE.respondStreaming(customerId, memory, onTextDelta);
                 }
-            };
-        }
-    }
-
-    /** 每次运行重建 schema，理由同 AssistantFlowTest：本类也断言精确订单数。 */
-    @TestConfiguration
-    static class CleanSchemaConfiguration {
-
-        @Bean
-        FlywayMigrationStrategy cleanMigrate() {
-            return flyway -> {
-                flyway.clean();
-                flyway.migrate();
             };
         }
     }

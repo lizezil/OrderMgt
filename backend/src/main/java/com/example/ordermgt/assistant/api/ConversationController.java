@@ -45,7 +45,7 @@ public class ConversationController {
 
     private final ConversationService conversationService;
     private final AssistantService assistantService;
-    private final IdempotencyGuard idempotencyGuard;
+    private final ChatSender chatSender;
     private final AiAssistantPort aiAssistantPort;
     private final ObjectMapper objectMapper;
     private final AssistantApiMapper mapper;
@@ -85,19 +85,8 @@ public class ConversationController {
             @RequestHeader(value = IdempotencyGuard.KEY_HEADER, required = false)
                     String idempotencyKey,
             @Valid @RequestBody ChatRequest request) {
-
-        ChatResponse response =
-                idempotencyGuard.execute(
-                        customerId,
-                        "SEND_MESSAGE",
-                        idempotencyKey,
-                        IdempotencyGuard.hashOf(String.valueOf(conversationId), request.message()),
-                        () ->
-                                mapper.toResponse(
-                                        assistantService.chat(
-                                                customerId, conversationId, request.message())),
-                        ChatResponse.class);
-        return ApiResponse.ok(response);
+        return ApiResponse.ok(
+                chatSender.send(customerId, conversationId, idempotencyKey, request.message()));
     }
 
     /**

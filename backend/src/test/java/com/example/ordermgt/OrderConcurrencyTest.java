@@ -21,6 +21,7 @@ import com.example.ordermgt.order.domain.Order;
 import com.example.ordermgt.order.domain.OrderStatus;
 import com.example.ordermgt.shared.api.ErrorCode;
 import com.example.ordermgt.shared.error.BusinessException;
+import com.example.ordermgt.support.CleanSchemaConfiguration;
 import com.jayway.jsonpath.JsonPath;
 import java.math.BigDecimal;
 import java.time.Duration;
@@ -42,11 +43,11 @@ import java.util.function.Consumer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.autoconfigure.flyway.FlywayMigrationStrategy;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.ActiveProfiles;
@@ -63,6 +64,7 @@ import org.springframework.test.web.servlet.MvcResult;
 @SpringBootTest
 @ActiveProfiles("test")
 @AutoConfigureMockMvc
+@Import(CleanSchemaConfiguration.class)
 class OrderConcurrencyTest {
 
     private static final AtomicLong CUSTOMER_SEQUENCE = new AtomicLong(7500);
@@ -92,19 +94,6 @@ class OrderConcurrencyTest {
                     INVOCATIONS.incrementAndGet();
                     return DELEGATE.respondStreaming(customerId, memory, onTextDelta);
                 }
-            };
-        }
-    }
-
-    /** 每次运行重建 schema：本类断言精确条数（某客户恰好一张订单），残留行会破坏它。 */
-    @TestConfiguration
-    static class CleanSchemaConfiguration {
-
-        @Bean
-        FlywayMigrationStrategy cleanMigrate() {
-            return flyway -> {
-                flyway.clean();
-                flyway.migrate();
             };
         }
     }

@@ -9,7 +9,8 @@
 3. **业务代码不依赖 Spring AI。** 业务只依赖 `AiAssistantPort`，Spring AI 藏在适配器后面，测试/离线用桩替换。见 [ADR-0003](docs/adr/0003-ai-behind-own-port.md)。
 4. **价格只有一个来源。** 模型只填 sku 和数量，金额由服务端从 `catalog_items` 解析（[ADR-0006](docs/adr/0006-ground-model-with-catalog.md) 记录了一次真实的 sku 幻觉与修法）。
 
-项目文档都收在 [`docs/`](docs/)：设计定稿（决策表、表结构、接口契约、里程碑与实测记录）见 [面试作业-设计定稿.md](docs/面试作业-设计定稿.md)，
+项目文档都收在 [`docs/`](docs/)：原题需求摘录见 [面试作业-需求摘录.md](docs/面试作业-需求摘录.md)，
+设计定稿（决策表、表结构、接口契约、里程碑与实测记录）见 [面试作业-设计定稿.md](docs/面试作业-设计定稿.md)，
 需求梳理与坑位分析见 [面试作业-需求梳理与坑位分析.md](docs/面试作业-需求梳理与坑位分析.md)，
 直播演示的逐步脚本与讲解要点见 [面试作业-演示脚本与讲解要点.md](docs/面试作业-演示脚本与讲解要点.md)；
 领域词汇表见 [CONTEXT.md](CONTEXT.md)，所有架构决策见 [docs/adr/](docs/adr/)。

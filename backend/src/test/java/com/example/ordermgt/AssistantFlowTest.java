@@ -24,6 +24,7 @@ import com.example.ordermgt.idempotency.infrastructure.schedule.IdempotencySweep
 import com.example.ordermgt.order.application.OrderService;
 import com.example.ordermgt.shared.api.ErrorCode;
 import com.example.ordermgt.shared.error.BusinessException;
+import com.example.ordermgt.support.CleanSchemaConfiguration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -31,11 +32,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.autoconfigure.flyway.FlywayMigrationStrategy;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.ActiveProfiles;
@@ -53,6 +54,7 @@ import org.springframework.test.web.servlet.MvcResult;
 @SpringBootTest
 @ActiveProfiles("test")
 @AutoConfigureMockMvc
+@Import(CleanSchemaConfiguration.class)
 class AssistantFlowTest {
 
     private static final Long OWNER = 9001L;
@@ -85,24 +87,6 @@ class AssistantFlowTest {
                     INVOCATIONS.incrementAndGet();
                     return DELEGATE.respondStreaming(customerId, memory, onTextDelta);
                 }
-            };
-        }
-    }
-
-    /**
-     * Rebuilds the schema for every run. The suite runs against a resident MySQL, so rows would
-     * otherwise accumulate: the assertions below count exact rows (a customer has exactly one
-     * order) and reuse fixed idempotency keys, which a leftover row from an earlier run would
-     * break. clean() drops everything, migrate() replays V1 -- so each run starts from the seed.
-     */
-    @TestConfiguration
-    static class CleanSchemaConfiguration {
-
-        @Bean
-        FlywayMigrationStrategy cleanMigrate() {
-            return flyway -> {
-                flyway.clean();
-                flyway.migrate();
             };
         }
     }

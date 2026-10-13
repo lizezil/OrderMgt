@@ -18,6 +18,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.example.ordermgt.assistant.api.ActionController;
 import com.example.ordermgt.assistant.api.AssistantApiMapper;
 import com.example.ordermgt.assistant.api.AssistantController;
+import com.example.ordermgt.assistant.api.ChatSender;
 import com.example.ordermgt.assistant.application.ActionConfirmationService;
 import com.example.ordermgt.assistant.application.AssistantResult;
 import com.example.ordermgt.assistant.application.AssistantService;
@@ -102,9 +103,10 @@ class ApiContractTest {
                                         Mappers.getMapper(CatalogApiMapper.class)),
                                 new ActionController(actionConfirmationService),
                                 new AssistantController(
-                                        assistantService,
-                                        guard,
-                                        Mappers.getMapper(AssistantApiMapper.class)))
+                                        new ChatSender(
+                                                assistantService,
+                                                guard,
+                                                Mappers.getMapper(AssistantApiMapper.class))))
                         .setControllerAdvice(new GlobalExceptionHandler())
                         .setValidator(validator)
                         .build();

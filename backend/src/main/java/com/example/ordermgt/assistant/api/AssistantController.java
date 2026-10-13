@@ -1,6 +1,5 @@
 package com.example.ordermgt.assistant.api;
 
-import com.example.ordermgt.assistant.application.AssistantService;
 import com.example.ordermgt.idempotency.application.IdempotencyGuard;
 import com.example.ordermgt.shared.api.ApiResponse;
 import jakarta.validation.Valid;
@@ -17,9 +16,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/assistant")
 public class AssistantController {
 
-    private final AssistantService assistantService;
-    private final IdempotencyGuard idempotencyGuard;
-    private final AssistantApiMapper mapper;
+    private final ChatSender chatSender;
 
     /**
      * Conversation-aware chat. Pass an existing {@code conversationId} to continue it, or omit it
@@ -35,18 +32,7 @@ public class AssistantController {
             @RequestHeader(value = IdempotencyGuard.KEY_HEADER, required = false)
                     String idempotencyKey,
             @Valid @RequestBody ChatRequest request) {
-
-        ChatResponse response =
-                idempotencyGuard.execute(
-                        customerId,
-                        "SEND_MESSAGE",
-                        idempotencyKey,
-                        IdempotencyGuard.hashOf(String.valueOf(conversationId), request.message()),
-                        () ->
-                                mapper.toResponse(
-                                        assistantService.chat(
-                                                customerId, conversationId, request.message())),
-                        ChatResponse.class);
-        return ApiResponse.ok(response);
+        return ApiResponse.ok(
+                chatSender.send(customerId, conversationId, idempotencyKey, request.message()));
     }
 }
