@@ -18,7 +18,7 @@ import org.springframework.stereotype.Component;
  * <p>All tool-specific knowledge -- the title, the one-line summary and the labelled rows -- comes
  * from the tool's own card ({@code ToolSpec.card()}), so this class holds no switch on the tool
  * name. What stays here is the envelope (token, endpoints, expiry, status) and the fallback: a
- * proposal we cannot describe must still become a card the customer can reject, not a 500.
+ * pending action we cannot describe must still become a card the customer can reject, not a 500.
  */
 @RequiredArgsConstructor
 @Component
@@ -44,7 +44,7 @@ public class ActionCardFactory {
     }
 
     /**
-     * Safe to call on anything the model produced: a proposal we cannot describe must still become
+     * Safe to call on anything the model produced: a tool call we cannot describe must still become
      * a card the customer can reject, not a 500.
      */
     public String summaryOf(String toolName, String argumentsJson) {

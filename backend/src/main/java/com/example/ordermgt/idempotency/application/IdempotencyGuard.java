@@ -14,6 +14,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.HexFormat;
 import java.util.function.Supplier;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -38,6 +39,7 @@ import org.springframework.stereotype.Component;
  */
 @Slf4j
 @Component
+@RequiredArgsConstructor
 public class IdempotencyGuard {
 
     /** The header callers use to supply a key. */
@@ -45,16 +47,10 @@ public class IdempotencyGuard {
 
     private final IdempotencyRepository repository;
     private final ObjectMapper objectMapper;
-    private final Duration retention;
 
-    public IdempotencyGuard(
-            IdempotencyRepository repository,
-            ObjectMapper objectMapper,
-            @Value("${idempotency.retention-hours:24}") long retentionHours) {
-        this.repository = repository;
-        this.objectMapper = objectMapper;
-        this.retention = Duration.ofHours(retentionHours);
-    }
+    /** Configured in hours (the shape it arrives in); {@link #retention()} is how it is used. */
+    @Value("${idempotency.retention-hours:24}")
+    private final long retentionHours;
 
     /**
      * @param idempotencyKey the caller's key; null or blank opts out and runs every time
@@ -108,7 +104,7 @@ public class IdempotencyGuard {
                         null,
                         now,
                         null,
-                        now.plus(retention));
+                        now.plus(retention()));
 
         var claimed = repository.tryClaim(candidate);
         if (claimed.isPresent()) {
@@ -170,6 +166,10 @@ public class IdempotencyGuard {
         return new BusinessException(
                 ErrorCode.IDEMPOTENCY_CONFLICT,
                 "same idempotency key request is still in progress, retry later");
+    }
+
+    private Duration retention() {
+        return Duration.ofHours(retentionHours);
     }
 
     /**

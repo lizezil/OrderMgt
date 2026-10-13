@@ -21,6 +21,7 @@ import java.util.Optional;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.ChatClientResponse;
@@ -39,6 +40,7 @@ import org.springframework.stereotype.Component;
 @Slf4j
 @Component
 @Profile("!offline")
+@RequiredArgsConstructor
 public class SpringAiAdapter implements AiAssistantPort {
 
     /** Streaming calls are bounded so a stalled upstream cannot pin a thread forever. */
@@ -58,21 +60,12 @@ public class SpringAiAdapter implements AiAssistantPort {
             - Answer in concise English.
             """;
 
-    private final ChatClient chatClient;
+    private final ChatClient.Builder builder;
     private final ToolRegistry registry;
     private final GroundingProvider groundingProvider;
-    private final String model;
 
-    public SpringAiAdapter(
-            ChatClient.Builder builder,
-            ToolRegistry registry,
-            GroundingProvider groundingProvider,
-            @Value("${spring.ai.openai.chat.options.model:unknown}") String model) {
-        this.registry = registry;
-        this.groundingProvider = groundingProvider;
-        this.model = model;
-        this.chatClient = builder.build();
-    }
+    @Value("${spring.ai.openai.chat.options.model:unknown}")
+    private final String model;
 
     @Override
     public AssistantTurn respond(Long customerId, List<ChatMessage> memory) {
@@ -182,11 +175,19 @@ public class SpringAiAdapter implements AiAssistantPort {
                         .internalToolExecutionEnabled(false)
                         .build();
 
-        return chatClient
+        return chatClient()
                 .prompt()
                 .system(systemPrompt())
                 .messages(toSpringMessages(memory))
                 .options(options);
+    }
+
+    /**
+     * Building per call keeps the constructor Lombok-generated. {@code ChatClient.Builder} is a
+     * cheap configuration holder -- build() allocates a client over the same model, no I/O.
+     */
+    private ChatClient chatClient() {
+        return builder.build();
     }
 
     private AssistantTurn toTurn(ChatResponse chatResponse, int latencyMs) {

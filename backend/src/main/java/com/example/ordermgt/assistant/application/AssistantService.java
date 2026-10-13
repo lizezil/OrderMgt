@@ -22,6 +22,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -44,6 +45,7 @@ import org.springframework.stereotype.Service;
  */
 @Slf4j
 @Service
+@RequiredArgsConstructor
 public class AssistantService {
 
     private final AiAssistantPort aiAssistantPort;
@@ -53,29 +55,13 @@ public class AssistantService {
     private final ActionCardFactory actionCardFactory;
     private final AiInvocationRepository aiInvocationRepository;
     private final ObjectMapper objectMapper;
-    private final int memoryWindow;
-    private final Duration actionTtl;
 
-    public AssistantService(
-            AiAssistantPort aiAssistantPort,
-            ToolRegistry toolRegistry,
-            ConversationService conversationService,
-            PendingActionRepository pendingActionRepository,
-            ActionCardFactory actionCardFactory,
-            AiInvocationRepository aiInvocationRepository,
-            ObjectMapper objectMapper,
-            @Value("${assistant.memory.window:20}") int memoryWindow,
-            @Value("${assistant.action.ttl-minutes:15}") long actionTtlMinutes) {
-        this.aiAssistantPort = aiAssistantPort;
-        this.toolRegistry = toolRegistry;
-        this.conversationService = conversationService;
-        this.pendingActionRepository = pendingActionRepository;
-        this.actionCardFactory = actionCardFactory;
-        this.aiInvocationRepository = aiInvocationRepository;
-        this.objectMapper = objectMapper;
-        this.memoryWindow = memoryWindow;
-        this.actionTtl = Duration.ofMinutes(actionTtlMinutes);
-    }
+    @Value("${assistant.memory.window:20}")
+    private final int memoryWindow;
+
+    /** Configured in minutes (the shape it arrives in); {@link #actionTtl()} is how it is used. */
+    @Value("${assistant.action.ttl-minutes:15}")
+    private final long actionTtlMinutes;
 
     /**
      * @param conversationId null starts a brand new conversation (the "新对话" path).
@@ -127,7 +113,7 @@ public class AssistantService {
         Long customerId = conversation.getCustomerId();
 
         List<ExecutedTool> executed = new ArrayList<>();
-        List<PendingAction> proposals = new ArrayList<>();
+        List<PendingAction> pendingActions = new ArrayList<>();
 
         for (ProposedToolCall call : turn.toolCalls()) {
             ToolSpec spec =
@@ -140,7 +126,7 @@ public class AssistantService {
                                                     "model called an unregistered tool: "
                                                             + call.name()));
             if (spec.mutating()) {
-                proposals.add(propose(customerId, conversation.getId(), spec, call));
+                pendingActions.add(propose(customerId, conversation.getId(), spec, call));
             } else {
                 ToolResult result = spec.handler().execute(customerId, call.argumentsJson());
                 executed.add(new ExecutedTool(spec.name(), result.payloadJson()));
@@ -153,12 +139,12 @@ public class AssistantService {
         }
 
         List<ActionCard> cards = new ArrayList<>();
-        for (PendingAction proposal : proposals) {
-            ActionCard card = actionCardFactory.card(proposal);
+        for (PendingAction pendingAction : pendingActions) {
+            ActionCard card = actionCardFactory.card(pendingAction);
             Message cardMessage =
                     conversationService.appendAssistantMessage(
-                            conversation.getId(), card.summary(), proposal.getId());
-            conversationService.linkActionToMessage(proposal, cardMessage.id());
+                            conversation.getId(), card.summary(), pendingAction.getId());
+            conversationService.linkActionToMessage(pendingAction, cardMessage.id());
             cards.add(card);
         }
 
@@ -204,8 +190,8 @@ public class AssistantService {
     public record TurnContext(Conversation conversation, List<ChatMessage> memory) {}
 
     /**
-     * Records the proposal. Nothing about it is executed here -- the handler is only reachable from
-     * ActionConfirmationService, once the customer confirms.
+     * Records the pending action. Nothing about it is executed here -- the handler is only
+     * reachable from ActionConfirmationService, once the customer confirms.
      */
     private PendingAction propose(
             Long customerId, Long conversationId, ToolSpec spec, ProposedToolCall call) {
@@ -217,13 +203,17 @@ public class AssistantService {
                             spec.name(),
                             call.argumentsJson(),
                             actionCardFactory.summaryOf(spec.name(), call.argumentsJson()),
-                            actionTtl);
+                            actionTtl());
             return pendingActionRepository.save(action);
         } catch (IllegalArgumentException ex) {
             throw new BusinessException(
                     ErrorCode.VALIDATION_FAILED,
                     "model proposed invalid tool arguments, rejected: " + ex.getMessage());
         }
+    }
+
+    private Duration actionTtl() {
+        return Duration.ofMinutes(actionTtlMinutes);
     }
 
     /** The model's own words, plus what the readonly tools actually returned. */

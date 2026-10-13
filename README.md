@@ -131,10 +131,10 @@ make db-up                  # 测试跑在真实 MySQL 上，先把常驻容器�
 
 | 层 | 目标 | 用例 |
 |---|---|---|
-| L1 领域规则（纯单测） | 聚合与值对象的不变量 | `Money`、`Order`/`OrderLine` 状态机、`OrderNumber`、`ToolWhitelist`、`Message` |
-| L2 应用用例（Mockito） | 编排与边界，不碰数据库 | `OrderService`、`ConversationService`、`AssistantService`、`OrderToolSpecs` |
-| L3 API 契约（MockMvc） | 统一响应体、校验、状态码、幂等头 | `ApiContractTest` |
-| L4 集成（真 MySQL + 桩模型，不烧 Key） | 端到端业务流 | `AssistantFlowTest`（"提议→不执行→确认→落单→重复确认不重复落单→越权 403"、幂等键重放、每次调用落一行 `ai_invocations`）、`OrderAssistantBusinessFlowTest` |
+| L1 领域规则（纯单测） | 聚合与值对象的不变量 | `Money`、`Order`/`OrderLine` 状态机、`OrderNumber`、`ToolWhitelist`、`Message`、`Conversation`、`PendingAction` |
+| L2 应用用例（Mockito） | 编排与边界，不碰数据库 | `OrderService`、`ConversationService`、`AssistantService`、`ActionConfirmationService`、`ActionCardFactory`、`IdempotencyGuard`、`OrderToolSpecs` |
+| L3 API 契约（MockMvc） | 统一响应体、校验、状态码、幂等头 | `ApiContractTest`、`SpringAiAdapter`（超时/异常归类成 `TIMEOUT`/`ERROR`） |
+| L4 集成（真 MySQL + 桩模型，不烧 Key） | 端到端业务流与并发正确性 | `AssistantFlowTest`（"提议→不执行→确认→落单→重复确认不重复落单→越权 403"、幂等键重放、每次调用落一行 `ai_invocations`）、`OrderAssistantBusinessFlowTest`、`SmokeDemoFlowTest`、`OrderConcurrencyTest`（6 线程真实并发；含"幂等键 FAILED 重试只执行一次"，钉住并验证 `reclaim` 竞态修复） |
 | L5 SPA 单元与组件（Vitest + jsdom） | 后端替客户端保证不了的那半份契约 | `api.spec`（SSE 分帧 / 身份头 / 错误体）、`ActionCardPanel.spec`、`OrdersView.spec`、`AssistantView.spec`、`toast.spec` |
 | L6 浏览器端到端（Playwright + Chromium） | 真浏览器里走完"提议 → 确认 → 落单" | `catalog.spec`、`orders-identity.spec`、`assistant-flow.spec` |
 
@@ -157,7 +157,7 @@ L6 不信任 Vite dev server：`e2e/support/serve.mjs` 先把 SPA 构建进 `bac
 
 - **格式化**：后端用 Spotless（`google-java-format`，AOSP 风格，与既有 4 空格缩进一致）。`apply` 绑定在 `process-sources` 阶段，所以任何构建（如 `./mvnw -pl backend test`）都会**先自动格式化再编译**，不需要手动跑。前端用 Prettier（`frontend/.prettierrc.json`），`pnpm build` 同样会**先 `prettier --write` 再构建**。手动跑用 `make format`；只校验、不改写（CI）用 `make check`（即 `spotless:check` + `prettier --check`）。
 - **对象映射**：PO/DTO/领域对象之间的转换统一交给 **MapStruct**（`*ApiMapper` / `*PersistenceMapper`，`componentModel = "spring"`），不再手写逐字段拷贝。注解处理器已在父 POM 配好（`mapstruct-processor` + `lombok-mapstruct-binding`，与 Lombok 共存）。少数 MapStruct 生成不了的地方——聚合根构造器私有、只能经 `rehydrate` 工厂重建（`Order`/`Conversation`/`PendingAction`）——保留为同一 mapper 接口里的 `default` 方法，调用点仍然统一。
-- **样板代码**：统一用 Lombok —— PO/DTO 用 `@Data`，构造器注入用 `@RequiredArgsConstructor`，日志用 `@Slf4j`。注入相关注解（如 `@Qualifier`）由根目录的 `lombok.config` 保留到生成的构造器参数上。
+- **样板代码**：统一用 Lombok —— 持久化对象（PO，如 `OrderPO`/`IdempotencyRecordPO`）用 `@Data`，构造器注入用 `@RequiredArgsConstructor`，日志用 `@Slf4j`。注入相关注解（`@Qualifier`/`@Value`）由根目录的 `lombok.config` 复制到生成的构造器参数上；配置项因此声明成带 `@Value` 的 final 字段，而构造期需要计算的成员（`ChatClient.Builder.build()`、`Duration` 换算）用私有访问器表达，好让构造器整个交给 Lombok。**API 出入参是 Java record**（`ChatRequest`、`OrderResponse` 等），不是 `@Data` 类——record 自带不可变与 `equals`/`hashCode`，正是 DTO 需要的。
 
 ## 目录结构
 
