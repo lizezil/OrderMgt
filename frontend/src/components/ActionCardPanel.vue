@@ -24,6 +24,7 @@ const slipClass = computed(() => ({
   refused: refused.value,
 }))
 
+/** One switch names the state; the stamp repeats that word only once the state is terminal. */
 const stateLabel = computed(() => {
   switch (props.card.status) {
     case 'CONFIRMED':
@@ -37,18 +38,7 @@ const stateLabel = computed(() => {
   }
 })
 
-const stampText = computed(() => {
-  switch (props.card.status) {
-    case 'CONFIRMED':
-      return '已执行'
-    case 'REJECTED':
-      return '已拒绝'
-    case 'EXPIRED':
-      return '已过期'
-    default:
-      return ''
-  }
-})
+const stampText = computed(() => (props.card.status === 'PENDING' ? '' : stateLabel.value))
 
 const expiryLabel = computed(() => {
   if (!isPending.value) return ''
