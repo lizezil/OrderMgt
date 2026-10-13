@@ -18,6 +18,16 @@ spring:
         options:
           model: qwen-max
           temperature: 0.2
+    # Spring AI retries blocking model calls by default -- but with 10 attempts and an exponential
+    # backoff of 2s x5 capped at 3 minutes, i.e. a worst case of roughly 19 minutes for one call.
+    # These are the only knobs it exposes (no jitter; see AiHttpClientConfig for the timeouts).
+    # Streaming is not retried by the framework at all.
+    retry:
+      max-attempts: 3
+      backoff:
+        initial-interval: 1s
+        multiplier: 2
+        max-interval: 8s
 
 # Assistant behaviour. memory.window = how many recent turns of a conversation are
 # replayed to the model; memory never crosses conversations. action.ttl-minutes = how long
@@ -32,6 +42,9 @@ assistant:
 # Retries carrying the same Idempotency-Key replay the stored response for this long.
 idempotency:
   retention-hours: 24
+  # How often a key left IN_PROGRESS past its expiry is failed so it can be retried (see
+  # IdempotencySweeper).
+  sweep-interval-ms: 60000
 
 management:
   endpoints:

@@ -1,6 +1,8 @@
 package com.example.ordermgt.assistant.infrastructure.ai;
 
 import com.example.ordermgt.assistant.domain.AiAssistantPort;
+import com.example.ordermgt.assistant.domain.AiInvocationOutcome;
+import com.example.ordermgt.assistant.domain.AiUpstreamException;
 import com.example.ordermgt.assistant.domain.AiUsage;
 import com.example.ordermgt.assistant.domain.AssistantTurn;
 import com.example.ordermgt.assistant.domain.ChatMessage;
@@ -14,9 +16,9 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
-import java.util.function.Supplier;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.ChatClientResponse;
@@ -28,10 +30,13 @@ import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.ai.tool.ToolCallback;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
 @Slf4j
 @Component
+@Profile("!offline")
 public class SpringAiAdapter implements AiAssistantPort {
 
     /** Streaming calls are bounded so a stalled upstream cannot pin a thread forever. */
@@ -51,69 +56,103 @@ public class SpringAiAdapter implements AiAssistantPort {
     private final ChatClient chatClient;
     private final ToolRegistry registry;
     private final GroundingProvider groundingProvider;
+    private final String model;
 
     public SpringAiAdapter(
             ChatClient.Builder builder,
             ToolRegistry registry,
-            GroundingProvider groundingProvider) {
+            GroundingProvider groundingProvider,
+            @Value("${spring.ai.openai.chat.options.model:unknown}") String model) {
         this.registry = registry;
         this.groundingProvider = groundingProvider;
+        this.model = model;
         this.chatClient = builder.build();
     }
 
     @Override
     public AssistantTurn respond(Long customerId, List<ChatMessage> memory) {
-        ChatClientResponse clientResponse =
-                callingUpstream("respond", () -> prompt(memory).call().chatClientResponse());
-        return toTurn(clientResponse == null ? null : clientResponse.chatResponse());
+        long start = System.nanoTime();
+        try {
+            ChatClientResponse clientResponse = prompt(memory).call().chatClientResponse();
+            return toTurn(
+                    clientResponse == null ? null : clientResponse.chatResponse(),
+                    elapsedMs(start));
+        } catch (RuntimeException ex) {
+            throw upstreamFailure("respond", ex, elapsedMs(start));
+        }
     }
 
     @Override
     public AssistantTurn respondStreaming(
             Long customerId, List<ChatMessage> memory, Consumer<String> onTextDelta) {
         AtomicReference<ChatResponse> last = new AtomicReference<>();
+        long start = System.nanoTime();
 
-        callingUpstream(
-                "respondStreaming",
-                () -> {
-                    prompt(memory).stream()
-                            .chatClientResponse()
-                            .doOnNext(
-                                    response -> {
-                                        ChatResponse chunk = response.chatResponse();
-                                        if (chunk == null) {
-                                            return;
-                                        }
-                                        last.set(chunk);
-                                        String delta = textOf(chunk);
-                                        if (!delta.isEmpty()) {
-                                            onTextDelta.accept(delta);
-                                        }
-                                    })
-                            .blockLast(STREAM_TIMEOUT);
-                    return null;
-                });
+        try {
+            prompt(memory).stream()
+                    .chatClientResponse()
+                    .doOnNext(
+                            response -> {
+                                ChatResponse chunk = response.chatResponse();
+                                if (chunk == null) {
+                                    return;
+                                }
+                                last.set(chunk);
+                                String delta = textOf(chunk);
+                                if (!delta.isEmpty()) {
+                                    onTextDelta.accept(delta);
+                                }
+                            })
+                    // Belt and braces: `.timeout` errors out on a stalled stream (no delta for two
+                    // minutes), `.blockLast` bounds the total wall clock even if the upstream keeps
+                    // trickling tokens. Streaming is not retried by the framework.
+                    .timeout(STREAM_TIMEOUT)
+                    .blockLast(STREAM_TIMEOUT);
+        } catch (RuntimeException ex) {
+            throw upstreamFailure("respondStreaming", ex, elapsedMs(start));
+        }
 
         // The final chunk of the stream carries the aggregated tool calls, so the turn is
         // built from it exactly like the non-streaming path -- one extraction, two transports.
-        return toTurn(last.get());
+        return toTurn(last.get(), elapsedMs(start));
     }
 
     /**
      * The model call is the one dependency here that can fail for reasons that are not this
      * service's fault. Translating it keeps a lapsed key or a provider outage from arriving as a
-     * generic 500, which would read as a defect in our own code.
+     * generic 500, and carrying the audit facts (model, latency, outcome) lets the caller still
+     * record the failed call.
      */
-    private <T> T callingUpstream(String operation, Supplier<T> call) {
-        try {
-            return call.get();
-        } catch (BusinessException ex) {
-            throw ex;
-        } catch (RuntimeException ex) {
-            log.warn("upstream AI call failed during {}: {}", operation, ex.getMessage());
-            throw new BusinessException(
-                    ErrorCode.UPSTREAM_AI_ERROR, ErrorCode.UPSTREAM_AI_ERROR.defaultMessage(), ex);
+    private RuntimeException upstreamFailure(String operation, RuntimeException ex, int latencyMs) {
+        if (ex instanceof BusinessException businessException) {
+            return businessException;
         }
+        log.warn(
+                "upstream AI call failed during {} after {}ms: {}",
+                operation,
+                latencyMs,
+                ex.getMessage());
+        return new AiUpstreamException(
+                ErrorCode.UPSTREAM_AI_ERROR,
+                ErrorCode.UPSTREAM_AI_ERROR.defaultMessage(),
+                ex,
+                model,
+                latencyMs,
+                outcomeOf(ex));
+    }
+
+    /** A timeout anywhere in the chain is a timeout; anything else is a plain upstream error. */
+    private static AiInvocationOutcome outcomeOf(Throwable ex) {
+        for (Throwable cause = ex; cause != null; cause = cause.getCause()) {
+            if (cause instanceof TimeoutException) {
+                return AiInvocationOutcome.TIMEOUT;
+            }
+        }
+        return AiInvocationOutcome.ERROR;
+    }
+
+    private static int elapsedMs(long startNanos) {
+        return (int) ((System.nanoTime() - startNanos) / 1_000_000L);
     }
 
     private ChatClient.ChatClientRequestSpec prompt(List<ChatMessage> memory) {
@@ -134,9 +173,9 @@ public class SpringAiAdapter implements AiAssistantPort {
                 .options(options);
     }
 
-    private AssistantTurn toTurn(ChatResponse chatResponse) {
+    private AssistantTurn toTurn(ChatResponse chatResponse, int latencyMs) {
         if (chatResponse == null) {
-            return new AssistantTurn("", List.of(), AiUsage.EMPTY);
+            return new AssistantTurn("", List.of(), AiUsage.EMPTY, model, latencyMs);
         }
         String text = textOf(chatResponse);
 
@@ -152,7 +191,7 @@ public class SpringAiAdapter implements AiAssistantPort {
             }
         }
 
-        return new AssistantTurn(text, calls, usageOf(chatResponse));
+        return new AssistantTurn(text, calls, usageOf(chatResponse), model, latencyMs);
     }
 
     private static String textOf(ChatResponse chatResponse) {

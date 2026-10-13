@@ -27,6 +27,10 @@ assistant:
     # Keep the expiry sweeper out of the way: tests drive expiry explicitly.
     sweep-interval-ms: 3600000
 
+idempotency:
+  # Same for the idempotency sweep: the test calls it directly.
+  sweep-interval-ms: 3600000
+
 logging:
   level:
     com.example.ordermgt: INFO

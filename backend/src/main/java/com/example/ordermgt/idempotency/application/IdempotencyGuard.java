@@ -33,8 +33,8 @@ import org.springframework.stereotype.Component;
  * <p>Deliberately NOT @Transactional: the guarded action may contain an AI call, and no AI call may
  * hold a database transaction open (ADR-0002). Stated plainly, the consequence is that a crash
  * between the action committing and the record being marked COMPLETED leaves the key IN_PROGRESS,
- * and retries are refused until it expires. Sweeping expired IN_PROGRESS records is the fix and is
- * out of scope here.
+ * and retries are refused until the key expires. {@code IdempotencySweeper} then fails those stale
+ * keys, which reopens them for a retry.
  */
 @Slf4j
 @Component

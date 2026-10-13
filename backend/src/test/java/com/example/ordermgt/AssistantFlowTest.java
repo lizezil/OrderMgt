@@ -6,18 +6,25 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.example.ordermgt.assistant.application.ActionConfirmationService;
 import com.example.ordermgt.assistant.application.ActionResolution;
 import com.example.ordermgt.assistant.application.AssistantResult;
 import com.example.ordermgt.assistant.application.AssistantService;
 import com.example.ordermgt.assistant.domain.AiAssistantPort;
-import com.example.ordermgt.assistant.domain.AiUsage;
 import com.example.ordermgt.assistant.domain.AssistantTurn;
 import com.example.ordermgt.assistant.domain.ChatMessage;
-import com.example.ordermgt.assistant.domain.ProposedToolCall;
+import com.example.ordermgt.assistant.infrastructure.ai.MockAiAdapter;
+import com.example.ordermgt.assistant.infrastructure.persist.AiInvocationMapper;
+import com.example.ordermgt.assistant.infrastructure.persist.AiInvocationPO;
+import com.example.ordermgt.idempotency.domain.IdempotencyRecord;
+import com.example.ordermgt.idempotency.domain.IdempotencyRepository;
+import com.example.ordermgt.idempotency.domain.IdempotencyStatus;
+import com.example.ordermgt.idempotency.infrastructure.schedule.IdempotencySweeper;
 import com.example.ordermgt.order.application.OrderService;
 import com.example.ordermgt.shared.api.ErrorCode;
 import com.example.ordermgt.shared.error.BusinessException;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -55,6 +62,12 @@ class AssistantFlowTest {
 
         static final AtomicInteger INVOCATIONS = new AtomicInteger();
 
+        /**
+         * The offline adapter is the stub: the tests exercise the same keyword-driven fake a
+         * key-less demo uses, wrapped only to count model calls (the retry test needs that).
+         */
+        static final AiAssistantPort DELEGATE = new MockAiAdapter();
+
         @Bean
         @Primary
         AiAssistantPort stubAiAssistantPort() {
@@ -63,29 +76,14 @@ class AssistantFlowTest {
                 @Override
                 public AssistantTurn respond(Long customerId, List<ChatMessage> memory) {
                     INVOCATIONS.incrementAndGet();
-                    String latest =
-                            memory.isEmpty()
-                                    ? ""
-                                    : String.valueOf(memory.get(memory.size() - 1).content());
-                    if (latest.contains("下单")) {
-                        return new AssistantTurn(
-                                "我准备好了一个下单操作，请你确认。",
-                                List.of(
-                                        new ProposedToolCall(
-                                                "createOrder",
-                                                "{\"lines\":[{\"sku\":\"GIZMO-03\",\"quantity\":3}]}",
-                                                true)),
-                                AiUsage.EMPTY);
-                    }
-                    return new AssistantTurn("收到。", List.of(), AiUsage.EMPTY);
+                    return DELEGATE.respond(customerId, memory);
                 }
 
                 @Override
                 public AssistantTurn respondStreaming(
                         Long customerId, List<ChatMessage> memory, Consumer<String> onTextDelta) {
-                    AssistantTurn turn = respond(customerId, memory);
-                    onTextDelta.accept(turn.text());
-                    return turn;
+                    INVOCATIONS.incrementAndGet();
+                    return DELEGATE.respondStreaming(customerId, memory, onTextDelta);
                 }
             };
         }
@@ -118,6 +116,79 @@ class AssistantFlowTest {
     @Autowired private MockMvc mockMvc;
 
     @Autowired private AiAssistantPort aiAssistantPort;
+
+    @Autowired private AiInvocationMapper aiInvocationMapper;
+
+    @Autowired private IdempotencyRepository idempotencyRepository;
+
+    @Autowired private IdempotencySweeper idempotencySweeper;
+
+    @Test
+    void everyModelCallIsWrittenToTheAuditTable() {
+        Long customer = OWNER + 5;
+        assistantService.chat(customer, null, "帮我下单 3 个 GIZMO-03");
+
+        List<AiInvocationPO> rows =
+                aiInvocationMapper.selectList(
+                        Wrappers.<AiInvocationPO>lambdaQuery()
+                                .eq(AiInvocationPO::getCustomerId, customer));
+
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0).getOutcome()).isEqualTo("OK");
+        assertThat(rows.get(0).getConversationId()).isNotNull();
+        // The proposal the model asked for lands on the row too: audit shows intent, not just
+        // tokens.
+        assertThat(rows.get(0).getToolCallsJson()).contains("createOrder");
+    }
+
+    @Test
+    void aStaleInProgressKeyIsSweptToFailedButAFreshOneIsLeftAlone() {
+        Long customer = OWNER + 6;
+        Instant now = Instant.now();
+        idempotencyRepository.tryClaim(
+                new IdempotencyRecord(
+                        null,
+                        customer,
+                        "SEND_MESSAGE",
+                        "stale-key",
+                        null,
+                        IdempotencyStatus.IN_PROGRESS,
+                        null,
+                        null,
+                        now.minusSeconds(3600),
+                        null,
+                        now.minusSeconds(60)));
+        idempotencyRepository.tryClaim(
+                new IdempotencyRecord(
+                        null,
+                        customer,
+                        "SEND_MESSAGE",
+                        "fresh-key",
+                        null,
+                        IdempotencyStatus.IN_PROGRESS,
+                        null,
+                        null,
+                        now,
+                        null,
+                        now.plusSeconds(3600)));
+
+        idempotencySweeper.expireStaleInProgress();
+
+        // Past its expiry and still IN_PROGRESS means the process died mid-flight: fail it so the
+        // key can be retried.
+        assertThat(
+                        idempotencyRepository
+                                .find(customer, "SEND_MESSAGE", "stale-key")
+                                .orElseThrow()
+                                .status())
+                .isEqualTo(IdempotencyStatus.FAILED);
+        assertThat(
+                        idempotencyRepository
+                                .find(customer, "SEND_MESSAGE", "fresh-key")
+                                .orElseThrow()
+                                .status())
+                .isEqualTo(IdempotencyStatus.IN_PROGRESS);
+    }
 
     @Test
     void theStreamingPathProducesTheSameTurnAsTheBlockingOne() {

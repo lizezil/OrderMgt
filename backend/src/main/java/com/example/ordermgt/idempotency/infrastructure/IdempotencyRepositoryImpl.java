@@ -71,4 +71,16 @@ public class IdempotencyRepositoryImpl implements IdempotencyRepository {
         patch.setCompletedAt(null);
         mapper.updateById(patch);
     }
+
+    @Override
+    public int expireStaleInProgress(Instant now) {
+        IdempotencyRecordPO patch = new IdempotencyRecordPO();
+        patch.setStatus(IdempotencyStatus.FAILED.name());
+        patch.setCompletedAt(now);
+        return mapper.update(
+                patch,
+                Wrappers.<IdempotencyRecordPO>lambdaUpdate()
+                        .eq(IdempotencyRecordPO::getStatus, IdempotencyStatus.IN_PROGRESS.name())
+                        .le(IdempotencyRecordPO::getExpiresAt, now));
+    }
 }

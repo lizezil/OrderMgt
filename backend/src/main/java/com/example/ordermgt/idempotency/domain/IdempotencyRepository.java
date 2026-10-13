@@ -1,5 +1,6 @@
 package com.example.ordermgt.idempotency.domain;
 
+import java.time.Instant;
 import java.util.Optional;
 
 public interface IdempotencyRepository {
@@ -18,4 +19,13 @@ public interface IdempotencyRepository {
     void markFailed(Long id);
 
     void reclaim(Long id);
+
+    /**
+     * Fails every key still IN_PROGRESS whose {@code expires_at} has passed. A key left IN_PROGRESS
+     * this long means the process died between running the action and marking it done; failing it
+     * reopens the key for a retry (see {@code IdempotencySweeper}).
+     *
+     * @return how many rows changed
+     */
+    int expireStaleInProgress(Instant now);
 }

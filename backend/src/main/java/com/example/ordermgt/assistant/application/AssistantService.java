@@ -1,6 +1,10 @@
 package com.example.ordermgt.assistant.application;
 
 import com.example.ordermgt.assistant.domain.AiAssistantPort;
+import com.example.ordermgt.assistant.domain.AiInvocation;
+import com.example.ordermgt.assistant.domain.AiInvocationOutcome;
+import com.example.ordermgt.assistant.domain.AiInvocationRepository;
+import com.example.ordermgt.assistant.domain.AiUpstreamException;
 import com.example.ordermgt.assistant.domain.AssistantTurn;
 import com.example.ordermgt.assistant.domain.ChatMessage;
 import com.example.ordermgt.assistant.domain.Conversation;
@@ -13,9 +17,12 @@ import com.example.ordermgt.assistant.domain.ToolResult;
 import com.example.ordermgt.assistant.domain.ToolSpec;
 import com.example.ordermgt.shared.api.ErrorCode;
 import com.example.ordermgt.shared.error.BusinessException;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -30,7 +37,12 @@ import org.springframework.stereotype.Service;
  *
  * <p>Deliberately NOT @Transactional: an AI call inside a transaction would hold a database
  * connection across a multi-second network call.
+ *
+ * <p>It is also where every model call is written to {@code ai_invocations} -- successes here, and
+ * failures through {@link #recordFailure} -- because this is the layer that knows the conversation
+ * the call belonged to while the adapter knows the model and the latency.
  */
+@Slf4j
 @Service
 public class AssistantService {
 
@@ -39,6 +51,8 @@ public class AssistantService {
     private final ConversationService conversationService;
     private final PendingActionRepository pendingActionRepository;
     private final ActionCardFactory actionCardFactory;
+    private final AiInvocationRepository aiInvocationRepository;
+    private final ObjectMapper objectMapper;
     private final int memoryWindow;
     private final Duration actionTtl;
 
@@ -48,6 +62,8 @@ public class AssistantService {
             ConversationService conversationService,
             PendingActionRepository pendingActionRepository,
             ActionCardFactory actionCardFactory,
+            AiInvocationRepository aiInvocationRepository,
+            ObjectMapper objectMapper,
             @Value("${assistant.memory.window:20}") int memoryWindow,
             @Value("${assistant.action.ttl-minutes:15}") long actionTtlMinutes) {
         this.aiAssistantPort = aiAssistantPort;
@@ -55,6 +71,8 @@ public class AssistantService {
         this.conversationService = conversationService;
         this.pendingActionRepository = pendingActionRepository;
         this.actionCardFactory = actionCardFactory;
+        this.aiInvocationRepository = aiInvocationRepository;
+        this.objectMapper = objectMapper;
         this.memoryWindow = memoryWindow;
         this.actionTtl = Duration.ofMinutes(actionTtlMinutes);
     }
@@ -64,7 +82,13 @@ public class AssistantService {
      */
     public AssistantResult chat(Long customerId, Long conversationId, String message) {
         TurnContext context = prepare(customerId, conversationId, message);
-        AssistantTurn turn = aiAssistantPort.respond(customerId, context.memory());
+        AssistantTurn turn;
+        try {
+            turn = aiAssistantPort.respond(customerId, context.memory());
+        } catch (RuntimeException ex) {
+            recordFailure(context, ex);
+            throw ex;
+        }
         return complete(context, turn);
     }
 
@@ -88,7 +112,7 @@ public class AssistantService {
 
     /**
      * The part that happens after: classify the tool calls, execute the readonly ones, turn the
-     * mutating ones into confirmable cards, and persist the turn.
+     * mutating ones into confirmable cards, persist the turn, and log the model call.
      */
     public AssistantResult complete(TurnContext context, AssistantTurn turn) {
         Conversation conversation = context.conversation();
@@ -129,7 +153,39 @@ public class AssistantService {
             cards.add(card);
         }
 
-        return new AssistantResult(conversation.getId(), reply, executed, cards, turn.usage());
+        recordSuccess(conversation, turn);
+
+        return new AssistantResult(
+                conversation.getId(),
+                reply,
+                executed,
+                cards,
+                turn.usage(),
+                turn.model(),
+                turn.latencyMs());
+    }
+
+    /**
+     * Records a model call that never produced a turn. Called from the blocking path's catch and
+     * from the streaming endpoint, so a failed call is auditable on both transports.
+     */
+    public void recordFailure(TurnContext context, Exception ex) {
+        String model = ex instanceof AiUpstreamException upstream ? upstream.model() : null;
+        Integer latencyMs =
+                ex instanceof AiUpstreamException upstream ? upstream.latencyMs() : null;
+        AiInvocationOutcome outcome =
+                ex instanceof AiUpstreamException upstream
+                        ? upstream.outcome()
+                        : AiInvocationOutcome.ERROR;
+        auditAccount(
+                context == null ? null : context.conversation(),
+                model,
+                null,
+                null,
+                latencyMs,
+                outcome,
+                ex.getMessage(),
+                null);
     }
 
     /** A prepared turn: the conversation is known and the model has not been called yet. */
@@ -170,5 +226,72 @@ public class AssistantService {
             sb.append('[').append(tool.name()).append("] ").append(tool.resultJson());
         }
         return sb.toString();
+    }
+
+    private void recordSuccess(Conversation conversation, AssistantTurn turn) {
+        auditAccount(
+                conversation,
+                turn.model(),
+                turn.usage().promptTokens(),
+                turn.usage().completionTokens(),
+                turn.latencyMs(),
+                AiInvocationOutcome.OK,
+                null,
+                toolCallsJson(turn.toolCalls()));
+    }
+
+    /**
+     * Audit is a side channel: if it cannot be written, the turn still stands. It is never allowed
+     * to turn a successful reply into a failed request.
+     */
+    private void auditAccount(
+            Conversation conversation,
+            String model,
+            Integer promptTokens,
+            Integer completionTokens,
+            Integer latencyMs,
+            AiInvocationOutcome outcome,
+            String error,
+            String toolCallsJson) {
+        if (conversation == null) {
+            return;
+        }
+        try {
+            aiInvocationRepository.save(
+                    AiInvocation.record(
+                            conversation.getId(),
+                            conversation.getCustomerId(),
+                            // model is NOT NULL in the table, and a fake turn may not name one:
+                            // an audit row reading "unknown" beats losing the row entirely.
+                            model == null || model.isBlank() ? "unknown" : model,
+                            promptTokens,
+                            completionTokens,
+                            latencyMs,
+                            outcome,
+                            truncate(error),
+                            toolCallsJson));
+        } catch (RuntimeException ex) {
+            log.warn("could not write ai_invocations row: {}", ex.getMessage());
+        }
+    }
+
+    private String toolCallsJson(List<ProposedToolCall> toolCalls) {
+        if (toolCalls == null || toolCalls.isEmpty()) {
+            return null;
+        }
+        try {
+            return objectMapper.writeValueAsString(toolCalls);
+        } catch (JsonProcessingException ex) {
+            log.warn("could not serialize tool calls for audit: {}", ex.getMessage());
+            return null;
+        }
+    }
+
+    /** The error column is VARCHAR(1000); a long provider message must not fail the insert. */
+    private static String truncate(String value) {
+        if (value == null) {
+            return null;
+        }
+        return value.length() <= 1000 ? value : value.substring(0, 1000);
     }
 }

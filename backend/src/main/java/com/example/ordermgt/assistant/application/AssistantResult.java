@@ -8,4 +8,6 @@ public record AssistantResult(
         String reply,
         List<ExecutedTool> executed,
         List<ActionCard> actions,
-        AiUsage usage) {}
+        AiUsage usage,
+        String model,
+        int latencyMs) {}

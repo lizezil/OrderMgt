@@ -122,9 +122,9 @@ public class ConversationController {
 
     private void streamTurn(
             SseEmitter emitter, Long customerId, Long conversationId, String message) {
+        AssistantService.TurnContext context = null;
         try {
-            AssistantService.TurnContext context =
-                    assistantService.prepare(customerId, conversationId, message);
+            context = assistantService.prepare(customerId, conversationId, message);
 
             AssistantTurn turn =
                     aiAssistantPort.respondStreaming(
@@ -134,6 +134,9 @@ public class ConversationController {
             emit(emitter, "done", objectMapper.writeValueAsString(mapper.toResponse(result)));
             emitter.complete();
         } catch (Exception ex) {
+            // A stream that dies leaves no turn, so the audit row is written here rather than in
+            // complete(). The blocking path does the same in AssistantService.chat.
+            assistantService.recordFailure(context, ex);
             log.warn(
                     "streaming turn failed for conversation {}: {}",
                     conversationId,
