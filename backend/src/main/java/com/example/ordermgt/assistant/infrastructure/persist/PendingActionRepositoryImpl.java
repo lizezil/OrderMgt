@@ -8,6 +8,8 @@ import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Repository;
 
@@ -61,6 +63,22 @@ public class PendingActionRepositoryImpl implements PendingActionRepository {
                 .stream()
                 .map(persistenceMapper::toDomain)
                 .toList();
+    }
+
+    @Override
+    public Set<Long> livePendingConversationIds(Collection<Long> conversationIds, Instant now) {
+        if (conversationIds == null || conversationIds.isEmpty()) {
+            return Set.of();
+        }
+        return mapper
+                .selectList(
+                        Wrappers.<PendingActionPO>lambdaQuery()
+                                .in(PendingActionPO::getConversationId, conversationIds)
+                                .eq(PendingActionPO::getStatus, PendingActionStatus.PENDING.name())
+                                .gt(PendingActionPO::getExpiresAt, now))
+                .stream()
+                .map(PendingActionPO::getConversationId)
+                .collect(Collectors.toSet());
     }
 
     @Override

@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.example.ordermgt.assistant.domain.AiInvocation;
@@ -12,11 +13,14 @@ import com.example.ordermgt.assistant.domain.AiInvocationRepository;
 import com.example.ordermgt.assistant.domain.ChatMessage;
 import com.example.ordermgt.assistant.domain.Conversation;
 import com.example.ordermgt.assistant.domain.ConversationRepository;
+import com.example.ordermgt.assistant.domain.ConversationState;
+import com.example.ordermgt.assistant.domain.ConversationStatus;
 import com.example.ordermgt.assistant.domain.Message;
 import com.example.ordermgt.assistant.domain.PendingAction;
 import com.example.ordermgt.assistant.domain.PendingActionRepository;
 import com.example.ordermgt.assistant.domain.PendingActionStatus;
 import com.example.ordermgt.assistant.domain.Role;
+import com.example.ordermgt.assistant.domain.RunRepository;
 import com.example.ordermgt.assistant.domain.ToolRegistry;
 import com.example.ordermgt.shared.api.ErrorCode;
 import com.example.ordermgt.shared.error.BusinessException;
@@ -24,6 +28,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -46,6 +51,8 @@ class ConversationServiceTest {
 
     @Mock private PendingActionRepository pendingActionRepository;
 
+    @Mock private RunRepository runRepository;
+
     @Mock private AiInvocationRepository aiInvocationRepository;
 
     private ConversationService service;
@@ -56,8 +63,40 @@ class ConversationServiceTest {
                 new ConversationService(
                         conversationRepository,
                         pendingActionRepository,
+                        runRepository,
                         aiInvocationRepository,
                         new ActionCardFactory(new ToolRegistry(List.of()), new ObjectMapper()));
+    }
+
+    /** 侧栏三值全靠派生：有活 Run 就 RUNNING（压过待确认），否则有未过期卡片就 WAITING_APPROVAL，否则 IDLE。 */
+    @Test
+    void sidebarStateIsDerivedFromRunsThenLiveCardsThenIdle() {
+        when(conversationRepository.findByCustomer(OWNER))
+                .thenReturn(
+                        List.of(
+                                conversation(OWNER, 5L),
+                                conversation(OWNER, 6L),
+                                conversation(OWNER, 7L)));
+        when(runRepository.runningConversationIds(any())).thenReturn(Set.of(5L));
+        when(pendingActionRepository.livePendingConversationIds(any(), any()))
+                .thenReturn(Set.of(5L, 6L));
+
+        List<ConversationView> views = service.listFor(OWNER);
+
+        assertThat(views)
+                .extracting(ConversationView::state)
+                .containsExactly(
+                        ConversationState.RUNNING,
+                        ConversationState.WAITING_APPROVAL,
+                        ConversationState.IDLE);
+    }
+
+    @Test
+    void anEmptySidebarCostsNoStateQueries() {
+        when(conversationRepository.findByCustomer(OWNER)).thenReturn(List.of());
+
+        assertThat(service.listFor(OWNER)).isEmpty();
+        verifyNoInteractions(runRepository, pendingActionRepository);
     }
 
     @Test
@@ -174,13 +213,19 @@ class ConversationServiceTest {
     }
 
     private static Conversation conversation(Long customerId) {
+        return conversation(customerId, CONVERSATION);
+    }
+
+    private static Conversation conversation(Long customerId, Long id) {
         Instant now = Instant.now();
-        return Conversation.rehydrate(CONVERSATION, customerId, "title", now, now, now);
+        return Conversation.rehydrate(
+                id, customerId, "title", ConversationStatus.ACTIVE, now, now, now);
     }
 
     private static Conversation untitledConversation(Long customerId) {
         Instant now = Instant.now();
-        return Conversation.rehydrate(CONVERSATION, customerId, null, now, now, now);
+        return Conversation.rehydrate(
+                CONVERSATION, customerId, null, ConversationStatus.ACTIVE, now, now, now);
     }
 
     private static PendingAction pendingAction(PendingActionStatus status) {

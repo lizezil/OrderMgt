@@ -1,10 +1,10 @@
 package com.example.ordermgt.assistant.api;
 
 import com.example.ordermgt.assistant.application.AssistantResult;
+import com.example.ordermgt.assistant.application.ConversationView;
 import com.example.ordermgt.assistant.application.ExecutedTool;
 import com.example.ordermgt.assistant.application.MessageView;
 import com.example.ordermgt.assistant.domain.AiInvocation;
-import com.example.ordermgt.assistant.domain.Conversation;
 import org.mapstruct.Mapper;
 import org.mapstruct.Mapping;
 import org.mapstruct.ReportingPolicy;
@@ -16,7 +16,19 @@ import org.mapstruct.ReportingPolicy;
 @Mapper(componentModel = "spring", unmappedTargetPolicy = ReportingPolicy.IGNORE)
 public interface AssistantApiMapper {
 
-    ConversationResponse toResponse(Conversation conversation);
+    /**
+     * The conversation plus its derived state. The stored lifecycle comes off the conversation, the
+     * runtime state off the view; both travel as names (MapStruct maps the enums to {@code
+     * name()}).
+     */
+    @Mapping(target = "id", source = "conversation.id")
+    @Mapping(target = "title", source = "conversation.title")
+    @Mapping(target = "createdAt", source = "conversation.createdAt")
+    @Mapping(target = "updatedAt", source = "conversation.updatedAt")
+    @Mapping(target = "lastMessageAt", source = "conversation.lastMessageAt")
+    @Mapping(target = "status", source = "conversation.status")
+    @Mapping(target = "state", source = "state")
+    ConversationResponse toResponse(ConversationView view);
 
     @Mapping(target = "id", source = "message.id")
     @Mapping(target = "role", source = "message.role")

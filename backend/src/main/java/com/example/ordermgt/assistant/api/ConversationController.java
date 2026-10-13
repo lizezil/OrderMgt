@@ -3,8 +3,8 @@ package com.example.ordermgt.assistant.api;
 import com.example.ordermgt.assistant.application.AssistantResult;
 import com.example.ordermgt.assistant.application.AssistantService;
 import com.example.ordermgt.assistant.application.ConversationService;
+import com.example.ordermgt.assistant.application.ConversationView;
 import com.example.ordermgt.assistant.domain.AiAssistantPort;
-import com.example.ordermgt.assistant.domain.AssistantTurn;
 import com.example.ordermgt.idempotency.application.IdempotencyGuard;
 import com.example.ordermgt.shared.api.ApiResponse;
 import com.example.ordermgt.shared.api.ErrorCode;
@@ -57,12 +57,13 @@ public class ConversationController {
     @Qualifier("assistantStreamExecutor")
     private final Executor streamExecutor;
 
-    /** 新对话. */
+    /** 新对话. A conversation that just started has no Run and no card, so its state is IDLE. */
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public ApiResponse<ConversationResponse> start(
             @RequestHeader("X-Customer-Id") Long customerId) {
-        return ApiResponse.ok(mapper.toResponse(conversationService.start(customerId)));
+        return ApiResponse.ok(
+                mapper.toResponse(ConversationView.idle(conversationService.start(customerId))));
     }
 
     @GetMapping
@@ -157,9 +158,10 @@ public class ConversationController {
      * <p>The contract in one line: a dead connection is a delivery failure, never a turn failure.
      * The customer message was committed by {@code prepare} before the model was called, so a
      * mid-stream disconnect that also aborted the reply would leave every closed tab with a
-     * question and no answer in the history. Instead: stop sending, let the model finish, persist
-     * through {@code complete}, and record success -- "nobody was listening" is a log line, not an
-     * audit failure. Genuine failures still take the catch path and owe their audit row, as before.
+     * question and no answer in the history. Instead: stop sending, let the model finish, and close
+     * the Run -- {@code executeTurn} owns the persistence, the audit row and the Run's terminal
+     * state, on this transport exactly as on the blocking one. "Nobody was listening" is a log
+     * line, not an audit failure.
      */
     void streamTurn(
             SseEmitter emitter,
@@ -167,18 +169,18 @@ public class ConversationController {
             Long customerId,
             Long conversationId,
             String message) {
-        AssistantService.TurnContext context = null;
-        AssistantTurn turn = null;
         try {
-            context = assistantService.prepare(customerId, conversationId, message);
+            AssistantService.TurnContext context =
+                    assistantService.prepare(customerId, conversationId, message);
 
-            turn =
-                    aiAssistantPort.respondStreaming(
-                            customerId,
-                            context.memory(),
-                            delta -> deliver(emitter, clientGone, "token", delta));
-
-            AssistantResult result = assistantService.complete(context, turn);
+            AssistantResult result =
+                    assistantService.executeTurn(
+                            context,
+                            () ->
+                                    aiAssistantPort.respondStreaming(
+                                            customerId,
+                                            context.memory(),
+                                            delta -> deliver(emitter, clientGone, "token", delta)));
             deliver(
                     emitter,
                     clientGone,
@@ -186,11 +188,8 @@ public class ConversationController {
                     objectMapper.writeValueAsString(mapper.toResponse(result)));
             completeQuietly(emitter);
         } catch (Exception ex) {
-            // Any failure on this transport owes an audit row, whether the stream died mid-flight
-            // or the turn could not be completed after it. The blocking path does the same in
-            // AssistantService.chat. Passing the turn (null when the stream died) keeps the
-            // model and latency on rows for calls that did answer.
-            assistantService.recordFailure(context, turn, ex);
+            // The Run, its audit row and (on the blocking path) the rethrow were handled inside
+            // executeTurn; this transport only owes whoever is still listening an `error` event.
             log.warn(
                     "streaming turn failed for conversation {}: {}",
                     conversationId,

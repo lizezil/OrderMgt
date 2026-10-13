@@ -19,6 +19,7 @@ public class Conversation {
     private Long id;
     private final Long customerId;
     private String title;
+    private ConversationStatus status;
     private final Instant createdAt;
     private Instant updatedAt;
     private Instant lastMessageAt;
@@ -28,17 +29,18 @@ public class Conversation {
             throw new IllegalArgumentException("customerId is required");
         }
         Instant now = Instant.now();
-        return new Conversation(null, customerId, null, now, now, now);
+        return new Conversation(null, customerId, null, ConversationStatus.ACTIVE, now, now, now);
     }
 
     public static Conversation rehydrate(
             Long id,
             Long customerId,
             String title,
+            ConversationStatus status,
             Instant createdAt,
             Instant updatedAt,
             Instant lastMessageAt) {
-        return new Conversation(id, customerId, title, createdAt, updatedAt, lastMessageAt);
+        return new Conversation(id, customerId, title, status, createdAt, updatedAt, lastMessageAt);
     }
 
     public void assignId(Long id) {

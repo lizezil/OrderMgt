@@ -5,15 +5,18 @@ import com.example.ordermgt.assistant.domain.AiInvocationRepository;
 import com.example.ordermgt.assistant.domain.ChatMessage;
 import com.example.ordermgt.assistant.domain.Conversation;
 import com.example.ordermgt.assistant.domain.ConversationRepository;
+import com.example.ordermgt.assistant.domain.ConversationState;
 import com.example.ordermgt.assistant.domain.Message;
 import com.example.ordermgt.assistant.domain.PendingAction;
 import com.example.ordermgt.assistant.domain.PendingActionRepository;
+import com.example.ordermgt.assistant.domain.RunRepository;
 import com.example.ordermgt.shared.api.ErrorCode;
 import com.example.ordermgt.shared.error.BusinessException;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -32,6 +35,7 @@ public class ConversationService {
 
     private final ConversationRepository conversationRepository;
     private final PendingActionRepository pendingActionRepository;
+    private final RunRepository runRepository;
     private final AiInvocationRepository aiInvocationRepository;
     private final ActionCardFactory actionCardFactory;
 
@@ -39,8 +43,30 @@ public class ConversationService {
         return conversationRepository.save(Conversation.start(customerId));
     }
 
-    public List<Conversation> listFor(Long customerId) {
-        return conversationRepository.findByCustomer(customerId);
+    /**
+     * The sidebar read: every conversation of the customer, each with the state derived for it on
+     * this read (ADR-0011). The whole page costs two extra queries -- running Runs and live cards
+     * -- never one per row.
+     */
+    @Transactional(readOnly = true)
+    public List<ConversationView> listFor(Long customerId) {
+        List<Conversation> conversations = conversationRepository.findByCustomer(customerId);
+        if (conversations.isEmpty()) {
+            return List.of();
+        }
+        List<Long> ids = conversations.stream().map(Conversation::getId).toList();
+        Set<Long> running = runRepository.runningConversationIds(ids);
+        Set<Long> livePending =
+                pendingActionRepository.livePendingConversationIds(ids, Instant.now());
+        return conversations.stream()
+                .map(
+                        conversation ->
+                                new ConversationView(
+                                        conversation,
+                                        ConversationState.derive(
+                                                running.contains(conversation.getId()),
+                                                livePending.contains(conversation.getId()))))
+                .toList();
     }
 
     @Transactional(readOnly = true)

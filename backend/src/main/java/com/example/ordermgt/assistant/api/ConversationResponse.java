@@ -2,5 +2,15 @@ package com.example.ordermgt.assistant.api;
 
 import java.time.Instant;
 
+/**
+ * A conversation on the wire. {@code status} is the stored lifecycle (ACTIVE / ARCHIVED); {@code
+ * state} is derived on every read (IDLE / RUNNING / WAITING_APPROVAL) -- see ADR-0011.
+ */
 public record ConversationResponse(
-        Long id, String title, Instant createdAt, Instant updatedAt, Instant lastMessageAt) {}
+        Long id,
+        String title,
+        Instant createdAt,
+        Instant updatedAt,
+        Instant lastMessageAt,
+        String status,
+        String state) {}

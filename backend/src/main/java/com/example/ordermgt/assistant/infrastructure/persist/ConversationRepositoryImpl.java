@@ -22,8 +22,6 @@ public class ConversationRepositoryImpl implements ConversationRepository {
     @Override
     public Conversation save(Conversation conversation) {
         ConversationPO po = persistenceMapper.toPo(conversation);
-        po.setStatus("ACTIVE");
-
         if (conversation.getId() == null) {
             conversationMapper.insert(po);
             conversation.assignId(po.getId());

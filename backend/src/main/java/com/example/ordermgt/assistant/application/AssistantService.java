@@ -12,6 +12,9 @@ import com.example.ordermgt.assistant.domain.Message;
 import com.example.ordermgt.assistant.domain.PendingAction;
 import com.example.ordermgt.assistant.domain.PendingActionRepository;
 import com.example.ordermgt.assistant.domain.ProposedToolCall;
+import com.example.ordermgt.assistant.domain.Run;
+import com.example.ordermgt.assistant.domain.RunRepository;
+import com.example.ordermgt.assistant.domain.RunStatus;
 import com.example.ordermgt.assistant.domain.ToolRegistry;
 import com.example.ordermgt.assistant.domain.ToolResult;
 import com.example.ordermgt.assistant.domain.ToolSpec;
@@ -20,8 +23,10 @@ import com.example.ordermgt.shared.error.BusinessException;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -52,6 +57,7 @@ public class AssistantService {
     private final ToolRegistry toolRegistry;
     private final ConversationService conversationService;
     private final PendingActionRepository pendingActionRepository;
+    private final RunRepository runRepository;
     private final ActionCardFactory actionCardFactory;
     private final AiInvocationRepository aiInvocationRepository;
     private final ObjectMapper objectMapper;
@@ -68,22 +74,44 @@ public class AssistantService {
      */
     public AssistantResult chat(Long customerId, Long conversationId, String message) {
         TurnContext context = prepare(customerId, conversationId, message);
-        AssistantTurn turn;
+        return executeTurn(context, () -> aiAssistantPort.respond(customerId, context.memory()));
+    }
+
+    /**
+     * One Run, shared by both transports: open a RUNNING row, call the model, persist the turn,
+     * then close the Run COMPLETED -- or FAILED with the reason if anything threw (ADR-0011). The
+     * model call is the only thing that differs between the blocking and streaming entries, so it
+     * is the parameter.
+     *
+     * <p>The Run opens once the conversation exists, which is what {@code prepare} settled. That is
+     * also why an interrupted Run reads as a question with no answer: the customer message was
+     * committed there, before the call this row now guards.
+     */
+    public AssistantResult executeTurn(TurnContext context, Supplier<AssistantTurn> modelCall) {
+        Run run = runRepository.save(Run.start(context.conversation().getId()));
+        AssistantTurn turn = null;
+        AssistantResult result;
         try {
-            turn = aiAssistantPort.respond(customerId, context.memory());
+            turn = modelCall.get();
+            result = complete(context, turn);
         } catch (RuntimeException ex) {
-            recordFailure(context, null, ex);
-            throw ex;
-        }
-        try {
-            return complete(context, turn);
-        } catch (RuntimeException ex) {
-            // The model call already happened and was billed, so a turn that cannot be completed
-            // (unregistered tool, invalid arguments, a readonly handler blowing up) still owes an
-            // audit row -- with the turn's model and latency, which the exception does not carry.
+            // The model call may never have happened (null turn) or may have answered and been
+            // billed before the turn could not be completed -- recordFailure tells the two apart.
             recordFailure(context, turn, ex);
+            runRepository.save(run.finish(RunStatus.FAILED, reasonOf(ex), Instant.now()));
             throw ex;
         }
+        // Closing the Run sits OUTSIDE the catch on purpose: a failure to write that row must not
+        // be mistaken for a failed turn, which would record an ERROR audit row for a reply that
+        // did land. If this throws, the Run is left RUNNING for the startup reconciliation.
+        runRepository.save(run.finish(RunStatus.COMPLETED, null, Instant.now()));
+        return result;
+    }
+
+    /** A failure with no message still owes the Run a reason: the exception's own name. */
+    private static String reasonOf(Throwable ex) {
+        String message = ex.getMessage();
+        return message == null || message.isBlank() ? ex.getClass().getSimpleName() : message;
     }
 
     /**
@@ -174,16 +202,26 @@ public class AssistantService {
         }
         AiUpstreamException upstream = ex instanceof AiUpstreamException u ? u : null;
         Conversation conversation = context.conversation();
+        // Boxed through locals on purpose: the model call may have failed before it produced a
+        // turn, and a ternary that mixes an `int` branch with `null` makes the whole expression
+        // `int`-typed -- the null then unboxes into an NPE thrown while already handling a failure,
+        // which would both mask the real cause and skip closing the Run.
+        Integer promptTokens = turn == null ? null : turn.usage().promptTokens();
+        Integer completionTokens = turn == null ? null : turn.usage().completionTokens();
+        Integer latencyMs = null;
+        if (upstream != null) {
+            latencyMs = upstream.latencyMs();
+        } else if (turn != null) {
+            latencyMs = turn.latencyMs();
+        }
         recordInvocation(
                 AiInvocation.record(
                         conversation.getId(),
                         conversation.getCustomerId(),
                         upstream != null ? upstream.model() : turn == null ? null : turn.model(),
-                        turn == null ? null : turn.usage().promptTokens(),
-                        turn == null ? null : turn.usage().completionTokens(),
-                        upstream != null
-                                ? upstream.latencyMs()
-                                : turn == null ? null : turn.latencyMs(),
+                        promptTokens,
+                        completionTokens,
+                        latencyMs,
                         upstream != null ? upstream.outcome() : AiInvocationOutcome.ERROR,
                         ex.getMessage(),
                         null));

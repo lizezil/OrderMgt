@@ -6,7 +6,9 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -19,10 +21,15 @@ import com.example.ordermgt.assistant.domain.AiUsage;
 import com.example.ordermgt.assistant.domain.AssistantTurn;
 import com.example.ordermgt.assistant.domain.ChatMessage;
 import com.example.ordermgt.assistant.domain.Conversation;
+import com.example.ordermgt.assistant.domain.ConversationStatus;
 import com.example.ordermgt.assistant.domain.Message;
 import com.example.ordermgt.assistant.domain.PendingAction;
 import com.example.ordermgt.assistant.domain.PendingActionRepository;
 import com.example.ordermgt.assistant.domain.ProposedToolCall;
+import com.example.ordermgt.assistant.domain.Role;
+import com.example.ordermgt.assistant.domain.Run;
+import com.example.ordermgt.assistant.domain.RunRepository;
+import com.example.ordermgt.assistant.domain.RunStatus;
 import com.example.ordermgt.assistant.domain.ToolRegistry;
 import com.example.ordermgt.assistant.infrastructure.ai.tools.OrderToolDefinitions;
 import com.example.ordermgt.order.application.OrderService;
@@ -57,6 +64,8 @@ class AssistantServiceTest {
 
     @Mock private PendingActionRepository pendingActionRepository;
 
+    @Mock private RunRepository runRepository;
+
     @Mock private AiInvocationRepository aiInvocationRepository;
 
     @Mock private OrderService orderService;
@@ -75,11 +84,18 @@ class AssistantServiceTest {
                         registry,
                         conversationService,
                         pendingActionRepository,
+                        runRepository,
                         new ActionCardFactory(registry, objectMapper),
                         aiInvocationRepository,
                         objectMapper,
                         MEMORY_WINDOW,
                         15);
+        // Run rows are the seam under test, not the thing under test in most cases: echo back what
+        // is saved so executeTurn can finish the run it opened. lenient() because the tests that
+        // only exercise complete() never reach it.
+        lenient()
+                .when(runRepository.save(any()))
+                .thenAnswer(invocation -> invocation.getArgument(0));
     }
 
     @Test
@@ -227,6 +243,110 @@ class AssistantServiceTest {
         assertThat(result.reply()).isEqualTo("hello");
     }
 
+    /** 两个发送入口共用的一条 seam：一次回合开一个 Run，成功收 COMPLETED。 */
+    @Test
+    void aTurnOpensARunningRunAndClosesItCompleted() {
+        ArgumentCaptor<Run> runs = ArgumentCaptor.forClass(Run.class);
+
+        service.executeTurn(
+                context(),
+                () -> new AssistantTurn("hello", List.of(), AiUsage.EMPTY, "qwen-max", 5));
+
+        verify(runRepository, times(2)).save(runs.capture());
+        assertThat(runs.getAllValues().get(0).status()).isEqualTo(RunStatus.RUNNING);
+        assertThat(runs.getAllValues().get(0).endedAt()).isNull();
+        assertThat(runs.getAllValues().get(0).conversationId()).isEqualTo(CONVERSATION);
+        assertThat(runs.getAllValues().get(1).status()).isEqualTo(RunStatus.COMPLETED);
+        assertThat(runs.getAllValues().get(1).endedAt()).isNotNull();
+    }
+
+    /** 模型失败：Run 收 FAILED 并带上原因，审计照记——有问无答的那一行由此可查。 */
+    @Test
+    void aFailedModelCallClosesTheRunFailedWithTheReason() {
+        RuntimeException boom = new IllegalStateException("上游模型超时");
+        ArgumentCaptor<Run> runs = ArgumentCaptor.forClass(Run.class);
+
+        assertThatThrownBy(
+                        () ->
+                                service.executeTurn(
+                                        context(),
+                                        () -> {
+                                            throw boom;
+                                        }))
+                .isSameAs(boom);
+
+        verify(aiInvocationRepository).save(any());
+        verify(runRepository, times(2)).save(runs.capture());
+        assertThat(runs.getAllValues().get(1).status()).isEqualTo(RunStatus.FAILED);
+        assertThat(runs.getAllValues().get(1).error()).isEqualTo("上游模型超时");
+        assertThat(runs.getAllValues().get(1).endedAt()).isNotNull();
+    }
+
+    /** 模型答了但回合收不了尾（白名单外工具）：Run 一样收 FAILED，原因落在行上。 */
+    @Test
+    void aCompletionFailureStillClosesTheRunFailed() {
+        AssistantTurn answered =
+                new AssistantTurn(
+                        "",
+                        List.of(new ProposedToolCall("dropDatabase", "{}", true)),
+                        new AiUsage(11, 22),
+                        "qwen-max",
+                        4242);
+        ArgumentCaptor<Run> runs = ArgumentCaptor.forClass(Run.class);
+
+        assertThatThrownBy(() -> service.executeTurn(context(), () -> answered))
+                .isInstanceOf(BusinessException.class);
+
+        verify(runRepository, times(2)).save(runs.capture());
+        assertThat(runs.getAllValues().get(1).status()).isEqualTo(RunStatus.FAILED);
+        assertThat(runs.getAllValues().get(1).error()).contains("dropDatabase");
+    }
+
+    /** 失败没有 message 时，Run 也要有一个理由——退回异常自己的名字，绝不留空。 */
+    @Test
+    void aFailureWithoutAMessageStillGivesTheRunAReason() {
+        RuntimeException silent = new IllegalStateException();
+        ArgumentCaptor<Run> runs = ArgumentCaptor.forClass(Run.class);
+
+        assertThatThrownBy(
+                        () ->
+                                service.executeTurn(
+                                        context(),
+                                        () -> {
+                                            throw silent;
+                                        }))
+                .isSameAs(silent);
+
+        verify(runRepository, times(2)).save(runs.capture());
+        assertThat(runs.getAllValues().get(1).error()).isEqualTo("IllegalStateException");
+    }
+
+    /** 收尾写 Run 失败不等于回合失败：已经落库的回复不能被补记一条 ERROR 审计。 */
+    @Test
+    void aFailureToCloseTheRunIsNotAuditedAsATurnFailure() {
+        when(runRepository.save(any()))
+                .thenAnswer(invocation -> invocation.getArgument(0)) // the RUNNING insert succeeds
+                .thenThrow(new RuntimeException("runs table down")); // closing it does not
+
+        assertThatThrownBy(
+                        () ->
+                                service.executeTurn(
+                                        context(),
+                                        () ->
+                                                new AssistantTurn(
+                                                        "hello",
+                                                        List.of(),
+                                                        AiUsage.EMPTY,
+                                                        "qwen-max",
+                                                        5)))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("runs table down");
+
+        ArgumentCaptor<AiInvocation> audits = ArgumentCaptor.forClass(AiInvocation.class);
+        verify(aiInvocationRepository).save(audits.capture());
+        assertThat(audits.getValue().outcome()).isEqualTo(AiInvocationOutcome.OK);
+    }
+
     @Test
     void modelCallFailureIsRethrownAndRecordedInAudit() {
         when(conversationService.start(CUSTOMER)).thenReturn(conversation());
@@ -299,6 +419,41 @@ class AssistantServiceTest {
         verify(conversationService).memory(CONVERSATION, MEMORY_WINDOW);
     }
 
+    /** 记忆的边界是会话本身："新对话"意味着模型看不到旧会话说过什么。两次对话各取各的记忆，绝不串味。 */
+    @Test
+    void memoryHandedToTheModelNeverCrossesConversations() {
+        Instant now = Instant.now();
+        Conversation first =
+                Conversation.rehydrate(
+                        5L, CUSTOMER, "first", ConversationStatus.ACTIVE, now, now, now);
+        Conversation second =
+                Conversation.rehydrate(
+                        6L, CUSTOMER, "second", ConversationStatus.ACTIVE, now, now, now);
+        when(conversationService.start(CUSTOMER)).thenReturn(first, second);
+        when(conversationService.memory(5L, MEMORY_WINDOW))
+                .thenReturn(List.of(new ChatMessage(Role.CUSTOMER, "first thread")));
+        when(conversationService.memory(6L, MEMORY_WINDOW))
+                .thenReturn(List.of(new ChatMessage(Role.CUSTOMER, "second thread")));
+        when(aiAssistantPort.respond(eq(CUSTOMER), anyList()))
+                .thenReturn(AssistantTurn.of("ok", List.of(), AiUsage.EMPTY));
+        when(aiInvocationRepository.save(any()))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        service.chat(CUSTOMER, null, "first thread");
+        service.chat(CUSTOMER, null, "second thread");
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<ChatMessage>> memories = ArgumentCaptor.forClass(List.class);
+        verify(aiAssistantPort, times(2)).respond(eq(CUSTOMER), memories.capture());
+        assertThat(memories.getAllValues().get(0))
+                .extracting(ChatMessage::content)
+                .containsExactly("first thread");
+        // 第二段对话的模型调用只该看到第二段自己的话——第一段的一个字都不能漏进来。
+        assertThat(memories.getAllValues().get(1))
+                .extracting(ChatMessage::content)
+                .containsExactly("second thread");
+    }
+
     private static AssistantService.TurnContext context() {
         return new AssistantService.TurnContext(
                 conversation(), List.of(new ChatMessage(null, "help me order")));
@@ -317,6 +472,7 @@ class AssistantServiceTest {
 
     private static Conversation conversation() {
         Instant now = Instant.now();
-        return Conversation.rehydrate(CONVERSATION, CUSTOMER, "title", now, now, now);
+        return Conversation.rehydrate(
+                CONVERSATION, CUSTOMER, "title", ConversationStatus.ACTIVE, now, now, now);
     }
 }

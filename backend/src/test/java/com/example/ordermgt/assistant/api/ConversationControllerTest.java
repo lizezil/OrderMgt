@@ -17,6 +17,7 @@ import com.example.ordermgt.assistant.domain.AiAssistantPort;
 import com.example.ordermgt.assistant.domain.AiUsage;
 import com.example.ordermgt.assistant.domain.AssistantTurn;
 import com.example.ordermgt.assistant.domain.Conversation;
+import com.example.ordermgt.assistant.domain.ConversationStatus;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.time.Instant;
@@ -24,6 +25,7 @@ import java.util.List;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -37,9 +39,10 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter.SseEvent
 
 /**
  * Business rule: 断线是投递的事，不是回合的事——SSE 连接半路死掉（关页面、网络抖动）时，模型照常跑完、 这一轮照常落库：客户消息在 prepare
- * 里已经入库，助手的回复再跟着丢就成了有问无答；审计记 OK， 不把"没人收"算成模型失败。
+ * 里已经入库，助手的回复再跟着丢就成了有问无答。"落库 + 审计 + Run 收尾"现在归 {@code executeTurn} 一处负责，所以这一层只钉一件事：断线后控制器仍把这一轮交给
+ * executeTurn 走完，而不是半途松手。
  *
- * <p>反向契约同样钉住：模型真失败时，error 事件照旧上线、失败审计照旧落盘。
+ * <p>反向契约同样钉住：模型真失败时，error 事件照旧上线，且失败审计不由这一层重复记一遍。
  *
  * <p>{@code streamTurn} 包可见是为了不启容器直接测这条边界（同 {@code SpringAiAdapter#retryBeforeFirstToken} 的手法）。
  */
@@ -76,7 +79,13 @@ class ConversationControllerTest {
                         streamExecutor);
         Conversation conversation =
                 Conversation.rehydrate(
-                        CONVERSATION, CUSTOMER, null, Instant.now(), Instant.now(), Instant.now());
+                        CONVERSATION,
+                        CUSTOMER,
+                        null,
+                        ConversationStatus.ACTIVE,
+                        Instant.now(),
+                        Instant.now(),
+                        Instant.now());
         context = new AssistantService.TurnContext(conversation, List.of());
         turn = new AssistantTurn("你有 3 张订单。", List.of(), new AiUsage(3, 5), "test-model", 42);
         result =
@@ -90,9 +99,9 @@ class ConversationControllerTest {
                         turn.latencyMs());
     }
 
-    /** 断线的兜底在投递层：第一个 send 撞上断线后，回合必须自己走完。 */
+    /** 断线的兜底在投递层：第一个 send 撞上断线后，这一轮仍被交给 executeTurn 走完。 */
     @Test
-    void clientGoneMidStreamStillFinishesAndPersistsTheTurn() throws Exception {
+    void clientGoneMidStreamStillHandsTheTurnToExecuteTurn() throws Exception {
         when(assistantService.prepare(CUSTOMER, CONVERSATION, QUESTION)).thenReturn(context);
         when(aiAssistantPort.respondStreaming(eq(CUSTOMER), anyList(), any()))
                 .thenAnswer(
@@ -102,31 +111,26 @@ class ConversationControllerTest {
                             onDelta.accept("3 张订单。"); // 断线之后不再投递
                             return turn;
                         });
-        when(assistantService.complete(context, turn)).thenReturn(result);
-        when(mapper.toResponse(result))
-                .thenReturn(
-                        new ChatResponse(
-                                CONVERSATION,
-                                turn.text(),
-                                List.of(),
-                                List.of(),
-                                3,
-                                5,
-                                turn.model(),
-                                turn.latencyMs()));
+        when(assistantService.executeTurn(eq(context), any()))
+                .thenAnswer(
+                        invocation -> {
+                            Supplier<AssistantTurn> modelCall = invocation.getArgument(1);
+                            modelCall.get(); // 断线只停投递，不停模型
+                            return result;
+                        });
         doThrow(new IOException("Broken pipe")).when(emitter).send(any(SseEventBuilder.class));
 
         controller.streamTurn(emitter, new AtomicBoolean(false), CUSTOMER, CONVERSATION, QUESTION);
 
         verify(emitter, times(1)).send(any(SseEventBuilder.class)); // 断线后不再尝试投递
-        verify(assistantService).complete(context, turn); // 回合照样走完 → 落库
+        verify(assistantService).executeTurn(eq(context), any()); // 回合照样走完
         verify(assistantService, never()).recordFailure(any(), any(), any());
         verify(emitter).complete();
     }
 
-    /** 容器先一步发现断线（onError/onTimeout 置位）时，一个事件都不该再往线上写。 */
+    /** 容器先一步发现断线（onError/onTimeout 置位）时，一个事件都不该再往线上写，但回合照跑。 */
     @Test
-    void containerDetectedDisconnectSkipsDeliveryButStillPersists() throws Exception {
+    void containerDetectedDisconnectSkipsDeliveryButStillRunsTheTurn() throws Exception {
         when(assistantService.prepare(CUSTOMER, CONVERSATION, QUESTION)).thenReturn(context);
         when(aiAssistantPort.respondStreaming(eq(CUSTOMER), anyList(), any()))
                 .thenAnswer(
@@ -135,29 +139,34 @@ class ConversationControllerTest {
                             onDelta.accept("你有 3 张订单。");
                             return turn;
                         });
-        when(assistantService.complete(context, turn)).thenReturn(result);
+        when(assistantService.executeTurn(eq(context), any()))
+                .thenAnswer(
+                        invocation -> {
+                            Supplier<AssistantTurn> modelCall = invocation.getArgument(1);
+                            modelCall.get();
+                            return result;
+                        });
 
         controller.streamTurn(emitter, new AtomicBoolean(true), CUSTOMER, CONVERSATION, QUESTION);
 
         verify(emitter, never()).send(any(SseEventBuilder.class));
-        verify(assistantService).complete(context, turn);
+        verify(assistantService).executeTurn(eq(context), any());
         verify(assistantService, never()).recordFailure(any(), any(), any());
     }
 
-    /** 反向契约：模型失败不因"投递层不再抛异常"而漏报——error 事件与失败审计都照旧。 */
+    /** 反向契约：模型失败时 error 事件照旧上线；失败审计与 Run 收尾归 executeTurn，这一层不重复记。 */
     @Test
-    void upstreamFailureStillEmitsErrorAndAudits() throws Exception {
+    void upstreamFailureStillEmitsErrorOnTheWire() throws Exception {
         when(assistantService.prepare(CUSTOMER, CONVERSATION, QUESTION)).thenReturn(context);
         RuntimeException boom = new IllegalStateException("上游模型超时");
-        when(aiAssistantPort.respondStreaming(eq(CUSTOMER), anyList(), any())).thenThrow(boom);
+        when(assistantService.executeTurn(eq(context), any())).thenThrow(boom);
 
         controller.streamTurn(emitter, new AtomicBoolean(false), CUSTOMER, CONVERSATION, QUESTION);
 
-        verify(assistantService).recordFailure(context, null, boom);
-        verify(assistantService, never()).complete(any(), any());
         ArgumentCaptor<SseEventBuilder> events = ArgumentCaptor.forClass(SseEventBuilder.class);
         verify(emitter).send(events.capture());
         assertThat(wireOf(events.getValue())).contains("event:error").contains("data:上游模型超时");
+        verify(assistantService, never()).recordFailure(any(), any(), any());
         verify(emitter).complete();
     }
 

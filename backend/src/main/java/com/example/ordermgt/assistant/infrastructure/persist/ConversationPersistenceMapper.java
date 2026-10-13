@@ -1,6 +1,7 @@
 package com.example.ordermgt.assistant.infrastructure.persist;
 
 import com.example.ordermgt.assistant.domain.Conversation;
+import com.example.ordermgt.assistant.domain.ConversationStatus;
 import com.example.ordermgt.assistant.domain.Message;
 import org.mapstruct.Mapper;
 import org.mapstruct.ReportingPolicy;
@@ -26,6 +27,7 @@ public interface ConversationPersistenceMapper {
                 po.getId(),
                 po.getCustomerId(),
                 po.getTitle(),
+                ConversationStatus.valueOf(po.getStatus()),
                 po.getCreatedAt(),
                 po.getUpdatedAt(),
                 po.getLastMessageAt());
