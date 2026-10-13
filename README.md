@@ -132,11 +132,11 @@ make db-up                  # 测试跑在真实 MySQL 上，先把常驻容器�
 
 | 层 | 目标 | 用例 |
 |---|---|---|
-| L1 领域规则（纯单测） | 聚合与值对象的不变量 | `Money`、`Order`/`OrderLine` 状态机、`OrderNumber`、`ToolWhitelist`、`Message`、`Conversation`、`PendingAction` |
+| L1 领域规则（纯单测） | 聚合与值对象的不变量 | `Money`、`Order`/`OrderLine` 状态机、`OrderNumber`、`ToolWhitelist`、`Message`、`Conversation`、`PendingAction`、`AiInvocation`（审计行的列约束） |
 | L2 应用用例（Mockito） | 编排与边界，不碰数据库 | `OrderService`、`ConversationService`、`AssistantService`、`ActionConfirmationService`、`ActionCardFactory`、`IdempotencyGuard`、`OrderToolSpecs` |
-| L3 API 契约（MockMvc） | 统一响应体、校验、状态码、幂等头 | `ApiContractTest`、`StreamSaturationContractTest`（流式池打满 → 503 `SERVICE_BUSY`，不无限排队；`AsyncConfigTest` 逼出线程/队列边界）、`SpringAiAdapter`（超时/异常归类成 `TIMEOUT`/`ERROR`） |
-| L4 集成（真 MySQL + 桩模型，不烧 Key） | 端到端业务流与并发正确性 | `AssistantFlowTest`（"提议→不执行→确认→落单→重复确认不重复落单→越权 403"、幂等键重放、每次调用落一行 `ai_invocations`）、`OrderAssistantBusinessFlowTest`、`SmokeDemoFlowTest`、`OrderConcurrencyTest`（6 线程真实并发；含"幂等键 FAILED 重试只执行一次"，钉住并验证 `reclaim` 竞态修复） |
-| L5 SPA 单元与组件（Vitest + jsdom） | 后端替客户端保证不了的那半份契约 | `api.spec`（SSE 分帧 / 身份头 / 错误体）、`ActionCardPanel.spec`、`OrdersView.spec`、`AssistantView.spec`、`toast.spec` |
+| L3 API 契约（MockMvc） | 统一响应体、校验、状态码、幂等头 | `ApiContractTest`、`StreamSaturationContractTest`（流式池打满 → 503 `SERVICE_BUSY`，不无限排队；`AsyncConfigTest` 逼出线程/队列边界）、`ConversationControllerTest`（断线只终止投递，回合照常落库）、`SpringAiAdapter`（超时/异常归类成 `TIMEOUT`/`ERROR` + 首字节前重放策略） |
+| L4 集成（真 MySQL + 桩模型，不烧 Key） | 端到端业务流与并发正确性 | `AssistantFlowTest`（"提议→不执行→确认→落单→重复确认不重复落单→越权 403"、幂等键重放、每次调用落一行 `ai_invocations`、审计端点只许归属方读）、`OrderAssistantBusinessFlowTest`、`SmokeDemoFlowTest`、`OrderConcurrencyTest`（6 线程真实并发；含"幂等键 FAILED 重试只执行一次"，钉住并验证 `reclaim` 竞态修复） |
+| L5 SPA 单元与组件（Vitest + jsdom） | 后端替客户端保证不了的那半份契约 | `api.spec`（SSE 分帧 / 身份头 / 错误体）、`ActionCardPanel.spec`、`OrdersView.spec`、`AssistantView.spec`、`toast.spec`、`errors.spec` |
 | L6 浏览器端到端（Playwright + Chromium） | 真浏览器里走完"提议 → 确认 → 落单" | `catalog.spec`、`orders-identity.spec`、`assistant-flow.spec` |
 
 后两层是各自独立的命令：
@@ -192,8 +192,8 @@ docs/             项目文档
 三件事都集中在适配器与编排层，**不在业务事务里**（ADR-0002）：
 
 - **超时**：1.1.8 没有 `spring.ai.*.timeout` 属性，所以同步调用通过 `RestClientCustomizer` 换上一个带超时的 `JdkClientHttpRequestFactory`（连接 5s / 读取 60s，见 `AiHttpClientConfig`）；流式调用在 `SpringAiAdapter` 里用 Reactor `.timeout(2min)` + `.blockLast(2min)` 双上界（类路径上没有反应式连接器，WebClient 走 JDK HttpClient，没有全局响应超时可设）。
-- **重试**：Spring AI 自带 `RetryTemplate`，默认 10 次 / 退避 `2s×5` 上限 3 分钟——一个卡死的上游最坏能被拖近 19 分钟。我们只用属性把默认收到 **3 次 / 1s / ×2 / 上限 8s**。进程内**没有**自研退避，也没有 jitter；重复执行的风险由幂等键与卡片行锁兜住。
-- **审计**：每次模型调用都往 `ai_invocations` 落一行——成功走 `AssistantService.complete`，失败与超时在 `recordFailure`（同步的 `chat` 与流式的 `streamTurn` 都会调用），失败行带上 model、latency 与 `ERROR`/`TIMEOUT`。审计是旁路：写不进去只记一条 warn，绝不影响本轮回复。
+- **重试**：Spring AI 自带 `RetryTemplate`，默认 10 次 / 退避 `2s×5` 上限 3 分钟——一个卡死的上游最坏能被拖近 19 分钟。我们只用属性把默认收到 **3 次 / 1s / ×2 / 上限 8s**。流式不被框架重试，所以 `respondStreaming` 自建**同款**退避：**首字节之前**失败整条重放（3 次 / 1s / ×2 / 上限 8s），首字节之后不再重试——重放会把已吐出的字再吐一遍。两处都**没有** jitter、没有熔断；重复执行的风险由幂等键与卡片行锁兜住。
+- **审计**：每次模型调用都往 `ai_invocations` 落一行——成功走 `AssistantService.complete`，失败与超时在 `recordFailure`（同步的 `chat` 与流式的 `streamTurn` 都会调用），失败行带上 model、latency 与 `ERROR`/`TIMEOUT`。审计是旁路：写不进去只记一条 warn，绝不影响本轮回复。读取走 `GET /api/assistant/conversations/{id}/invocations`（归属校验同历史，他人会话 403）。
 
 ## 没有 Key 也能跑（离线模式）
 
@@ -205,9 +205,8 @@ SPRING_PROFILES_ACTIVE=mysql,offline ./mvnw -pl backend spring-boot:run
 
 ## 已知缺口（诚实清单）
 
-- **模型调用的重试是框架给的，不是我们写的**：我们只调 `spring.ai.retry.*`，没有自己实现退避、也不支持 jitter；`respondStreaming` 不被框架重试，只有流式自己的双上界。
-- **超时与重试没有自动化测试**：重试发生在 Spring AI 内部，要断言就得起一个假上游，当前选择是不引入假上游、只靠真上游冒烟观察日志。
-- `ai_invocations` 现在**会写**（成功与失败各一行），但**没有读取端点**——审计全貌要用 SQL 查，接口里只回带了 `model`/`latencyMs` 供界面显示耗时。
+- **退避是简版的**：阻塞重试靠 Spring AI 属性（3 次 / 1s / ×2 / 8s）；流式只在**首字节前**自建同款重放，**中途失败不重试**（会重复已吐给客户的字）。两处都没有 jitter、没有熔断/降级。
+- **真实网络超时→真实退避没有假上游测试**：超时归类（`TIMEOUT`/`ERROR`）与重试策略在单测里逐分支钉住（`SpringAiAdapterTest`，10 例），但要断言"真超时触发真退避"就得引入假上游，当前选择不引入，只靠真上游冒烟观察日志。
 - 离线适配器 `MockAiAdapter` 是**关键词驱动的桩**，只用于没有 Key 的演示，不理解真实语义。
 - **E2E 只跑 Chromium**（`@playwright/test` 1.49.1，更新的版本不再发布 macOS 12 可用的 Chromium），WebKit / Firefox 未覆盖；且它假定常驻 MySQL 可用、助手走 `offline` 桩——真实模型下的流式与超时行为没有 E2E。
 - **`make test-frontend` / `make test-e2e` 没有接进 CI**：本仓库目前没有 CI 配置，`make check` 只是留给 CI 的入口。
