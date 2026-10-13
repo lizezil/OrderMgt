@@ -996,6 +996,19 @@ describe('切回一个正在跑的会话', () => {
     expect(wrapper.text()).toContain('我准备好了一个下单操作。')
   })
 
+  it('正在跑的会话给得出停止入口：用服务端给的 runId，即使这一轮不是本标签页发的', async () => {
+    stopRunMock.mockResolvedValue(null)
+    listConversationsMock.mockResolvedValue([conversation(7, '在跑的', 'RUNNING', 42)])
+    historyMock.mockResolvedValue([])
+
+    const wrapper = await mountView()
+
+    await wrapper.get('.thinking button').trigger('click')
+    await flushPromises()
+
+    expect(stopRunMock).toHaveBeenCalledWith(7, 42)
+  })
+
   it('安静的会话不做重订阅', async () => {
     listConversationsMock.mockResolvedValue([conversation(7, '安静的')])
     historyMock.mockResolvedValue([])

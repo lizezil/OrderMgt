@@ -55,17 +55,35 @@ const activeQueue = computed(() => store.queueFor(activeId.value))
 
 const queueFull = computed(() => activeQueue.value.length >= MAX_QUEUE_DEPTH)
 
-/** The Run the customer can stop right now: live only while one of this screen's turns is running. */
+/**
+ * The Run the customer can stop right now. Two ways to know it: this screen sent the turn and got
+ * its `run` frame, or the conversation on screen is RUNNING and its `runId` came from the server --
+ * which is how the stop button is reachable on a turn this tab only *reattached* to, or that another
+ * tab started.
+ */
 interface LiveRun {
   conversationId: number
   runId: number
 }
 const liveRun = ref<LiveRun | null>(null)
 
-/** The stop button shows only for a run on the conversation on screen (a stop changes no queue). */
-const canStop = computed(
-  () => liveRun.value !== null && liveRun.value.conversationId === activeId.value,
+const activeConversation = computed(
+  () =>
+    conversations.value.find((conversation) => conversation.id === activeId.value) ??
+    archived.value.find((conversation) => conversation.id === activeId.value),
 )
+
+/** A run we can name for the conversation on screen; null means nothing to stop. */
+const stoppableRunId = computed<number | null>(() => {
+  if (liveRun.value?.conversationId === activeId.value) {
+    return liveRun.value.runId
+  }
+  const active = activeConversation.value
+  return active?.state === 'RUNNING' ? active.runId : null
+})
+
+/** The stop button shows only for a run on the conversation on screen (a stop changes no queue). */
+const canStop = computed(() => stoppableRunId.value !== null)
 
 /**
  * Stops the running turn (ADR-0012). The server aborts the model stream and closes the turn's
@@ -73,10 +91,11 @@ const canStop = computed(
  * expresses the intent. A failure here (e.g. the run already finished) is reported like any other.
  */
 async function stopRun(): Promise<void> {
-  const run = liveRun.value
-  if (!run) return
+  const runId = stoppableRunId.value
+  const conversationId = activeId.value
+  if (runId === null || conversationId === null) return
   try {
-    await api.stopRun(run.conversationId, run.runId)
+    await api.stopRun(conversationId, runId)
   } catch (error) {
     fail(error)
   }
@@ -607,7 +626,9 @@ onMounted(async () => {
           />
         </article>
 
-        <p v-if="sending" class="thinking">
+        <!-- Shown while this screen is sending, or while the conversation on screen has a live Run
+             (e.g. one this tab only reattached to, or another tab started). -->
+        <p v-if="sending || canStop" class="thinking">
           <span>助手正在拟…</span>
           <!-- Stopping is its own action: it aborts the running turn only, and never touches the
                queue behind it (that is the queue strip's 删除 above). -->
