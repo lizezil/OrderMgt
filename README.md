@@ -96,7 +96,7 @@ docker compose up --build
 |---|---|---|
 | POST | `/api/assistant/chat?conversationId=` | 发消息；不带 `conversationId` 即开新对话。幂等键：请求头 `Idempotency-Key` |
 | POST | `/api/assistant/conversations` | 新对话 |
-| GET | `/api/assistant/conversations` | 会话列表 |
+| GET | `/api/assistant/conversations` | 会话列表；每项带 `status`（`ACTIVE`/`ARCHIVED`）与派生 `state`（`IDLE`/`RUNNING`/`WAITING_APPROVAL`，见 [ADR-0011](docs/adr/0011-run-is-the-unit-of-execution.md)） |
 | GET | `/api/assistant/conversations/{id}/messages` | 历史（含每张卡片的当前状态） |
 | POST | `/api/assistant/conversations/{id}/messages` | 在指定会话里发消息 |
 | GET | `/api/assistant/conversations/{id}/stream?message=` | SSE：`token` 事件逐个吐字，最后一发 `done` 带完整结果。SPA 用它做增量渲染（`fetch` + `ReadableStream`，因为要带 `X-Customer-Id` 头） |
@@ -205,6 +205,14 @@ docs/             项目文档
 - **超时**：1.1.8 没有 `spring.ai.*.timeout` 属性，所以同步调用通过 `RestClientCustomizer` 换上一个带超时的 `JdkClientHttpRequestFactory`（连接 5s / 读取 60s，取自 `AiCallPolicy`，见 `AiHttpClientConfig`）；流式调用在 `SpringAiAdapter` 里用 Reactor `.timeout(2min)` + `.blockLast(2min)` 双上界，与 `ConversationController` 的 SSE 超时同读 `AiCallPolicy.STREAM_TIMEOUT_MS`（类路径上没有反应式连接器，WebClient 走 JDK HttpClient，没有全局响应超时可设）。
 - **重试**：Spring AI 自带 `RetryTemplate`，默认 10 次 / 退避 `2s×5` 上限 3 分钟——一个卡死的上游最坏能被拖近 19 分钟。我们只用属性把默认收到 **3 次 / 1s / ×2 / 上限 8s**。流式不被框架重试，所以 `respondStreaming` 自建**同款**退避（`AiCallPolicy`）：**首字节之前**失败整条重放（3 次 / 1s / ×2 / 上限 8s），首字节之后不再重试——重放会把已吐出的字再吐一遍。两处都**没有** jitter、没有熔断；重复执行的风险由幂等键与卡片行锁兜住。
 - **审计**：每次模型调用都往 `ai_invocations` 落一行——成功走 `AssistantService.complete`，失败与超时在 `recordFailure`（同步的 `chat` 与流式的 `streamTurn` 都会调用），失败行带上 model、latency 与 `ERROR`/`TIMEOUT`。审计是旁路：写不进去只记一条 warn，绝不影响本轮回复。读取走 `GET /api/assistant/conversations/{id}/invocations`（归属校验同历史，他人会话 403）。
+
+## 会话与运行（Run）
+
+「发送 → 回复」不再是隐式的：每一次执行都对应一行 **Run**（`runs` 表，`RUNNING` 起始，收尾为 `COMPLETED` / `FAILED` / `CANCELLED` / `INTERRUPTED` 之一；同一会话至多一个 `RUNNING`）。同步与流式两个入口走**同一条执行回合**，所以断线的流式回合照样落库；所有新状态都待在 Run 层，**Message 层没有状态列**（[ADR-0009](docs/adr/0009-stream-delivery-is-best-effort.md)）。见 [ADR-0011](docs/adr/0011-run-is-the-unit-of-execution.md)。
+
+侧栏的会话状态是**派生**的、不入库：有活跃 Run → `RUNNING`，否则有未过期卡片 → `WAITING_APPROVAL`，否则 `IDLE`。徽标只显示后两者——`IDLE` 是安静的默认。
+
+进程重启即一次对账：单实例启动那一刻不可能有活 Run，于是启动时（`RunReconciler`，一次性的 `ApplicationRunner`，不是定时器）把库里残留的 `RUNNING` 一律标成 `INTERRUPTED` 并补上 `ended_at`，让状态列说真话。被中断的回合在历史里就是「有问无答」——客户消息早已落库、回复没有——SPA 给出一个**重试**入口：把那句话作为**全新的 Run** 重发，绝不续传半截。
 
 ## 没有 Key 也能跑（离线模式）
 
