@@ -103,6 +103,58 @@ function appendReply(response: ChatResponse): void {
   }
 }
 
+/** 断流对账的等待节奏：服务端那一轮还在跑，回复可能晚一步才落库。 */
+const RECONCILE_DELAY_MS = 1500
+const RECONCILE_ATTEMPTS = 3
+
+type ReconcileOutcome = 'recovered' | 'landed' | 'not-sent' | 'unknown'
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** 服务端里最后一条与客户原话完全相同的发言——按内容认领这条乐观气泡。 */
+function lastCustomerIndex(history: Message[], text: string): number {
+  for (let index = history.length - 1; index >= 0; index--) {
+    const message = history[index]!
+    if (message.role === 'CUSTOMER' && message.content === text) return index
+  }
+  return -1
+}
+
+/**
+ * After a dead stream the server owns the truth: the customer message was committed before the
+ * model was called, and -- delivery being decoupled from the turn on the backend -- the reply may
+ * still land after we stopped listening. Refresh history until it settles into one of four
+ * endings, so the customer sees what actually happened instead of an optimistic guess:
+ *
+ * - 'recovered' -- the reply arrived; server truth replaces everything, silently.
+ * - 'landed'    -- the message is there but no reply came; keep the bubble and keep the draft
+ *                  cleared, because resending would duplicate a message the server already has.
+ * - 'not-sent'  -- the server never saw it; roll back the bubble, give the draft back.
+ * - 'unknown'   -- history unreachable (or the customer opened another conversation meanwhile);
+ *                  keep local state and let the caller report the original error.
+ */
+async function reconcile(conversationId: number, text: string): Promise<ReconcileOutcome> {
+  for (let attempt = 0; attempt < RECONCILE_ATTEMPTS; attempt++) {
+    let history: Message[]
+    try {
+      history = await api.history(conversationId)
+    } catch {
+      return 'unknown'
+    }
+    // Checking after the await: opening another conversation while we waited must not have this
+    // one's history written over its messages.
+    if (activeId.value !== conversationId) return 'unknown'
+    messages.value = history
+    const index = lastCustomerIndex(history, text)
+    if (index < 0) return 'not-sent'
+    if (history.length > index + 1) return 'recovered'
+    if (attempt + 1 < RECONCILE_ATTEMPTS) await delay(RECONCILE_DELAY_MS)
+  }
+  return 'landed'
+}
+
 async function send(): Promise<void> {
   const text = draft.value.trim()
   if (!text || sending.value) return
@@ -120,11 +172,13 @@ async function send(): Promise<void> {
   // only mutating *that* reference repaints, and it is the identity the cleanup below matches.
   const sent = messages.value[messages.value.length - 1]!
   let placeholder: Message | null = null
+  // Hoisted so the catch can reconcile the conversation this message went to, even if the customer
+  // opened another one while the stream was dying.
+  let conversationId = activeId.value
   await scrollToEnd()
 
   try {
     // The stream endpoint needs a conversation in its path, so start one when this is a fresh chat.
-    let conversationId = activeId.value
     if (conversationId === null) {
       conversationId = (await createConversation()).id
     }
@@ -156,9 +210,16 @@ async function send(): Promise<void> {
     // The first message is what titles the conversation, so the sidebar is now stale.
     await loadConversations()
   } catch (error) {
-    messages.value = messages.value.filter((message) => message !== sent && message !== placeholder)
-    draft.value = text
-    fail(error)
+    // The half-rendered placeholder never survives a failure; what replaces it is not a guess but
+    // the server's answer to "did this send actually land?" -- the stream dying says nothing
+    // either way, because the backend finishes and persists the turn even with nobody listening.
+    messages.value = messages.value.filter((message) => message !== placeholder)
+    const outcome = conversationId === null ? 'not-sent' : await reconcile(conversationId, text)
+    if (outcome === 'not-sent') {
+      messages.value = messages.value.filter((message) => message !== sent)
+      draft.value = text
+    }
+    if (outcome !== 'recovered') fail(error)
   } finally {
     sending.value = false
     await scrollToEnd()

@@ -53,6 +53,14 @@ async function mountView() {
   return wrapper
 }
 
+/** 与 AssistantView 里的对账等待间隔保持一致；改动那边记得同步这里。 */
+const RECONCILE_DELAY_MS = 1500
+
+/** 假计时器下的 flushPromises：VTU 内部走 setImmediate，靠推进时钟把它放出来。 */
+async function flush() {
+  await vi.advanceTimersByTimeAsync(1)
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   startConversationMock.mockResolvedValue(conversation(7, null))
@@ -153,17 +161,112 @@ describe('流式回复', () => {
     expect(wrapper.get('.meter').text()).toContain('模型耗时 321 ms')
   })
 
-  it('上游失败时撤回乐观气泡、把草稿还给客户，并报出原因', async () => {
+  it('服务端没收到这条消息时撤回乐观气泡、把草稿还给客户，并报出原因', async () => {
     listConversationsMock.mockResolvedValue([])
     chatStreamMock.mockRejectedValue(new Error('上游模型超时'))
+    // 历史里查无此消息 → 这条发送没有落地，本地状态可以安全回滚。
+    historyMock.mockResolvedValue([])
 
     const wrapper = await mountView()
     await wrapper.get('textarea').setValue('帮我下单 1 个 GIZMO-03')
     await sendButton(wrapper).trigger('click')
     await flushPromises()
 
+    expect(historyMock).toHaveBeenCalledWith(7)
     expect(wrapper.emitted('error')?.[0]).toEqual(['上游模型超时'])
     expect(wrapper.findAll('article')).toHaveLength(0)
     expect(wrapper.get('textarea').element.value).toBe('帮我下单 1 个 GIZMO-03')
+  })
+})
+
+describe('断流对账', () => {
+  it('回复晚一步才落库时安静等它出现：以服务端为准，恢复后不惊动客户', async () => {
+    vi.useFakeTimers()
+    try {
+      listConversationsMock.mockResolvedValue([])
+      chatStreamMock.mockRejectedValue(new Error('连接中断'))
+      const mine: Message = {
+        id: 1,
+        role: 'CUSTOMER',
+        content: '我有哪些订单？',
+        createdAt: '',
+        action: null,
+      }
+      const reply: Message = {
+        id: 2,
+        role: 'ASSISTANT',
+        content: '你有 3 张订单。',
+        createdAt: '',
+        action: null,
+      }
+      historyMock.mockResolvedValueOnce([mine]).mockResolvedValueOnce([mine, reply])
+
+      const wrapper = mount(AssistantView)
+      await flush()
+      await wrapper.get('textarea').setValue('我有哪些订单？')
+      await sendButton(wrapper).trigger('click')
+      await flush()
+
+      // 服务端还在写这一轮：只有客户消息，先等一轮再看。
+      expect(historyMock).toHaveBeenCalledTimes(1)
+      expect(wrapper.emitted('error')).toBeUndefined()
+
+      await vi.advanceTimersByTimeAsync(RECONCILE_DELAY_MS)
+      await flush()
+
+      expect(historyMock).toHaveBeenCalledTimes(2)
+      expect(wrapper.findAll('article')).toHaveLength(2)
+      expect(wrapper.emitted('error')).toBeUndefined()
+      expect(wrapper.get('textarea').element.value).toBe('')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('消息已入库但回复一直没来：保留气泡、不还草稿——服务端已有这条，重发会重复', async () => {
+    vi.useFakeTimers()
+    try {
+      listConversationsMock.mockResolvedValue([])
+      chatStreamMock.mockRejectedValue(new Error('上游模型超时'))
+      historyMock.mockResolvedValue([
+        {
+          id: 1,
+          role: 'CUSTOMER',
+          content: '帮我下单 1 个 GIZMO-03',
+          createdAt: '',
+          action: null,
+        },
+      ])
+
+      const wrapper = mount(AssistantView)
+      await flush()
+      await wrapper.get('textarea').setValue('帮我下单 1 个 GIZMO-03')
+      await sendButton(wrapper).trigger('click')
+      await flush()
+      await vi.advanceTimersByTimeAsync(RECONCILE_DELAY_MS * 3)
+      await flush()
+
+      expect(historyMock).toHaveBeenCalledTimes(3)
+      expect(wrapper.findAll('article.customer')).toHaveLength(1)
+      expect(wrapper.get('textarea').element.value).toBe('')
+      expect(wrapper.emitted('error')?.[0]).toEqual(['上游模型超时'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('连历史都拉不到时保留本地气泡、不还草稿：拿不准有没有落地，报错但不诱导重发', async () => {
+    listConversationsMock.mockResolvedValue([])
+    chatStreamMock.mockRejectedValue(new Error('网络不通'))
+    historyMock.mockRejectedValue(new Error('网络不通'))
+
+    const wrapper = await mountView()
+    await wrapper.get('textarea').setValue('我有哪些订单？')
+    await sendButton(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(wrapper.findAll('article.customer')).toHaveLength(1)
+    expect(wrapper.get('textarea').element.value).toBe('')
+    expect(wrapper.emitted('error')?.[0]).toEqual(['网络不通'])
   })
 })

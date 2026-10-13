@@ -15,6 +15,7 @@ import java.io.IOException;
 import java.util.List;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -116,6 +117,11 @@ public class ConversationController {
      * turn is atomic by nature, so its card shows up whole in the `done` event -- pretending to
      * stream it would be theatre.
      *
+     * <p>A fourth: delivery is best-effort, the turn is not. A client that disappears mid-stream
+     * (closed tab, dropped network) only stops receiving events -- the model runs to completion and
+     * the turn is persisted either way, so the reply survives for the customer to find on their
+     * next visit (see {@link #streamTurn}).
+     *
      * <p>The stream runs on a bounded pool (see {@code AsyncConfig}). When it is saturated --
      * {@code max-concurrent} running and the wait queue full -- the rejection is reported as a 503
      * before any event is sent, so a caller finds out immediately instead of holding a connection
@@ -127,8 +133,15 @@ public class ConversationController {
             @PathVariable Long conversationId,
             @RequestParam String message) {
         SseEmitter emitter = new SseEmitter(STREAM_TIMEOUT_MS);
+        // The container learns about a dead connection (or the 120s timeout) through these
+        // callbacks, often before the next send would fail; either way this one flag decides
+        // whether anything else goes on the wire.
+        AtomicBoolean clientGone = new AtomicBoolean(false);
+        emitter.onError(error -> clientGone.set(true));
+        emitter.onTimeout(() -> clientGone.set(true));
         try {
-            streamExecutor.execute(() -> streamTurn(emitter, customerId, conversationId, message));
+            streamExecutor.execute(
+                    () -> streamTurn(emitter, clientGone, customerId, conversationId, message));
         } catch (RejectedExecutionException ex) {
             log.warn("streaming pool saturated; rejected turn for conversation {}", conversationId);
             throw new BusinessException(
@@ -137,8 +150,23 @@ public class ConversationController {
         return emitter;
     }
 
-    private void streamTurn(
-            SseEmitter emitter, Long customerId, Long conversationId, String message) {
+    /**
+     * Package-private so the disconnect contract can be tested without a container (same seam as
+     * {@code SpringAiAdapter#retryBeforeFirstToken}).
+     *
+     * <p>The contract in one line: a dead connection is a delivery failure, never a turn failure.
+     * The customer message was committed by {@code prepare} before the model was called, so a
+     * mid-stream disconnect that also aborted the reply would leave every closed tab with a
+     * question and no answer in the history. Instead: stop sending, let the model finish, persist
+     * through {@code complete}, and record success -- "nobody was listening" is a log line, not an
+     * audit failure. Genuine failures still take the catch path and owe their audit row, as before.
+     */
+    void streamTurn(
+            SseEmitter emitter,
+            AtomicBoolean clientGone,
+            Long customerId,
+            Long conversationId,
+            String message) {
         AssistantService.TurnContext context = null;
         AssistantTurn turn = null;
         try {
@@ -146,11 +174,17 @@ public class ConversationController {
 
             turn =
                     aiAssistantPort.respondStreaming(
-                            customerId, context.memory(), delta -> emit(emitter, "token", delta));
+                            customerId,
+                            context.memory(),
+                            delta -> deliver(emitter, clientGone, "token", delta));
 
             AssistantResult result = assistantService.complete(context, turn);
-            emit(emitter, "done", objectMapper.writeValueAsString(mapper.toResponse(result)));
-            emitter.complete();
+            deliver(
+                    emitter,
+                    clientGone,
+                    "done",
+                    objectMapper.writeValueAsString(mapper.toResponse(result)));
+            completeQuietly(emitter);
         } catch (Exception ex) {
             // Any failure on this transport owes an audit row, whether the stream died mid-flight
             // or the turn could not be completed after it. The blocking path does the same in
@@ -161,23 +195,44 @@ public class ConversationController {
                     "streaming turn failed for conversation {}: {}",
                     conversationId,
                     ex.getMessage());
-            try {
-                emit(
-                        emitter,
-                        "error",
-                        ex.getMessage() == null ? "streaming response failed" : ex.getMessage());
-            } catch (RuntimeException suppressed) {
-                log.debug("could not report the stream error, client probably gone", suppressed);
-            }
-            emitter.complete();
+            deliver(
+                    emitter,
+                    clientGone,
+                    "error",
+                    ex.getMessage() == null ? "streaming response failed" : ex.getMessage());
+            completeQuietly(emitter);
         }
     }
 
-    private void emit(SseEmitter emitter, String event, String data) {
+    /**
+     * One event on the wire. The first failed send flips {@code clientGone} and that is the end of
+     * delivery -- no exception travels further, because the turn behind it keeps running to
+     * completion regardless. A failure here is the transport saying "nobody is listening", which is
+     * exactly the case the turn must survive.
+     */
+    private void deliver(SseEmitter emitter, AtomicBoolean clientGone, String event, String data) {
+        if (clientGone.get()) {
+            return;
+        }
         try {
             emitter.send(SseEmitter.event().name(event).data(data));
         } catch (IOException | IllegalStateException ex) {
-            throw new IllegalStateException("sse connection closed", ex);
+            clientGone.set(true);
+            log.info(
+                    "client left the stream before \"{}\" ({}); finishing the turn unattended",
+                    event,
+                    ex.getMessage());
+        }
+    }
+
+    /**
+     * The container may have finished (or failed) the async cycle already; either way we are done.
+     */
+    private void completeQuietly(SseEmitter emitter) {
+        try {
+            emitter.complete();
+        } catch (RuntimeException ex) {
+            log.debug("could not complete the stream, client probably gone", ex);
         }
     }
 }
