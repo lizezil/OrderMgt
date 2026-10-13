@@ -103,7 +103,7 @@ function appendReply(response: ChatResponse): void {
   }
 }
 
-/** 断流对账的等待节奏：服务端那一轮还在跑，回复可能晚一步才落库。 */
+/** How long reconcile waits between reads: the server may still be finishing the turn. */
 const RECONCILE_DELAY_MS = 1500
 const RECONCILE_ATTEMPTS = 3
 
@@ -113,11 +113,18 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-/** 服务端里最后一条与客户原话完全相同的发言——按内容认领这条乐观气泡。 */
-function lastCustomerIndex(history: Message[], text: string): number {
+/**
+ * The last server message that is *this* send: the same words, under an id the screen did not
+ * already hold before sending. The id check is what tells a re-send of identical text apart from
+ * the older turn that happens to say the same thing -- without it, the old message's reply would
+ * masquerade as recovery and swallow the new send silently.
+ */
+function lastCustomerIndex(history: Message[], text: string, knownIds: Set<number>): number {
   for (let index = history.length - 1; index >= 0; index--) {
     const message = history[index]!
-    if (message.role === 'CUSTOMER' && message.content === text) return index
+    if (message.role === 'CUSTOMER' && message.content === text && !knownIds.has(message.id)) {
+      return index
+    }
   }
   return -1
 }
@@ -135,7 +142,12 @@ function lastCustomerIndex(history: Message[], text: string): number {
  * - 'unknown'   -- history unreachable (or the customer opened another conversation meanwhile);
  *                  keep local state and let the caller report the original error.
  */
-async function reconcile(conversationId: number, text: string): Promise<ReconcileOutcome> {
+async function reconcile(
+  conversationId: number,
+  text: string,
+  knownIds: Set<number>,
+): Promise<ReconcileOutcome> {
+  let absent = false
   for (let attempt = 0; attempt < RECONCILE_ATTEMPTS; attempt++) {
     let history: Message[]
     try {
@@ -147,8 +159,18 @@ async function reconcile(conversationId: number, text: string): Promise<Reconcil
     // one's history written over its messages.
     if (activeId.value !== conversationId) return 'unknown'
     messages.value = history
-    const index = lastCustomerIndex(history, text)
-    if (index < 0) return 'not-sent'
+    const index = lastCustomerIndex(history, text, knownIds)
+    if (index < 0) {
+      // The message is committed before the model runs, but a disconnect can arrive while that
+      // commit is still in flight: one absent reading proves nothing, two of them do.
+      if (!absent && attempt + 1 < RECONCILE_ATTEMPTS) {
+        absent = true
+        await delay(RECONCILE_DELAY_MS)
+        continue
+      }
+      return 'not-sent'
+    }
+    absent = false
     if (history.length > index + 1) return 'recovered'
     if (attempt + 1 < RECONCILE_ATTEMPTS) await delay(RECONCILE_DELAY_MS)
   }
@@ -161,6 +183,9 @@ async function send(): Promise<void> {
 
   draft.value = ''
   sending.value = true
+  // Identity for the reconcile below: ids the screen already held before this send, so re-sending
+  // identical words can be told apart from the older turn that happens to say the same thing.
+  const knownIds = new Set(messages.value.map((message) => message.id))
   messages.value.push({
     id: localId--,
     role: 'CUSTOMER',
@@ -214,7 +239,8 @@ async function send(): Promise<void> {
     // the server's answer to "did this send actually land?" -- the stream dying says nothing
     // either way, because the backend finishes and persists the turn even with nobody listening.
     messages.value = messages.value.filter((message) => message !== placeholder)
-    const outcome = conversationId === null ? 'not-sent' : await reconcile(conversationId, text)
+    const outcome =
+      conversationId === null ? 'not-sent' : await reconcile(conversationId, text, knownIds)
     if (outcome === 'not-sent') {
       messages.value = messages.value.filter((message) => message !== sent)
       draft.value = text

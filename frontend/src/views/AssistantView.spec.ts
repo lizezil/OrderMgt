@@ -162,20 +162,33 @@ describe('流式回复', () => {
   })
 
   it('服务端没收到这条消息时撤回乐观气泡、把草稿还给客户，并报出原因', async () => {
-    listConversationsMock.mockResolvedValue([])
-    chatStreamMock.mockRejectedValue(new Error('上游模型超时'))
-    // 历史里查无此消息 → 这条发送没有落地，本地状态可以安全回滚。
-    historyMock.mockResolvedValue([])
+    vi.useFakeTimers()
+    try {
+      listConversationsMock.mockResolvedValue([])
+      chatStreamMock.mockRejectedValue(new Error('上游模型超时'))
+      // 历史里查无此消息 → 这条发送没有落地，本地状态可以安全回滚。
+      historyMock.mockResolvedValue([])
 
-    const wrapper = await mountView()
-    await wrapper.get('textarea').setValue('帮我下单 1 个 GIZMO-03')
-    await sendButton(wrapper).trigger('click')
-    await flushPromises()
+      const wrapper = mount(AssistantView)
+      await flush()
+      await wrapper.get('textarea').setValue('帮我下单 1 个 GIZMO-03')
+      await sendButton(wrapper).trigger('click')
+      await flush()
 
-    expect(historyMock).toHaveBeenCalledWith(7)
-    expect(wrapper.emitted('error')?.[0]).toEqual(['上游模型超时'])
-    expect(wrapper.findAll('article')).toHaveLength(0)
-    expect(wrapper.get('textarea').element.value).toBe('帮我下单 1 个 GIZMO-03')
+      // 第一次查无不能定案：断线可能赶在 prepare 的提交落地之前，先等一轮再判。
+      expect(historyMock).toHaveBeenCalledTimes(1)
+      expect(wrapper.get('textarea').element.value).toBe('')
+
+      await vi.advanceTimersByTimeAsync(RECONCILE_DELAY_MS)
+      await flush()
+
+      expect(historyMock).toHaveBeenCalledTimes(2)
+      expect(wrapper.emitted('error')?.[0]).toEqual(['上游模型超时'])
+      expect(wrapper.findAll('article')).toHaveLength(0)
+      expect(wrapper.get('textarea').element.value).toBe('帮我下单 1 个 GIZMO-03')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 
@@ -247,7 +260,8 @@ describe('断流对账', () => {
       await flush()
 
       expect(historyMock).toHaveBeenCalledTimes(3)
-      expect(wrapper.findAll('article.customer')).toHaveLength(1)
+      // 总数钉住半截的流式占位气泡也不能留下。
+      expect(wrapper.findAll('article')).toHaveLength(1)
       expect(wrapper.get('textarea').element.value).toBe('')
       expect(wrapper.emitted('error')?.[0]).toEqual(['上游模型超时'])
     } finally {
@@ -265,8 +279,97 @@ describe('断流对账', () => {
     await sendButton(wrapper).trigger('click')
     await flushPromises()
 
-    expect(wrapper.findAll('article.customer')).toHaveLength(1)
+    // 总数钉住半截的流式占位气泡也不能留下。
+    expect(wrapper.findAll('article')).toHaveLength(1)
     expect(wrapper.get('textarea').element.value).toBe('')
     expect(wrapper.emitted('error')?.[0]).toEqual(['网络不通'])
+  })
+
+  it('重发一模一样的文字而服务端没有新落地：按未发送处理，不被旧同文消息冒充成已恢复', async () => {
+    vi.useFakeTimers()
+    try {
+      const earlier: Message = {
+        id: 1,
+        role: 'CUSTOMER',
+        content: '我有哪些订单？',
+        createdAt: '',
+        action: null,
+      }
+      const earlierReply: Message = {
+        id: 2,
+        role: 'ASSISTANT',
+        content: '你有 3 张订单。',
+        createdAt: '',
+        action: null,
+      }
+      listConversationsMock.mockResolvedValue([conversation(7, '查询')])
+      // 每次返回新数组：mock 复用同一实例的话，组件推进 messages 的乐观气泡会污染"服务端历史"。
+      historyMock.mockImplementation(async () => [earlier, earlierReply]) // 新发送始终没有落地
+      chatStreamMock.mockRejectedValue(new Error('连接中断'))
+
+      const wrapper = mount(AssistantView)
+      await flush()
+      await wrapper.get('textarea').setValue('我有哪些订单？')
+      await sendButton(wrapper).trigger('click')
+      await flush()
+      await vi.advanceTimersByTimeAsync(RECONCILE_DELAY_MS)
+      await flush()
+
+      // 旧的同文消息带 id 1 出现在 knownIds 里，不能被认领成本次发送的结果。
+      expect(wrapper.emitted('error')?.[0]).toEqual(['连接中断'])
+      expect(wrapper.get('textarea').element.value).toBe('我有哪些订单？')
+      expect(wrapper.findAll('article')).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('等待期间客户切走会话：不把这段对话的历史盖到新打开的会话上', async () => {
+    vi.useFakeTimers()
+    try {
+      const mine: Message = {
+        id: 1,
+        role: 'CUSTOMER',
+        content: '我有哪些订单？',
+        createdAt: '',
+        action: null,
+      }
+      const elsewhere: Message = {
+        id: 9,
+        role: 'ASSISTANT',
+        content: '另一段对话的旧回复。',
+        createdAt: '',
+        action: null,
+      }
+      listConversationsMock.mockResolvedValue([conversation(7, '查询'), conversation(8, '另一段')])
+      historyMock
+        .mockResolvedValueOnce([]) // 打开会话 7：还没有消息
+        .mockResolvedValueOnce([mine]) // 对账第 1 读：消息在、回复没来
+        .mockResolvedValueOnce([elsewhere]) // 切到会话 8
+        .mockResolvedValueOnce([mine]) // 对账第 2 读：晚到，但会话已经切走
+      chatStreamMock.mockRejectedValue(new Error('连接中断'))
+
+      const wrapper = mount(AssistantView)
+      await flush()
+      await wrapper.get('textarea').setValue('我有哪些订单？')
+      await sendButton(wrapper).trigger('click')
+      await flush()
+
+      // 对账还在等下一轮，客户点开了另一段对话。
+      const other = wrapper.findAll('.entry').find((entry) => entry.text().includes('另一段'))
+      if (!other) throw new Error('找不到另一段对话的入口')
+      await other.trigger('click')
+      await flush()
+
+      await vi.advanceTimersByTimeAsync(RECONCILE_DELAY_MS)
+      await flush()
+
+      expect(wrapper.text()).toContain('另一段对话的旧回复。')
+      expect(wrapper.text()).not.toContain('我有哪些订单？')
+      expect(wrapper.emitted('error')?.[0]).toEqual(['连接中断'])
+      expect(wrapper.get('textarea').element.value).toBe('')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
