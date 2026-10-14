@@ -162,7 +162,7 @@ make db-up                  # 测试跑在真实 MySQL 上，先把常驻容器�
 | 层 | 目标 | 用例 |
 |---|---|---|
 | L1 领域规则（纯单测） | 聚合与值对象的不变量 | `Money`、`Order`/`OrderLine` 状态机、`OrderNumber`、`ToolWhitelist`、`Message`、`Conversation`、`Run` 状态机、`ConversationState` 派生、`PendingAction`、`AiInvocation`（审计行的列约束） |
-| L2 应用用例（Mockito） | 编排与边界，不碰数据库 | `OrderService`、`ConversationService`、`AssistantService`（含跨会话记忆隔离）、`ActionConfirmationService`、`ActionCardFactory`、`IdempotencyGuard`、`IdempotencySweeper`、`OrderToolSpecs`、`CatalogGroundingProvider`、`ConversationRunQueue`、`RunService`、`RunRegistry`、`RunReconciler`、`ConversationEventBus`、`CustomerRateLimiter`、`AiConcurrencyGuard`、`PinAuthenticationProvider`、`SpringAiAdapter`（超时/异常归类成 `TIMEOUT`/`ERROR`、首字节前重放策略逐分支、grounding facts 注入 system prompt） |
+| L2 应用用例（Mockito） | 编排与边界，不碰数据库 | `OrderService`、`ConversationService`、`AssistantService`（含跨会话记忆隔离）、`ActionConfirmationService`、`ActionCardFactory`、`IdempotencyGuard`、`IdempotencySweeper`、`OrderToolSpecs`、`AssistantGroundingProvider`、`ConversationRunQueue`、`RunService`、`RunRegistry`、`RunReconciler`、`ConversationEventBus`、`CustomerRateLimiter`、`AiConcurrencyGuard`、`PinAuthenticationProvider`、`SpringAiAdapter`（超时/异常归类成 `TIMEOUT`/`ERROR`、首字节前重放策略逐分支、grounding facts 注入 system prompt） |
 | L3 API 契约（MockMvc） | 统一响应体、校验、状态码、幂等与认证 | `ApiContractTest`、`SecurityContractTest`/`SecurityCsrfContractTest`（未登录 401；写操作缺 CSRF 头被拒）、`RateLimitContractTest`（每客户限流 → 429 `RATE_LIMITED` + `Retry-After`）、`StreamSaturationContractTest`（流式池打满 → 503 `SERVICE_BUSY`，不无限排队；`AsyncConfigTest` 逼出线程/队列边界）、`ConversationControllerTest`（断线只终止投递，回合照常落库）、`QueueContractTest`、`StopContractTest`、`RunReattachContractTest`、`EventsContractTest`、`ArchiveContractTest` |
 | L4 集成（真 MySQL + 桩模型，不烧 Key） | 端到端业务流、Run 生命周期与并发正确性 | `AssistantFlowTest`（"提议→不执行→确认→落单→重复确认不重复落单→越权 403"、幂等键重放、每次调用落一行 `ai_invocations`、审计端点只许归属方读）、`RunPersistenceTest`（Run 落库与终态、重启把残留 `RUNNING` 对账成 `INTERRUPTED`）、`ArchiveIntegrationTest`、`OrderAssistantBusinessFlowTest`、`SmokeDemoFlowTest`、`OrderConcurrencyTest`（6 线程真实并发；含"幂等键 FAILED 重试只执行一次"，钉住并验证 `reclaim` 竞态修复） |
 | L5 SPA 单元与组件（Vitest + jsdom） | 后端替客户端保证不了的那半份契约 | `api.spec`（SSE 分帧 / CSRF 头 / 错误体）、`store.spec`（快照与增量 patch）、`ConversationRow.spec`、`ActionCardPanel.spec`、`OrdersView.spec`、`AssistantView.spec`、`LoginView.spec`、`markdown.spec`、`toast.spec`、`errors.spec` |
@@ -211,7 +211,7 @@ frontend/         Vue 3 SPA（产物直接构建进 backend/src/main/resources/s
 ├── e2e/          Playwright 用例（L6）+ support/serve.mjs（构建 SPA 并起离线后端）
 └── vitest.config.ts / playwright.config.ts
 docs/             项目文档
-├── adr/          架构决策记录（0001–0014）
+├── adr/          架构决策记录（0001–0015）
 ├── 面试作业-*.md  需求摘录 / 设计定稿 / 讲解手册
 └── 会话管理-设计定稿.md  Run 层设计
 ```
@@ -223,7 +223,7 @@ docs/             项目文档
 
 "改措辞要翻遍适配器、改个超时要全仓 grep" 是这里要避免的。归置规则见 [ADR-0010](docs/adr/0010-prompts-and-constants-live-in-one-place.md)，一句话概括——**按"离得最近的原作者是谁"归置，而不是堆进一个全局 `Constants`**：
 
-- **提示词**：`assistant/infrastructure/ai/prompt/` 一处——`AiPrompts`（system prompt、catalog grounding 模板）与 `OfflinePrompts`（离线桩台词）。提示词只管措辞，填数据仍由 `CatalogGroundingProvider` 做。
+- **提示词**：`assistant/infrastructure/ai/prompt/` 一处——`AiPrompts`（system prompt，以及 catalog 与本会话最近一单两类 grounding 模板）与 `OfflinePrompts`（离线桩台词）。提示词只管措辞，填数据仍由 `AssistantGroundingProvider` 做（[ADR-0010](docs/adr/0010-prompts-and-constants-live-in-one-place.md)）。
 - **随环境调的数字**：`application.yml`（记忆窗口、卡片 TTL、流式并发/队列、幂等保留期、`spring.ai.retry`）。
 - **跨模块的固定数字**：`shared/api/Paging`（分页）、`assistant/AiCallPolicy`（流式时长、首 token 重试、阻塞传输的 5s/60s 超时）。前端对应 `src/constants.ts`。
 - **领域不变量**：留在拥有它的类型里（`Message.CONTENT_MAX`、`PendingAction.ARGUMENTS_MAX`、`OrderNumber.MAX_LENGTH`、`Money.SCALE` …），因为它和该类型的校验/截断是同一条规则的两半。
@@ -235,6 +235,12 @@ docs/             项目文档
 - **超时**：1.1.8 没有 `spring.ai.*.timeout` 属性，所以同步调用通过 `RestClientCustomizer` 换上一个带超时的 `JdkClientHttpRequestFactory`（连接 5s / 读取 60s，取自 `AiCallPolicy`，见 `AiHttpClientConfig`）；流式调用在 `SpringAiAdapter` 里用 Reactor `.timeout(2min)` + `.blockLast(2min)` 双上界，与 `ConversationController` 的 SSE 超时同读 `AiCallPolicy.STREAM_TIMEOUT_MS`（类路径上没有反应式连接器，WebClient 走 JDK HttpClient，没有全局响应超时可设）。
 - **重试**：Spring AI 自带 `RetryTemplate`，默认 10 次 / 退避 `2s×5` 上限 3 分钟——一个卡死的上游最坏能被拖近 19 分钟。我们只用属性把默认收到 **3 次 / 1s / ×2 / 上限 8s**。流式不被框架重试，所以 `respondStreaming` 自建**同款**退避（`AiCallPolicy`）：**首字节之前**失败整条重放（3 次 / 1s / ×2 / 上限 8s），首字节之后不再重试——重放会把已吐出的字再吐一遍。两处都**没有** jitter、没有熔断；重复执行的风险由幂等键与卡片行锁兜住。
 - **审计**：每次模型调用都往 `ai_invocations` 落一行——成功走 `AssistantService.complete`，失败与超时在 `recordFailure`（同步的 `chat` 与流式的 `streamTurn` 都会调用），失败行带上 model、latency 与 `ERROR`/`TIMEOUT`。审计是旁路：写不进去只记一条 warn，绝不影响本轮回复。读取走 `GET /api/assistant/conversations/{id}/invocations`（归属校验同历史，他人会话 403）。
+
+## 回复长什么样：只读结果由服务端渲染成人话
+
+顾客的气泡里**没有原始 JSON**。只读工具（`queryMyOrders` / `getOrderByNumber`）在 schema 与 handler 旁边各带一个 `ToolReport`（负载 → markdown），`AssistantService` 把**模型自己的话在前、渲染块在后**拼成一条回复；负载本身不进 transcript，只随响应的 `executed[].resultJson` 出去，供审计与排障。渲染形态是「一行引导 + 每单一块」：`` `订单号` `` · 中文状态 · `¥`合计，下面每行一条明细——订单号与 sku 包进行内代码保持等宽可复制，标签与金额走正文。空结果说「你名下还没有订单。」而不是 `[]`；整整一页时末尾声明「（只列出最近 20 张）」（上限就是共享的 `Paging.DEFAULT_SIZE`），不把一页当成全部历史。
+
+这条不是装饰：**transcript 里的那份人话就是下一轮的记忆内容**（US-2.1 靠它），所以订单号与金额必须在渲染后仍然在场。变更工具的结果不进回复——它由确认卡呈现，因此 `ToolSpec` 的不变量是「只读 ⇒ 有 `ToolReport`、无 `ToolCard`；变更 ⇒ 有 `ToolCard`、无 `ToolReport`」。另一侧修的是指代：`Grounding` 现在除 catalog 外还注入「本会话最近一次已确认的订单号」（来源是 `pending_actions.result_ref`，按客户 + 会话过滤），于是「查看刚刚这个订单」有了确定答案。见 [ADR-0015](docs/adr/0015-render-readonly-results-server-side.md)。
 
 ## 会话与运行（Run）
 
@@ -288,3 +294,4 @@ SPRING_PROFILES_ACTIVE=mysql,offline ./mvnw -pl backend spring-boot:run
 - **停止只掐得断流式那一路**：取消信号由流式模型调用逐 chunk 观测（`takeWhile`），所以 `POST .../stop` 对**流式**回合是真的取消上游；**阻塞**回合（`POST /{id}/messages`）是一次同步模型调用，服务端没有中途 abort 的钩子，对它调停止会被接受但取消不了那次调用（SPA 只发流式，所以实际不会遇到）。取消是"到下一个 chunk 为止"，不是瞬时。
 - **状态总线与运行态注册表都是进程内的**：`ConversationEventBus`（每客户 emitter 注册表）与 `RunRegistry` 不跨实例，多实例下同一客户的多个标签页连到不同实例就收不到对方的状态推送；`/events` 单条连接有个 1 小时上限，到点客户端重连并整体换快照（换来零服务端事件缓存）。
 - **重订阅是尽力而为**：`runStream` 只做"当前累积文本 + 之后增量"，不做断点续传（ADR-0009）；一条 Run 在重订阅的同一瞬间结束，客户端可能先收到 `closed` 再收到 `snapshot`，此时按"没东西可回放"处理。E2E 里离线桩的回合太快，**没有覆盖重订阅**——它由 L3（契约）与 L5（组件）钉住。
+- **服务端渲染的措辞是中文硬编码**：提示词已改为"用顾客使用的语言回答"，模型自己的话会跟着切换，`ToolReport` 渲染的那几行（「你名下有 N 张订单：」、`已创建`）不会。改动前落库的历史消息仍是旧格式 `[工具名] {JSON}`，前端的机器文本通道已删除，它们以普通正文呈现——没有做数据迁移。

@@ -5,3 +5,5 @@
 考虑过的替代方案：注册一个只读工具 `listCatalog` 让模型自己先查。放弃的原因是它把"别猜 sku"变成模型的自觉行为——模型可能仍然先编一个 sku，然后才想起来去查；而 system prompt 里的 grounding 是每次调用都在场的。代价是每次会话请求多一次 catalog 查询（5 行数据，可忽略），且 system prompt 随 catalog 变化、不利于 prompt 缓存。
 
 注意这条和"价格由服务端解析"是两件事：grounding 解决的是模型**选错 sku**，服务端解析解决的是模型**报错价**。两者都不能省。
+
+> **后续（ADR-0015）**：本条的形态已被扩宽——grounding 现在除 catalog 外还注入「本会话最近一次已确认的订单号」，端口签名相应带上会话上下文；那个类也叫 `AssistantGroundingProvider` 了。**「给事实、不给工具」这个判断没有变，仍然成立。**

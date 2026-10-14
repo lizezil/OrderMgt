@@ -58,6 +58,10 @@ _Avoid_: QueryAction, SafeCall
 会改变数据的 ToolCall，必须先转化为 PendingAction 并由 Customer 确认。
 _Avoid_: WriteCall, DangerousCall
 
+**ToolReport**:
+只读 ToolCall 的结果讲给 Customer 听的样子（服务端渲染的人话）；它同时是 Message 里那份记忆的内容。与 ToolCard 互为镜像：只读有 Report、变更有 Card。
+_Avoid_: MachineText, RawResult
+
 ### 确认
 
 **PendingAction**:
@@ -73,5 +77,5 @@ _Avoid_: —
 _Avoid_: AiLog, Call
 
 **Grounding**:
-调用模型前，由服务端把模型不得臆造的事实（当前可用商品的 sku 与单价）注入提示词。
+调用模型前，由服务端把**模型不得臆造的事实**注入提示词。当前包括：可用商品的 sku 与名称与单价，以及本会话最近一次已确认动作产出的订单号（后者让「刚刚那个订单」有确定答案，见 ADR-0015）。
 _Avoid_: Context injection, RAG, Prompt stuffing
