@@ -318,9 +318,17 @@ async function newConversation(): Promise<void> {
   }
 }
 
-function appendReply(response: ChatResponse): void {
+/**
+ * Swaps the streaming placeholder for the turn the server persisted, **in place**: a later turn
+ * may already have queued its own bubble behind this one (the queue is the whole point of a busy
+ * conversation), and appending at the end would drop this answer below a question it does not
+ * belong to. The card is its own message, exactly as the backend persisted it.
+ */
+function settleReply(placeholder: Message, response: ChatResponse): void {
+  const at = messages.value.indexOf(placeholder)
+  const landed: Message[] = []
   if (response.reply.trim()) {
-    messages.value.push({
+    landed.push({
       id: localId--,
       role: 'ASSISTANT',
       content: response.reply,
@@ -328,15 +336,21 @@ function appendReply(response: ChatResponse): void {
       action: null,
     })
   }
-  // A card is its own turn, exactly as the backend persisted it.
   for (const action of response.actions) {
-    messages.value.push({
+    landed.push({
       id: localId--,
       role: 'ASSISTANT',
       content: action.summary,
       createdAt: new Date().toISOString(),
       action,
     })
+  }
+  if (at === -1) {
+    // The placeholder is already gone (a reconcile replaced the thread meanwhile): the reply is
+    // still the newest thing that happened, so it goes at the end rather than nowhere.
+    messages.value.push(...landed)
+  } else {
+    messages.value.splice(at, 1, ...landed)
   }
 }
 
@@ -476,8 +490,11 @@ async function send(): Promise<void> {
 
   try {
     // The stream endpoint needs a conversation in its path, so start one when this is a fresh chat.
+    // Tracked like the 新对话 switch: a second send racing this one must wait for this POST and
+    // then read the conversation it settled on, not open a second one -- two auto-creations meant
+    // two conversations streaming answers into one screen at once.
     if (conversationId === null) {
-      conversationId = (await createConversation()).id
+      conversationId = (await track(createConversation())).id
     }
 
     // The reply is rendered as it arrives; the placeholder is swapped for the persisted turn once
@@ -533,8 +550,7 @@ async function send(): Promise<void> {
         completion: response.completionTokens,
         latencyMs: response.latencyMs,
       }
-      messages.value = messages.value.filter((message) => message !== reply)
-      appendReply(response)
+      settleReply(reply, response)
     }
     refreshConversations()
   } catch (error) {
@@ -575,6 +591,19 @@ async function send(): Promise<void> {
     if (myRunId !== null && liveRun.value?.runId === myRunId) liveRun.value = null
     await scrollToEnd()
   }
+}
+
+/**
+ * Enter in the composer sends -- unless an input method is mid-composition. The Enter that commits
+ * English letters or picks a candidate also arrives as `keydown.enter`, but it belongs to the IME:
+ * taking it as a send ships the half-typed draft (the composition has not landed in `draft` yet).
+ * `keyCode` 229 is the legacy marker some browsers still use for the same "this key went to the
+ * input method" state. When composing, the event is not prevented either -- the IME needs it.
+ */
+function onComposerEnter(event: KeyboardEvent): void {
+  if (event.isComposing || event.keyCode === 229) return
+  event.preventDefault()
+  void send()
 }
 
 function onResolved(message: Message, card: ActionCard): void {
@@ -711,7 +740,7 @@ onMounted(async () => {
             v-model="draft"
             rows="1"
             placeholder="说点什么…（Enter 发送）"
-            @keydown.enter.exact.prevent="send"
+            @keydown.enter.exact="onComposerEnter"
           />
           <button class="btn authority" :disabled="!draft.trim() || queueFull" @click="send">
             发送

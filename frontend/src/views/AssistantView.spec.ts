@@ -655,6 +655,34 @@ describe('输入框归属的会话，由正在切换的那一步决定', () => {
     expect(chatStreamMock.mock.calls[1]![0]).toBe('第二句')
   })
 
+  it('第一句的会话还在创建时就发第二句：两句同属一条会话，第二句排队而不是另起炉灶', async () => {
+    listConversationsMock.mockResolvedValue([])
+    // 第一次 POST 挂着不回；若第二句又自建会话，兜底的第二次会给它另一条（id 8）。
+    let resolveCreation!: (conversation: Conversation) => void
+    startConversationMock
+      .mockImplementationOnce(
+        () =>
+          new Promise<Conversation>((resolve) => {
+            resolveCreation = resolve
+          }),
+      )
+      .mockResolvedValue(conversation(8, null))
+    chatStreamMock.mockImplementation(() => new Promise<ChatResponse>(() => {}))
+
+    const wrapper = await mountView()
+    await wrapper.get('textarea').setValue('第一句')
+    await sendButton(wrapper).trigger('click') // POST /conversations 还挂着
+    await wrapper.get('textarea').setValue('第二句')
+    await sendButton(wrapper).trigger('click') // 竞态窗口：第二句不得自建会话
+    resolveCreation(conversation(7, null))
+    await flushPromises()
+
+    // 自建只发生一次，两条流都打向它——第二句随后由服务端排进同一条队，而不是两答同时流式输出。
+    expect(startConversationMock).toHaveBeenCalledTimes(1)
+    expect(chatStreamMock).toHaveBeenCalledTimes(2)
+    expect(chatStreamMock.mock.calls.map((call) => call[1])).toEqual([7, 7])
+  })
+
   it('切换未落定的窗口里连按两次回车：只发出一条，不把同一句复读进队伍', async () => {
     listConversationsMock.mockResolvedValue([conversation(1, '第一条')])
     let resolveCreation!: (conversation: Conversation) => void
@@ -677,6 +705,36 @@ describe('输入框归属的会话，由正在切换的那一步决定', () => {
     await textarea.trigger('keydown', { key: 'Enter' })
     await textarea.trigger('keydown', { key: 'Enter' })
     resolveCreation(conversation(2, null))
+    await flushPromises()
+
+    expect(chatStreamMock).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('中文输入法的回车', () => {
+  it('回车只是把英文上屏（组合中）：不发送，草稿原样保留', async () => {
+    listConversationsMock.mockResolvedValue([conversation(7, '闲聊')])
+    chatStreamMock.mockResolvedValue(reply())
+
+    const wrapper = await mountView()
+    const textarea = wrapper.get('textarea')
+    await textarea.setValue('帮我查一下 ORD')
+    // 输入法组合中的 Enter：key 是 Enter 但 isComposing 为真（IME 上屏/确认候选）。
+    await textarea.trigger('keydown', { key: 'Enter', isComposing: true })
+    await flushPromises()
+
+    expect(chatStreamMock).not.toHaveBeenCalled()
+    expect(textarea.element.value).toBe('帮我查一下 ORD')
+  })
+
+  it('组合结束后的普通回车照常发送', async () => {
+    listConversationsMock.mockResolvedValue([conversation(7, '闲聊')])
+    chatStreamMock.mockResolvedValue(reply())
+
+    const wrapper = await mountView()
+    const textarea = wrapper.get('textarea')
+    await textarea.setValue('帮我查一下 ORD1')
+    await textarea.trigger('keydown', { key: 'Enter', isComposing: false })
     await flushPromises()
 
     expect(chatStreamMock).toHaveBeenCalledTimes(1)
@@ -796,6 +854,24 @@ describe('忙时入队', () => {
 
     expect(wrapper.get('.queue-head').text()).toBe('排队中：5 条')
     expect(sendButton(wrapper).attributes('disabled')).toBeDefined()
+  })
+
+  it('第一问还在答时发了第二问：第一问的答案落回原位，不掉到第二问后面', async () => {
+    const stream = busyConversation()
+    const wrapper = await mountView()
+    await sendLine(wrapper, '第一句')
+    await sendLine(wrapper, '第二句')
+
+    stream.resolve(0, reply({ reply: '第一句的回答' }))
+    await flushPromises()
+
+    // 气泡按时间顺序排：第一问、它的答案、第二问（还在排队/生成中）。
+    expect(wrapper.findAll('article').map((line) => line.get('.said').text())).toEqual([
+      '第一句',
+      '第一句的回答',
+      '第二句',
+      '',
+    ])
   })
 
   it('排队中的那一轮回来时客户已经切走：回复不落进另一段对话', async () => {
