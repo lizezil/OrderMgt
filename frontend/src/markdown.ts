@@ -41,12 +41,6 @@ const FENCE_END = /^\s*```\s*$/
 const RULE = /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/
 const QUOTE_LINE = /^\s*>\s?/
 const LIST_ITEM = /^(\s*)(?:([-*+])|(\d+)[.)])\s+(.*)$/
-/**
- * A tool result, pasted into the reply by the backend as `[toolName] {json}`. It is machine text on
- * a line of its own -- rendered preformatted, not flowed into the sentence around it. Requiring the
- * payload to open like JSON is what keeps a markdown link (`[docs](url)`) out of this branch.
- */
-const MACHINE_LINE = /^\s*\[[A-Za-z][\w.-]*\]\s*[[{"]/
 
 /** A nested list has to be indented this far past its parent to count as one. */
 const NEST_INDENT = 2
@@ -111,18 +105,6 @@ function renderBlocks(lines: string[]): string {
       }
       if (index < lines.length) index++
       html.push(`<pre class="md-code"><code>${escapeHtml(body.join('\n'))}</code></pre>`)
-      continue
-    }
-
-    if (MACHINE_LINE.test(line)) {
-      const body: string[] = []
-      while (index < lines.length && MACHINE_LINE.test(lines[index]!)) {
-        body.push(lines[index]!.trim())
-        index++
-      }
-      html.push(
-        `<pre class="md-machine"><code class="data">${escapeHtml(body.join('\n'))}</code></pre>`,
-      )
       continue
     }
 
@@ -193,7 +175,6 @@ function startsBlock(lines: string[], index: number): boolean {
   const line = lines[index]!
   return (
     FENCE.test(line) ||
-    MACHINE_LINE.test(line) ||
     RULE.test(line) ||
     QUOTE_LINE.test(line) ||
     HEADING.test(line) ||

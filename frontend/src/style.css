@@ -681,9 +681,8 @@ textarea {
   font-size: 0.86em;
 }
 
-/* Machine text on a line of its own, and fenced code: preformatted, and not chip-sized. */
-.said pre.md-code,
-.said pre.md-machine {
+/* Fenced code: preformatted, and not chip-sized. */
+.said pre.md-code {
   margin: 8px 0;
   padding: 8px 11px;
   border-radius: var(--radius);
@@ -736,8 +735,7 @@ textarea {
 }
 
 .line.customer .said code,
-.line.customer .said pre.md-code,
-.line.customer .said pre.md-machine {
+.line.customer .said pre.md-code {
   border-color: transparent;
   background: rgba(255, 255, 255, 0.14);
   color: var(--paper);

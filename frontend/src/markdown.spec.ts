@@ -86,19 +86,15 @@ describe('块级', () => {
     )
   })
 
-  it('工具输出行是机器文本，排成预格式块', () => {
-    expect(renderMarkdown('我查到了这些：\n[queryMyOrders] {"total":0}')).toBe(
-      '<p>我查到了这些：</p>\n<pre class="md-machine"><code class="data">[queryMyOrders] {&quot;total&quot;:0}</code></pre>',
+  it('工具结果行的渲染由后端决定，前端不再为它留特殊排版', () => {
+    // 后端现在把只读工具的结果渲染成人话（ADR-0015），正文里不再有 [工具名] {JSON}。
+    // 方括号开头的一行因此只是一行普通文字，遇到裸 JSON 也不例外。
+    expect(renderMarkdown('[queryMyOrders] {"total":0}')).toBe(
+      '<p>[queryMyOrders] {&quot;total&quot;:0}</p>',
     )
   })
 
-  it('相邻的工具输出行并成一块，不各占一段', () => {
-    expect(renderMarkdown('[a1] {}\n[b2] []')).toBe(
-      '<pre class="md-machine"><code class="data">[a1] {}\n[b2] []</code></pre>',
-    )
-  })
-
-  it('以方括号开头的行内链接不会被误当机器输出', () => {
+  it('以方括号开头的行内链接照常成链接', () => {
     expect(renderMarkdown('[文档](https://example.com)')).toBe(
       '<p><a href="https://example.com" target="_blank" rel="noopener noreferrer">文档</a></p>',
     )
