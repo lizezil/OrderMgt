@@ -13,6 +13,7 @@ import com.example.ordermgt.assistant.domain.AssistantTurn;
 import com.example.ordermgt.assistant.domain.ChatMessage;
 import com.example.ordermgt.assistant.domain.RunCancellation;
 import com.example.ordermgt.assistant.infrastructure.ai.MockAiAdapter;
+import com.example.ordermgt.assistant.infrastructure.ai.prompt.OfflinePrompts;
 import com.example.ordermgt.support.CleanSchemaConfiguration;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -64,19 +65,22 @@ class SmokeDemoFlowTest {
             return new AiAssistantPort() {
 
                 @Override
-                public AssistantTurn respond(Long customerId, List<ChatMessage> memory) {
+                public AssistantTurn respond(
+                        Long customerId, Long conversationId, List<ChatMessage> memory) {
                     LAST_MEMORY.set(List.copyOf(memory));
-                    return DELEGATE.respond(customerId, memory);
+                    return DELEGATE.respond(customerId, conversationId, memory);
                 }
 
                 @Override
                 public AssistantTurn respondStreaming(
                         Long customerId,
+                        Long conversationId,
                         List<ChatMessage> memory,
                         Consumer<String> onTextDelta,
                         RunCancellation cancellation) {
                     LAST_MEMORY.set(List.copyOf(memory));
-                    return DELEGATE.respondStreaming(customerId, memory, onTextDelta, cancellation);
+                    return DELEGATE.respondStreaming(
+                            customerId, conversationId, memory, onTextDelta, cancellation);
                 }
             };
         }
@@ -97,10 +101,12 @@ class SmokeDemoFlowTest {
         long other = newCustomer();
         long conversationId = startConversation(customer);
 
-        // 1) 只读：查询当场执行，回复里带着工具查回的结果和用量。
+        // 1) 只读：查询当场执行，回复里是模型的话加上服务端渲染的人话（ADR-0015），负载不进正文。
         JsonNode readOnly =
                 send(conversationId, customer, "{\"message\":\"what orders do I have?\"}");
-        assertThat(readOnly.get("reply").asText()).contains("queryMyOrders");
+        assertThat(readOnly.get("reply").asText())
+                .contains(OfflinePrompts.LOOKING_UP_ORDERS, "你名下还没有订单。")
+                .doesNotContain("[queryMyOrders]");
         assertThat(readOnly.get("model").asText()).isEqualTo("offline-mock");
         assertThat(readOnly.get("promptTokens").asInt()).isNotNegative();
         assertThat(readOnly.get("completionTokens").asInt()).isNotNegative();

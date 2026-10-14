@@ -5,8 +5,8 @@ package com.example.ordermgt.assistant.infrastructure.ai.prompt;
  * changed without hunting through the adapters.
  *
  * <p>Only the text lives here: the class that owns the data still assembles it into these templates
- * (the live catalog rows by {@code CatalogGroundingProvider}), so a prompt stays a single edit
- * without dragging the data it is filled with along with it.
+ * (the live catalog rows and the last confirmed order by {@code AssistantGroundingProvider}), so a
+ * prompt stays a single edit without dragging the data it is filled with along with it.
  */
 public final class AiPrompts {
 
@@ -22,7 +22,9 @@ public final class AiPrompts {
               in the text what you intend to do.
             - Never guess or fabricate order numbers, skus or amounts; placing an order
               fills in only sku and quantity.
-            - Answer in concise English.
+            - Answer in the language the customer wrote in.
+            - Do not restate what a tool returned: the service renders a tool's result
+              for the customer itself, and repeating it shows the same list twice.
             """;
 
     /**
@@ -40,6 +42,17 @@ public final class AiPrompts {
      */
     public static final String CATALOG_TRUNCATED =
             "(The catalog is too large to list in full; the items above are a partial view.)\n";
+
+    /**
+     * Header before the order this conversation most recently placed. Injected so "查看刚刚这个订单" has an
+     * answer: the number is on the confirmed action, never in the transcript, so a model without
+     * this line can only list every order and hope the newest one is the one meant.
+     */
+    public static final String LAST_CONFIRMED_ORDER_HEADER =
+            "The order this conversation placed most recently:";
+
+    /** That order's number, then what was confirmed. */
+    public static final String LAST_CONFIRMED_ORDER_ROW = "- %s (%s)\n";
 
     private AiPrompts() {}
 }

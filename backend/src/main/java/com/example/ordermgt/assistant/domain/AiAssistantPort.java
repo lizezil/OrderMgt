@@ -13,10 +13,12 @@ import java.util.function.Consumer;
 public interface AiAssistantPort {
 
     /**
+     * @param conversationId which conversation the turn belongs to; grounding needs it because the
+     *     order "we just placed" is a fact about a conversation, not about a whole customer.
      * @param memory the conversation so far, oldest first, with the current customer message last.
      *     Replayed verbatim as the model's memory.
      */
-    AssistantTurn respond(Long customerId, List<ChatMessage> memory);
+    AssistantTurn respond(Long customerId, Long conversationId, List<ChatMessage> memory);
 
     /**
      * Same turn, but text arrives incrementally through {@code onTextDelta}. The returned turn is
@@ -29,6 +31,7 @@ public interface AiAssistantPort {
      */
     AssistantTurn respondStreaming(
             Long customerId,
+            Long conversationId,
             List<ChatMessage> memory,
             Consumer<String> onTextDelta,
             RunCancellation cancellation);

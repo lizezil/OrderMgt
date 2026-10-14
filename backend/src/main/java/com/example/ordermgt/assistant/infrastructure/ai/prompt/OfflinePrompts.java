@@ -5,6 +5,10 @@ package com.example.ordermgt.assistant.infrastructure.ai.prompt;
  *
  * <p>They live beside {@link AiPrompts} rather than inside the adapter so that all assistant prose
  * -- real and mock -- is found in one place; the two differ only in who writes it.
+ *
+ * <p>Chinese, like the demo prompts this stub is driven with: the standing prompt now asks the
+ * model to answer in the customer's language, and a stub that can only answer in one language
+ * should answer in the one its own triggers are written in.
  */
 public final class OfflinePrompts {
 
@@ -15,24 +19,21 @@ public final class OfflinePrompts {
 
     /** Keyword: "cancel". */
     public static String cancelProposal(String orderNumber) {
-        return "Sure, I am ready to cancel order " + orderNumber + ", please confirm.";
+        return "好的，我准备把订单 " + orderNumber + " 取消，请确认。";
     }
 
     /** Keyword: list / what / how many / check / query / show. */
-    public static final String LOOKING_UP_ORDERS = "Let me look up your own orders.";
+    public static final String LOOKING_UP_ORDERS = "我查一下你自己的订单。";
 
     /** Keyword: buy / purchase / order, with a product in the message. */
-    public static final String ORDER_PREPARED = "I have prepared an order for you, please confirm.";
+    public static final String ORDER_PREPARED = "我已经为你准备好订单，请确认。";
 
     /** Keyword: buy / purchase / order, without a product to place. */
-    public static final String ASK_FOR_SKU =
-            "(offline mode) Please tell me the SKU and quantity, for example "
-                    + "\"help me order 2 DOODAD-04\".";
+    public static final String ASK_FOR_SKU = "（离线模式）请告诉我 sku 和数量，例如「帮我下单 2 个 DOODAD-04」。";
 
     /** Nothing recognised. */
     public static final String UNKNOWN_REQUEST =
-            "(offline mode) I am a stub assistant without a real model. Try "
-                    + "\"what orders do I have\" or \"help me order 2 DOODAD-04\".";
+            "（离线模式）我是一个没有接真实模型的桩助手。可以试试「我有哪些订单」或「帮我下单 2 个 DOODAD-04」。";
 
     private OfflinePrompts() {}
 }

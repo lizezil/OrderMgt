@@ -416,6 +416,7 @@ public class ConversationController {
                             () ->
                                     aiAssistantPort.respondStreaming(
                                             customerId,
+                                            context.conversation().getId(),
                                             context.memory(),
                                             delta -> {
                                                 RunRegistry.Handle live = handle.get();

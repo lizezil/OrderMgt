@@ -19,6 +19,7 @@ import com.example.ordermgt.order.domain.OrderNumber;
 import com.example.ordermgt.order.domain.OrderStatus;
 import com.example.ordermgt.shared.api.ErrorCode;
 import com.example.ordermgt.shared.api.PageResult;
+import com.example.ordermgt.shared.api.Paging;
 import com.example.ordermgt.shared.error.BusinessException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
@@ -27,6 +28,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -152,6 +154,10 @@ class OrderToolSpecsTest {
         return specs.get(toolName).handler().execute(CUSTOMER, argumentsJson);
     }
 
+    private String report(String toolName, ToolResult result) {
+        return specs.get(toolName).report().describe(result.payloadJson());
+    }
+
     private static Order order(OrderStatus status) {
         Instant now = Instant.now();
         return Order.rehydrate(
@@ -163,5 +169,98 @@ class OrderToolSpecsTest {
                 now,
                 now,
                 0);
+    }
+
+    private static Order order(String orderNumber, OrderStatus status) {
+        Instant now = Instant.now();
+        return Order.rehydrate(
+                null,
+                new OrderNumber(orderNumber),
+                CUSTOMER,
+                status,
+                List.of(OrderLine.of("WIDGET-01", "Widget", 1, new BigDecimal("19.90"))),
+                now,
+                now,
+                0);
+    }
+
+    @Test
+    void anEmptyOrderListSaysSoInsteadOfShowingAnEmptyArray() {
+        when(orderService.listByCustomer(CUSTOMER, 1, 20))
+                .thenReturn(PageResult.of(List.of(), 0, 1, 20));
+
+        assertThat(report("queryMyOrders", execute("queryMyOrders", "{}"))).isEqualTo("你名下还没有订单。");
+    }
+
+    @Test
+    void theOrderListIsNarratedWithChineseStatusAndDollarAmounts() {
+        when(orderService.listByCustomer(CUSTOMER, 1, 20))
+                .thenReturn(PageResult.of(List.of(order(OrderStatus.CREATED)), 1, 1, 20));
+
+        String rendered = report("queryMyOrders", execute("queryMyOrders", "{}"));
+
+        // 报告是负载的纯投影：字段名换成人话，机器标识（订单号、sku）留在行内代码里。
+        assertThat(rendered)
+                .isEqualTo(
+                        """
+                        你名下有 1 张订单：
+
+                        `ORD-1` · 已创建 · ¥19.90
+                        - `WIDGET-01` Widget × 1 = ¥19.90""");
+    }
+
+    @Test
+    void everyStatusHasACustomerFacingLabel() {
+        when(orderService.listByCustomer(CUSTOMER, 1, 20))
+                .thenReturn(
+                        PageResult.of(
+                                List.of(
+                                        order("ORD-1", OrderStatus.CREATED),
+                                        order("ORD-2", OrderStatus.COMPLETED),
+                                        order("ORD-3", OrderStatus.CANCELLED)),
+                                3,
+                                1,
+                                20));
+
+        String rendered = report("queryMyOrders", execute("queryMyOrders", "{}"));
+
+        assertThat(rendered).contains("你名下有 3 张订单：");
+        assertThat(rendered).contains("`ORD-1` · 已创建 · ¥19.90");
+        assertThat(rendered).contains("`ORD-2` · 已完成 · ¥19.90");
+        assertThat(rendered).contains("`ORD-3` · 已取消 · ¥19.90");
+    }
+
+    @Test
+    void aFullPageSaysItIsOnlyAPageNotTheWholeHistory() {
+        int page = (int) Paging.DEFAULT_SIZE;
+        when(orderService.listByCustomer(CUSTOMER, 1, page))
+                .thenReturn(
+                        PageResult.of(
+                                IntStream.range(0, page)
+                                        .mapToObj(
+                                                index -> order("ORD-" + index, OrderStatus.CREATED))
+                                        .toList(),
+                                page,
+                                1,
+                                page));
+
+        String rendered = report("queryMyOrders", execute("queryMyOrders", "{}"));
+
+        // 20 张正好是上限：顾客不能把这一页当成全部历史。
+        assertThat(rendered).endsWith("（只列出最近 " + page + " 张）");
+    }
+
+    @Test
+    void aSingleOrderIsNarratedWithTheSameBlockAsTheList() {
+        when(orderService.getByNumber(CUSTOMER, "ORD-1")).thenReturn(order(OrderStatus.CREATED));
+
+        assertThat(
+                        report(
+                                "getOrderByNumber",
+                                execute("getOrderByNumber", "{\"orderNumber\":\"ORD-1\"}")))
+                .isEqualTo(
+                        """
+                        `ORD-1` · 已创建 · ¥19.90
+                        - `WIDGET-01` Widget × 1 = ¥19.90""");
     }
 }

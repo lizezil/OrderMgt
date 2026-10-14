@@ -74,22 +74,23 @@ public class SpringAiAdapter implements AiAssistantPort {
     private final AiConcurrencyGuard concurrencyGuard;
 
     @Override
-    public AssistantTurn respond(Long customerId, List<ChatMessage> memory) {
+    public AssistantTurn respond(Long customerId, Long conversationId, List<ChatMessage> memory) {
         // One permit per model call, held for its whole life (the overflow replay included): the
         // global concurrency ceiling counts calls, not HTTP round trips.
-        return concurrencyGuard.withPermit(() -> respondWithinGuard(memory));
+        return concurrencyGuard.withPermit(
+                () -> respondWithinGuard(systemPrompt(customerId, conversationId), memory));
     }
 
-    private AssistantTurn respondWithinGuard(List<ChatMessage> memory) {
+    private AssistantTurn respondWithinGuard(String system, List<ChatMessage> memory) {
         long start = System.nanoTime();
         try {
-            ChatClientResponse clientResponse = prompt(memory).call().chatClientResponse();
+            ChatClientResponse clientResponse = prompt(system, memory).call().chatClientResponse();
             return toTurn(
                     clientResponse == null ? null : clientResponse.chatResponse(),
                     elapsedMs(start));
         } catch (RuntimeException ex) {
             if (isContextOverflow(ex)) {
-                return respondWithHalvedBudget(memory, start);
+                return respondWithHalvedBudget(system, memory, start);
             }
             if (isRateLimited(ex)) {
                 throw rateLimited(ex);
@@ -103,10 +104,11 @@ public class SpringAiAdapter implements AiAssistantPort {
      * declaring the conversation unwieldable. One retry only -- a second overflow means even two
      * recent turns will not fit, and the honest answer is to start a new conversation.
      */
-    private AssistantTurn respondWithHalvedBudget(List<ChatMessage> memory, long start) {
+    private AssistantTurn respondWithHalvedBudget(
+            String system, List<ChatMessage> memory, long start) {
         try {
             ChatClientResponse clientResponse =
-                    prompt(memory, maxPromptChars / 2).call().chatClientResponse();
+                    prompt(system, memory, maxPromptChars / 2).call().chatClientResponse();
             return toTurn(
                     clientResponse == null ? null : clientResponse.chatResponse(),
                     elapsedMs(start));
@@ -207,6 +209,7 @@ public class SpringAiAdapter implements AiAssistantPort {
     @Override
     public AssistantTurn respondStreaming(
             Long customerId,
+            Long conversationId,
             List<ChatMessage> memory,
             Consumer<String> onTextDelta,
             RunCancellation cancellation) {
@@ -216,11 +219,19 @@ public class SpringAiAdapter implements AiAssistantPort {
         // to the client as the stream's `error` frame; the admission-time JSON 429 is the
         // per-customer limiter's job (see ConversationController#stream).
         return concurrencyGuard.withPermit(
-                () -> streamWithinGuard(memory, onTextDelta, cancellation));
+                () ->
+                        streamWithinGuard(
+                                systemPrompt(customerId, conversationId),
+                                memory,
+                                onTextDelta,
+                                cancellation));
     }
 
     private AssistantTurn streamWithinGuard(
-            List<ChatMessage> memory, Consumer<String> onTextDelta, RunCancellation cancellation) {
+            String system,
+            List<ChatMessage> memory,
+            Consumer<String> onTextDelta,
+            RunCancellation cancellation) {
         long start = System.nanoTime();
 
         // A replay is only safe while the client has seen nothing: retrying after the first
@@ -247,7 +258,13 @@ public class SpringAiAdapter implements AiAssistantPort {
                         retryBeforeFirstToken(
                                 () -> {
                                     streamed.reset();
-                                    streamOnce(memory, passBudget, tracked, streamed, cancellation);
+                                    streamOnce(
+                                            system,
+                                            memory,
+                                            passBudget,
+                                            tracked,
+                                            streamed,
+                                            cancellation);
                                     return streamed.toTurn(model, elapsedMs(start));
                                 },
                                 emitted::get,
@@ -325,12 +342,13 @@ public class SpringAiAdapter implements AiAssistantPort {
 
     /** One pass over the model stream; anything before the first delta is retryable. */
     private void streamOnce(
+            String system,
             List<ChatMessage> memory,
             int budgetChars,
             Consumer<String> onTextDelta,
             StreamedTurn streamed,
             RunCancellation cancellation) {
-        prompt(memory, budgetChars).stream()
+        prompt(system, memory, budgetChars).stream()
                 .chatClientResponse()
                 // A stop trips this predicate at the next chunk, which completes the flux and
                 // cancels the upstream subscription -- the HTTP request to the model is torn
@@ -464,11 +482,12 @@ public class SpringAiAdapter implements AiAssistantPort {
         return (int) ((System.nanoTime() - startNanos) / 1_000_000L);
     }
 
-    private ChatClient.ChatClientRequestSpec prompt(List<ChatMessage> memory) {
-        return prompt(memory, maxPromptChars);
+    private ChatClient.ChatClientRequestSpec prompt(String system, List<ChatMessage> memory) {
+        return prompt(system, memory, maxPromptChars);
     }
 
-    private ChatClient.ChatClientRequestSpec prompt(List<ChatMessage> memory, int budgetChars) {
+    private ChatClient.ChatClientRequestSpec prompt(
+            String system, List<ChatMessage> memory, int budgetChars) {
         ToolCallback[] callbacks =
                 registry.all().stream().map(RegistryToolCallback::new).toArray(ToolCallback[]::new);
 
@@ -479,9 +498,8 @@ public class SpringAiAdapter implements AiAssistantPort {
                         .internalToolExecutionEnabled(false)
                         .build();
 
-        // Built once per call: grounding is regenerated per request (never a stale snapshot) and
-        // must not be paid for twice just because the budget also needs its length.
-        String system = systemPrompt();
+        // Built once per call by the caller: grounding is regenerated per request (never a stale
+        // snapshot) and must not be paid for twice just because the budget also needs its length.
         List<ChatMessage> fitted = fitWithinBudget(memory, budgetChars - system.length());
 
         return chatClient()
@@ -574,11 +592,13 @@ public class SpringAiAdapter implements AiAssistantPort {
     }
 
     /**
-     * Grounding is built per request so the model always sees the current catalog, not a snapshot
-     * baked in at startup.
+     * Grounding is built per request so the model always sees the current catalog and this
+     * conversation's latest confirmed order, not a snapshot baked in at startup. It is built once
+     * per model call and then carried down as a string: the same facts must describe the whole
+     * call, the budget/overflow replay included.
      */
-    private String systemPrompt() {
-        return AiPrompts.SYSTEM + "\n" + groundingProvider.facts();
+    private String systemPrompt(Long customerId, Long conversationId) {
+        return AiPrompts.SYSTEM + "\n" + groundingProvider.facts(customerId, conversationId);
     }
 
     private List<Message> toSpringMessages(List<ChatMessage> memory) {

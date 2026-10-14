@@ -85,19 +85,22 @@ class OrderConcurrencyTest {
             return new AiAssistantPort() {
 
                 @Override
-                public AssistantTurn respond(Long customerId, List<ChatMessage> memory) {
+                public AssistantTurn respond(
+                        Long customerId, Long conversationId, List<ChatMessage> memory) {
                     INVOCATIONS.incrementAndGet();
-                    return DELEGATE.respond(customerId, memory);
+                    return DELEGATE.respond(customerId, conversationId, memory);
                 }
 
                 @Override
                 public AssistantTurn respondStreaming(
                         Long customerId,
+                        Long conversationId,
                         List<ChatMessage> memory,
                         Consumer<String> onTextDelta,
                         RunCancellation cancellation) {
                     INVOCATIONS.incrementAndGet();
-                    return DELEGATE.respondStreaming(customerId, memory, onTextDelta, cancellation);
+                    return DELEGATE.respondStreaming(
+                            customerId, conversationId, memory, onTextDelta, cancellation);
                 }
             };
         }

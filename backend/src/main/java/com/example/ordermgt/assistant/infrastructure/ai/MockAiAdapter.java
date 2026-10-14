@@ -36,9 +36,9 @@ import org.springframework.stereotype.Component;
 @Profile("offline")
 public class MockAiAdapter implements AiAssistantPort {
 
-    /** "2 DOODAD-04". */
+    /** "2 DOODAD-04" -- and "2 个 DOODAD-04", since the demo is driven in Chinese too. */
     private static final Pattern COUNT_THEN_SKU =
-            Pattern.compile("(\\d+)\\s*(?:x\\s+)?([A-Za-z]+-\\d+)");
+            Pattern.compile("(\\d+)\\s*(?:[\\u4e00-\\u9fa5]{1,2}|x\\s+)?\\s*([A-Za-z]+-\\d+)");
 
     /** "DOODAD-04 x 3". */
     private static final Pattern SKU_THEN_COUNT =
@@ -50,7 +50,7 @@ public class MockAiAdapter implements AiAssistantPort {
     private static final int CHUNK_SIZE = 6;
 
     @Override
-    public AssistantTurn respond(Long customerId, List<ChatMessage> memory) {
+    public AssistantTurn respond(Long customerId, Long conversationId, List<ChatMessage> memory) {
         long start = System.nanoTime();
         AssistantTurn canned = turn(lastCustomerMessage(memory));
         return new AssistantTurn(
@@ -64,10 +64,11 @@ public class MockAiAdapter implements AiAssistantPort {
     @Override
     public AssistantTurn respondStreaming(
             Long customerId,
+            Long conversationId,
             List<ChatMessage> memory,
             Consumer<String> onTextDelta,
             RunCancellation cancellation) {
-        AssistantTurn turn = respond(customerId, memory);
+        AssistantTurn turn = respond(customerId, conversationId, memory);
         // Real deltas, so the SPA's incremental rendering is exercised, not just faked. The stop
         // signal is polled between chunks exactly as the real adapter polls it, so cancellation is
         // reachable offline too.
@@ -87,8 +88,14 @@ public class MockAiAdapter implements AiAssistantPort {
         return new AssistantTurn(text, List.of(), turn.usage(), turn.model(), turn.latencyMs());
     }
 
+    /**
+     * The keyword table, in both languages the demo is driven in: the canned replies are Chinese
+     * ({@link OfflinePrompts}), and the README's offline walkthrough types Chinese sentences, so a
+     * stub that only listened for English would answer the documented prompts with "I don't know".
+     * The Chinese words are picked to stay disjoint -- 「订单」 is a lookup, 「下单」 is an order.
+     */
     private AssistantTurn turn(String message) {
-        if (message.contains("cancel")) {
+        if (message.contains("cancel") || message.contains("取消")) {
             Matcher orderNumber = ORDER_NUMBER.matcher(message);
             if (orderNumber.find()) {
                 String found = orderNumber.group();
@@ -108,14 +115,20 @@ public class MockAiAdapter implements AiAssistantPort {
                 || message.contains("how many")
                 || message.contains("check")
                 || message.contains("query")
-                || message.contains("show")) {
+                || message.contains("show")
+                || message.contains("订单")
+                || message.contains("查一下")) {
             return AssistantTurn.of(
                     OfflinePrompts.LOOKING_UP_ORDERS,
                     List.of(new ProposedToolCall("queryMyOrders", "{}", false)),
                     AiUsage.EMPTY);
         }
 
-        if (message.contains("buy") || message.contains("purchase") || message.contains("order")) {
+        if (message.contains("buy")
+                || message.contains("purchase")
+                || message.contains("order")
+                || message.contains("下单")
+                || message.contains("购买")) {
             String lines = linesJson(message);
             if (lines != null) {
                 return AssistantTurn.of(

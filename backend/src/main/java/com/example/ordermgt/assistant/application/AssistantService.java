@@ -77,7 +77,11 @@ public class AssistantService {
      */
     public AssistantResult chat(Long customerId, Long conversationId, String message) {
         TurnContext context = prepare(customerId, conversationId, message);
-        return executeTurn(context, () -> aiAssistantPort.respond(customerId, context.memory()));
+        return executeTurn(
+                context,
+                () ->
+                        aiAssistantPort.respond(
+                                customerId, context.conversation().getId(), context.memory()));
     }
 
     /**
@@ -233,7 +237,11 @@ public class AssistantService {
                 pendingActions.add(propose(customerId, conversation.getId(), spec, call));
             } else {
                 ToolResult result = spec.handler().execute(customerId, call.argumentsJson());
-                executed.add(new ExecutedTool(spec.name(), result.payloadJson()));
+                executed.add(
+                        new ExecutedTool(
+                                spec.name(),
+                                result.payloadJson(),
+                                spec.report().describe(result.payloadJson())));
             }
         }
 
@@ -333,19 +341,25 @@ public class AssistantService {
         return Duration.ofMinutes(actionTtlMinutes);
     }
 
-    /** The model's own words, plus what the readonly tools actually returned. */
+    /**
+     * The model's own words, plus how the server describes what the readonly tools found.
+     *
+     * <p>The payload itself never reaches the transcript (ADR-0015): the report is the whole of
+     * what the customer reads, and it carries its own lead-in precisely so that a turn whose model
+     * wrote nothing still answers the question. The report is also what memory replays to the next
+     * turn, which is why the identifiers and amounts have to survive the rendering.
+     */
     private String renderReadonly(AssistantTurn turn, List<ExecutedTool> executed) {
-        StringBuilder sb = new StringBuilder();
+        List<String> blocks = new ArrayList<>();
         if (!turn.text().isBlank()) {
-            sb.append(turn.text().trim());
+            blocks.add(turn.text().trim());
         }
         for (ExecutedTool tool : executed) {
-            if (!sb.isEmpty()) {
-                sb.append('\n');
+            if (!tool.rendered().isBlank()) {
+                blocks.add(tool.rendered());
             }
-            sb.append('[').append(tool.name()).append("] ").append(tool.resultJson());
         }
-        return sb.toString();
+        return String.join("\n\n", blocks);
     }
 
     private void recordSuccess(Conversation conversation, AssistantTurn turn) {

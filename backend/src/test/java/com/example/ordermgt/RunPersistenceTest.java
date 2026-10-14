@@ -75,19 +75,22 @@ class RunPersistenceTest {
             return new AiAssistantPort() {
 
                 @Override
-                public AssistantTurn respond(Long customerId, List<ChatMessage> memory) {
+                public AssistantTurn respond(
+                        Long customerId, Long conversationId, List<ChatMessage> memory) {
                     failIfDoomed(customerId);
-                    return DELEGATE.respond(customerId, memory);
+                    return DELEGATE.respond(customerId, conversationId, memory);
                 }
 
                 @Override
                 public AssistantTurn respondStreaming(
                         Long customerId,
+                        Long conversationId,
                         List<ChatMessage> memory,
                         Consumer<String> onTextDelta,
                         RunCancellation cancellation) {
                     failIfDoomed(customerId);
-                    return DELEGATE.respondStreaming(customerId, memory, onTextDelta, cancellation);
+                    return DELEGATE.respondStreaming(
+                            customerId, conversationId, memory, onTextDelta, cancellation);
                 }
 
                 private void failIfDoomed(Long customerId) {
@@ -143,7 +146,11 @@ class RunPersistenceTest {
                 context,
                 () ->
                         aiAssistantPort.respondStreaming(
-                                customer, context.memory(), deltas::add, RunCancellation.NEVER));
+                                customer,
+                                context.conversation().getId(),
+                                context.memory(),
+                                deltas::add,
+                                RunCancellation.NEVER));
 
         List<RunPO> runs = runsOf(context.conversation().getId());
         // 断线只停投递（这里表现为 delta 不再有人听），**不**产生 CANCELLED：只留下一条 COMPLETED，
@@ -164,7 +171,11 @@ class RunPersistenceTest {
                         () ->
                                 assistantService.executeTurn(
                                         context,
-                                        () -> aiAssistantPort.respond(customer, context.memory())))
+                                        () ->
+                                                aiAssistantPort.respond(
+                                                        customer,
+                                                        context.conversation().getId(),
+                                                        context.memory())))
                 .isInstanceOf(AiUpstreamException.class);
 
         List<RunPO> runs = runsOf(context.conversation().getId());

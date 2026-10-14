@@ -3,6 +3,7 @@ package com.example.ordermgt.assistant.infrastructure.ai.tools;
 import com.example.ordermgt.assistant.domain.ToolCard;
 import com.example.ordermgt.assistant.domain.ToolField;
 import com.example.ordermgt.assistant.domain.ToolRegistry;
+import com.example.ordermgt.assistant.domain.ToolReport;
 import com.example.ordermgt.assistant.domain.ToolResult;
 import com.example.ordermgt.assistant.domain.ToolSpec;
 import com.example.ordermgt.catalog.domain.CatalogItem;
@@ -56,12 +57,16 @@ public class OrderToolDefinitions {
     @Bean
     public List<ToolSpec> orderToolSpecs(
             OrderService orderService, ObjectMapper objectMapper, CatalogRepository catalog) {
+        // 两个只读工具讲给顾客听的样子。声明在这里，和 schema、handler 挨着——加一个工具仍然是一次编辑。
+        ToolReport ordersReport = payload -> renderOrderList(objectMapper, payload);
+        ToolReport orderReport = payload -> renderOrder(objectMapper, payload);
         return List.of(
                 ToolSpec.readonly(
                         "queryMyOrders",
                         "List the current customer's own orders (excluding other customers).",
                         """
                         {"type":"object","properties":{}}""",
+                        ordersReport,
                         (customerId, args) -> {
                             List<Map<String, Object>> rows =
                                     orderService
@@ -80,6 +85,7 @@ public class OrderToolDefinitions {
                         "Look up one of the current customer's own orders by order number.",
                         """
                         {"type":"object","properties":{"orderNumber":{"type":"string","description":"Order number"}},"required":["orderNumber"]}""",
+                        orderReport,
                         (customerId, args) -> {
                             String orderNumber = requireText(objectMapper, args, "orderNumber");
                             return ToolResult.of(
@@ -287,6 +293,90 @@ public class OrderToolDefinitions {
                                                 l.lineAmount().amount()))
                         .toList());
         return row;
+    }
+
+    /**
+     * 订单列表讲给顾客听的样子：一行引导句，然后每单一个块。
+     *
+     * <p>空结果说的是一句话，而不是把 {@code []} 摆出来；整整一页时也要声明只列了最近这些，否则 顾客会把一页当成全部历史。
+     */
+    private static String renderOrderList(ObjectMapper mapper, String payloadJson) {
+        JsonNode orders = payload(mapper, payloadJson);
+        if (!orders.isArray() || orders.isEmpty()) {
+            return "你名下还没有订单。";
+        }
+        StringBuilder sb = new StringBuilder("你名下有 ").append(orders.size()).append(" 张订单：");
+        for (JsonNode order : orders) {
+            sb.append("\n\n").append(orderBlock(order));
+        }
+        if (orders.size() >= Paging.DEFAULT_SIZE) {
+            sb.append("\n\n（只列出最近 ").append(Paging.DEFAULT_SIZE).append(" 张）");
+        }
+        return sb.toString();
+    }
+
+    /** 单张订单：同一个块。块首那行已经点明是哪一单，不必再另起一句引导。 */
+    private static String renderOrder(ObjectMapper mapper, String payloadJson) {
+        return orderBlock(payload(mapper, payloadJson));
+    }
+
+    /** 一单一块：订单号 · 中文状态 · ¥合计，下面每行一条明细。订单号与 sku 包进行内代码，其余是正文 ——等宽只留给真正的机器数据。 */
+    private static String orderBlock(JsonNode order) {
+        StringBuilder sb = new StringBuilder();
+        sb.append('`')
+                .append(order.path("orderNo").asText(""))
+                .append("` · ")
+                .append(statusLabel(order.path("status").asText("")))
+                .append(" · ")
+                .append(money(order.path("totalAmount")));
+        for (JsonNode line : order.path("lines")) {
+            sb.append("\n- `")
+                    .append(line.path("sku").asText(""))
+                    .append("` ")
+                    .append(line.path("itemName").asText(""))
+                    .append(" × ")
+                    .append(line.path("quantity").asInt())
+                    .append(" = ")
+                    .append(money(line.path("lineAmount")));
+        }
+        return sb.toString();
+    }
+
+    /** 状态的顾客语言；枚举之外的取值原样透出，而不是替它编一个说法。 */
+    private static String statusLabel(String raw) {
+        try {
+            return switch (OrderStatus.valueOf(raw)) {
+                case CREATED -> "已创建";
+                case COMPLETED -> "已完成";
+                case CANCELLED -> "已取消";
+            };
+        } catch (IllegalArgumentException ex) {
+            return raw;
+        }
+    }
+
+    /**
+     * The payload went through JSON on its way here, and a JSON round trip parses {@code 19.90}
+     * into a double -- which reads back as {@code 19.9}. Routing through {@link Money} restores the
+     * scale the domain fixed for prices, so a rendered amount always looks like one.
+     */
+    private static String money(JsonNode amount) {
+        return amount.isNumber()
+                ? "¥" + Money.of(amount.decimalValue()).amount().toPlainString()
+                : UNKNOWN;
+    }
+
+    /**
+     * 把负载读回来。它是本类刚用 {@link #write} 写出去的，所以读不回来是我们自己的 bug，而不是 请求有问题——因此报
+     * INTERNAL_ERROR，而不是模型参数写错时该报的那个校验错误。
+     */
+    private static JsonNode payload(ObjectMapper mapper, String payloadJson) {
+        try {
+            return mapper.readTree(payloadJson);
+        } catch (JsonProcessingException ex) {
+            throw new BusinessException(
+                    ErrorCode.INTERNAL_ERROR, "failed to read a tool payload back");
+        }
     }
 
     /**

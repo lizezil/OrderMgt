@@ -66,6 +66,28 @@ public class PendingActionRepositoryImpl implements PendingActionRepository {
     }
 
     @Override
+    public Optional<PendingAction> findLatestConfirmed(Long customerId, Long conversationId) {
+        if (customerId == null || conversationId == null) {
+            return Optional.empty();
+        }
+        // Confirmed most recently wins: resolvedAt is when the customer said yes, and two confirms
+        // can share a millisecond, so id breaks the tie the way insertion order would.
+        return Optional.ofNullable(
+                        mapper.selectOne(
+                                Wrappers.<PendingActionPO>lambdaQuery()
+                                        .eq(PendingActionPO::getCustomerId, customerId)
+                                        .eq(PendingActionPO::getConversationId, conversationId)
+                                        .eq(
+                                                PendingActionPO::getStatus,
+                                                PendingActionStatus.CONFIRMED.name())
+                                        .isNotNull(PendingActionPO::getResultRef)
+                                        .orderByDesc(PendingActionPO::getResolvedAt)
+                                        .orderByDesc(PendingActionPO::getId)
+                                        .last("LIMIT 1")))
+                .map(persistenceMapper::toDomain);
+    }
+
+    @Override
     public Set<Long> livePendingConversationIds(Collection<Long> conversationIds, Instant now) {
         if (conversationIds == null || conversationIds.isEmpty()) {
             return Set.of();

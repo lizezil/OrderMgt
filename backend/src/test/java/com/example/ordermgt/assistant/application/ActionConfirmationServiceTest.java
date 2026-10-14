@@ -60,6 +60,7 @@ class ActionConfirmationServiceTest {
                                         "queryMyOrders",
                                         "Query orders",
                                         "{}",
+                                        payload -> "你名下还没有订单。",
                                         (customerId, args) -> ToolResult.of("[]"))));
         service = new ActionConfirmationService(repository, registry);
     }

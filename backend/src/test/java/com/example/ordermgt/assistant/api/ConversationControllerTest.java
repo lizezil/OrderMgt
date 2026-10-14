@@ -115,10 +115,10 @@ class ConversationControllerTest {
     @Test
     void clientGoneMidStreamStillHandsTheTurnToExecuteTurn() throws Exception {
         when(assistantService.prepare(CUSTOMER, CONVERSATION, QUESTION)).thenReturn(context);
-        when(aiAssistantPort.respondStreaming(eq(CUSTOMER), anyList(), any(), any()))
+        when(aiAssistantPort.respondStreaming(eq(CUSTOMER), any(), anyList(), any(), any()))
                 .thenAnswer(
                         invocation -> {
-                            Consumer<String> onDelta = invocation.getArgument(2);
+                            Consumer<String> onDelta = invocation.getArgument(3);
                             onDelta.accept("你有 "); // 这次 send 撞上断线
                             onDelta.accept("3 张订单。"); // 断线之后不再投递
                             return turn;
@@ -146,10 +146,10 @@ class ConversationControllerTest {
     @Test
     void containerDetectedDisconnectSkipsDeliveryButStillRunsTheTurn() throws Exception {
         when(assistantService.prepare(CUSTOMER, CONVERSATION, QUESTION)).thenReturn(context);
-        when(aiAssistantPort.respondStreaming(eq(CUSTOMER), anyList(), any(), any()))
+        when(aiAssistantPort.respondStreaming(eq(CUSTOMER), any(), anyList(), any(), any()))
                 .thenAnswer(
                         invocation -> {
-                            Consumer<String> onDelta = invocation.getArgument(2);
+                            Consumer<String> onDelta = invocation.getArgument(3);
                             onDelta.accept("你有 3 张订单。");
                             return turn;
                         });

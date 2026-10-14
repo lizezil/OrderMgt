@@ -11,9 +11,12 @@ import java.util.Objects;
  * after a customer confirmed the PendingAction (ADR-0001). The flag is the single source of truth
  * for that split.
  *
- * <p>A mutating tool additionally carries a {@link ToolCard}: everything the customer is shown
- * about the proposal, decided here beside the schema and the handler rather than in a separate
- * switch keyed on the tool name.
+ * <p>The flag also decides which half of the customer-facing text the tool carries, and the two are
+ * mutually exclusive: a mutating tool carries a {@link ToolCard} (what the proposal would do) and a
+ * readonly tool carries a {@link ToolReport} (what the query found). Either way it is decided here
+ * beside the schema and the handler rather than in a separate switch keyed on the tool name, so
+ * adding a tool stays a single edit. A mutating tool carries no report because its result is shown
+ * by the card, never by the reply.
  */
 public record ToolSpec(
         String name,
@@ -21,7 +24,8 @@ public record ToolSpec(
         String inputSchemaJson,
         boolean mutating,
         ToolHandler handler,
-        ToolCard card) {
+        ToolCard card,
+        ToolReport report) {
 
     public ToolSpec {
         Objects.requireNonNull(name, "name is required");
@@ -30,19 +34,31 @@ public record ToolSpec(
         if (mutating && card == null) {
             throw new IllegalArgumentException("mutating tool " + name + " needs a card");
         }
+        if (mutating && report != null) {
+            throw new IllegalArgumentException(
+                    "mutating tool " + name + " must not have a report: its card shows the result");
+        }
         if (!mutating && card != null) {
             throw new IllegalArgumentException("readonly tool " + name + " must not have a card");
+        }
+        if (!mutating && report == null) {
+            throw new IllegalArgumentException(
+                    "readonly tool " + name + " needs a report to answer the customer with");
         }
     }
 
     public static ToolSpec readonly(
-            String name, String description, String schema, ToolHandler handler) {
-        return new ToolSpec(name, description, schema, false, handler, null);
+            String name,
+            String description,
+            String schema,
+            ToolReport report,
+            ToolHandler handler) {
+        return new ToolSpec(name, description, schema, false, handler, null, report);
     }
 
     public static ToolSpec mutating(
             String name, String description, String schema, ToolCard card, ToolHandler handler) {
-        return new ToolSpec(name, description, schema, true, handler, card);
+        return new ToolSpec(name, description, schema, true, handler, card, null);
     }
 
     /** One line for the card. Only meaningful for mutating tools. */

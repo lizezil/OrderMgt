@@ -163,9 +163,31 @@ class AssistantServiceTest {
                             assertThat(tool.name()).isEqualTo("queryMyOrders");
                             assertThat(tool.resultJson()).isEqualTo("[]");
                         });
-        assertThat(result.reply()).contains("[queryMyOrders]");
+        // 顾客读到的是报告，不是负载：那一行 [工具名] {JSON} 从正文里消失了（ADR-0015）。
+        assertThat(result.reply()).contains("Let me look up your own orders.", "你名下还没有订单。");
+        assertThat(result.reply()).doesNotContain("[queryMyOrders]", "[]");
         verify(orderService).listByCustomer(CUSTOMER, 1, 20);
         verify(pendingActionRepository, never()).save(any());
+    }
+
+    @Test
+    void aReadonlyTurnWithNoModelProseStillAnswersTheCustomer() {
+        when(orderService.listByCustomer(CUSTOMER, 1, 20))
+                .thenReturn(PageResult.of(List.of(), 0, 1, 20));
+        when(aiInvocationRepository.save(any()))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        // 实测过的失败形态：模型把补全 token 全花在工具调用上，一个字都没写。回复不能因此只剩
+        // 一坨负载——报告自带引导句，没有正文也读得通。
+        AssistantResult result =
+                service.complete(
+                        context(),
+                        AssistantTurn.of(
+                                "",
+                                List.of(new ProposedToolCall("queryMyOrders", "{}", false)),
+                                AiUsage.EMPTY));
+
+        assertThat(result.reply()).isEqualTo("你名下还没有订单。");
     }
 
     @Test
@@ -448,7 +470,7 @@ class AssistantServiceTest {
                         "qwen-max",
                         60000,
                         AiInvocationOutcome.TIMEOUT);
-        when(aiAssistantPort.respond(eq(CUSTOMER), anyList())).thenThrow(timeout);
+        when(aiAssistantPort.respond(eq(CUSTOMER), any(), anyList())).thenThrow(timeout);
         when(aiInvocationRepository.save(any()))
                 .thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -474,7 +496,7 @@ class AssistantServiceTest {
                         new AiUsage(11, 22),
                         "qwen-max",
                         4242);
-        when(aiAssistantPort.respond(eq(CUSTOMER), anyList())).thenReturn(answered);
+        when(aiAssistantPort.respond(eq(CUSTOMER), any(), anyList())).thenReturn(answered);
         when(aiInvocationRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
         assertThatThrownBy(() -> service.chat(CUSTOMER, null, "hello"))
@@ -496,7 +518,7 @@ class AssistantServiceTest {
         when(conversationService.appendCustomerMessage(eq(CUSTOMER), eq(CONVERSATION), anyString()))
                 .thenReturn(Message.customer(CONVERSATION, "hello", Instant.now()));
         when(conversationService.memory(CONVERSATION, MEMORY_WINDOW)).thenReturn(List.of());
-        when(aiAssistantPort.respond(eq(CUSTOMER), anyList()))
+        when(aiAssistantPort.respond(eq(CUSTOMER), any(), anyList()))
                 .thenReturn(AssistantTurn.of("hello", List.of(), AiUsage.EMPTY));
         when(aiInvocationRepository.save(any()))
                 .thenAnswer(invocation -> invocation.getArgument(0));
@@ -521,7 +543,7 @@ class AssistantServiceTest {
                 .thenReturn(List.of(new ChatMessage(Role.CUSTOMER, "first thread")));
         when(conversationService.memory(6L, MEMORY_WINDOW))
                 .thenReturn(List.of(new ChatMessage(Role.CUSTOMER, "second thread")));
-        when(aiAssistantPort.respond(eq(CUSTOMER), anyList()))
+        when(aiAssistantPort.respond(eq(CUSTOMER), any(), anyList()))
                 .thenReturn(AssistantTurn.of("ok", List.of(), AiUsage.EMPTY));
         when(aiInvocationRepository.save(any()))
                 .thenAnswer(invocation -> invocation.getArgument(0));
@@ -531,7 +553,7 @@ class AssistantServiceTest {
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<ChatMessage>> memories = ArgumentCaptor.forClass(List.class);
-        verify(aiAssistantPort, times(2)).respond(eq(CUSTOMER), memories.capture());
+        verify(aiAssistantPort, times(2)).respond(eq(CUSTOMER), any(), memories.capture());
         assertThat(memories.getAllValues().get(0))
                 .extracting(ChatMessage::content)
                 .containsExactly("first thread");

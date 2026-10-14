@@ -57,17 +57,20 @@ class ArchiveIntegrationTest {
             return new AiAssistantPort() {
 
                 @Override
-                public AssistantTurn respond(Long customerId, List<ChatMessage> memory) {
-                    return delegate.respond(customerId, memory);
+                public AssistantTurn respond(
+                        Long customerId, Long conversationId, List<ChatMessage> memory) {
+                    return delegate.respond(customerId, conversationId, memory);
                 }
 
                 @Override
                 public AssistantTurn respondStreaming(
                         Long customerId,
+                        Long conversationId,
                         List<ChatMessage> memory,
                         Consumer<String> onTextDelta,
                         RunCancellation cancellation) {
-                    return delegate.respondStreaming(customerId, memory, onTextDelta, cancellation);
+                    return delegate.respondStreaming(
+                            customerId, conversationId, memory, onTextDelta, cancellation);
                 }
             };
         }

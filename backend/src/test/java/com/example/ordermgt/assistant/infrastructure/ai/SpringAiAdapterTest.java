@@ -25,6 +25,7 @@ import com.example.ordermgt.assistant.domain.RunCancellation;
 import com.example.ordermgt.assistant.domain.RunCancelledException;
 import com.example.ordermgt.assistant.domain.RunInterruptedException;
 import com.example.ordermgt.assistant.domain.ToolRegistry;
+import com.example.ordermgt.assistant.infrastructure.ai.prompt.AiPrompts;
 import com.example.ordermgt.shared.api.ErrorCode;
 import com.example.ordermgt.shared.error.BusinessException;
 import java.io.IOException;
@@ -105,14 +106,22 @@ class SpringAiAdapterTest {
 
     /**
      * Grounding only works if the facts actually reach the model: building them and then dropping
-     * them on the floor would leave the prompt exactly as ungrounded as before. The system prompt
-     * the model is handed must carry what the provider served.
+     * them on the floor would leave the prompt exactly as ungrounded as before. So the system
+     * prompt must carry what the provider served -- every kind of fact it serves, and served for
+     * the right conversation: 「刚刚那个订单」 is a fact about one conversation, not about a customer's
+     * whole history (ADR-0015).
      */
     @Test
     void theSystemPromptCarriesTheGroundingFacts() {
+        List<String> scopes = new ArrayList<>();
         GroundingProvider grounding =
-                () ->
-                        "Available items (take skus exactly from here):\n- WIDGET-01 unit price 19.90";
+                (customerId, conversationId) -> {
+                    scopes.add(customerId + "/" + conversationId);
+                    return "Available items (take skus exactly from here):\n"
+                            + "- WIDGET-01 unit price 19.90\n"
+                            + AiPrompts.LAST_CONFIRMED_ORDER_HEADER
+                            + "\n- ORD2026101421214197C492 (Place order: GIZMO-03 × 1)";
+                };
         ChatClient.Builder builder = mock(ChatClient.Builder.class);
         ChatClient client = mock(ChatClient.class);
         ChatClient.ChatClientRequestSpec spec = mock(ChatClient.ChatClientRequestSpec.class);
@@ -132,11 +141,14 @@ class SpringAiAdapterTest {
                         "test-model",
                         40_000,
                         new AiConcurrencyGuard(64))
-                .respond(1001L, List.of());
+                .respond(1001L, 7L, List.of());
 
         ArgumentCaptor<String> systemPrompt = ArgumentCaptor.forClass(String.class);
         verify(spec).system(systemPrompt.capture());
-        assertThat(systemPrompt.getValue()).contains("WIDGET-01 unit price 19.90");
+        assertThat(scopes).containsExactly("1001/7");
+        assertThat(systemPrompt.getValue())
+                .contains("WIDGET-01 unit price 19.90")
+                .contains("ORD2026101421214197C492");
     }
 
     /** 并发名额为零：调用在碰模型之前就被 429 拒绝，builder 连 build 都不该被调到。 */
@@ -147,12 +159,12 @@ class SpringAiAdapterTest {
                 new SpringAiAdapter(
                         builder,
                         new ToolRegistry(List.of()),
-                        () -> "",
+                        (customerId, conversationId) -> "",
                         "test-model",
                         40_000,
                         new AiConcurrencyGuard(0));
 
-        assertThatThrownBy(() -> adapter.respond(1001L, List.of()))
+        assertThatThrownBy(() -> adapter.respond(1001L, 7L, List.of()))
                 .isInstanceOf(BusinessException.class)
                 .satisfies(
                         ex ->
@@ -183,12 +195,12 @@ class SpringAiAdapterTest {
                 new SpringAiAdapter(
                         builder,
                         new ToolRegistry(List.of()),
-                        () -> "",
+                        (customerId, conversationId) -> "",
                         "test-model",
                         40_000,
                         new AiConcurrencyGuard(64));
 
-        assertThatThrownBy(() -> adapter.respond(1001L, List.of()))
+        assertThatThrownBy(() -> adapter.respond(1001L, 7L, List.of()))
                 .isInstanceOf(BusinessException.class)
                 .satisfies(
                         ex -> {
@@ -225,13 +237,15 @@ class SpringAiAdapterTest {
                 new SpringAiAdapter(
                         builder,
                         new ToolRegistry(List.of()),
-                        () -> "",
+                        (customerId, conversationId) -> "",
                         "test-model",
                         40_000,
                         new AiConcurrencyGuard(64));
 
         assertThatThrownBy(
-                        () -> adapter.respondStreaming(1001L, List.of(), delta -> {}, () -> false))
+                        () ->
+                                adapter.respondStreaming(
+                                        1001L, 7L, List.of(), delta -> {}, () -> false))
                 .isInstanceOf(BusinessException.class)
                 .satisfies(
                         ex -> {
@@ -413,7 +427,7 @@ class SpringAiAdapterTest {
         SpringAiAdapter adapter = adapterOver(chunk("你有 "), chunk("3 张订单。"), chunk(""));
 
         AssistantTurn turn =
-                adapter.respondStreaming(1001L, List.of(), delta -> {}, RunCancellation.NEVER);
+                adapter.respondStreaming(1001L, 7L, List.of(), delta -> {}, RunCancellation.NEVER);
 
         assertThat(turn.text()).isEqualTo("你有 3 张订单。");
     }
@@ -425,7 +439,7 @@ class SpringAiAdapterTest {
                 adapterOver(chunk("hello"), chunkWithUsage(" there", 12, 34), chunk(""));
 
         AssistantTurn turn =
-                adapter.respondStreaming(1001L, List.of(), delta -> {}, RunCancellation.NEVER);
+                adapter.respondStreaming(1001L, 7L, List.of(), delta -> {}, RunCancellation.NEVER);
 
         assertThat(turn.usage().promptTokens()).isEqualTo(12);
         assertThat(turn.usage().completionTokens()).isEqualTo(34);
@@ -437,7 +451,7 @@ class SpringAiAdapterTest {
         SpringAiAdapter adapter = adapterOver(chunkWithToolCall(), chunk(""));
 
         AssistantTurn turn =
-                adapter.respondStreaming(1001L, List.of(), delta -> {}, RunCancellation.NEVER);
+                adapter.respondStreaming(1001L, 7L, List.of(), delta -> {}, RunCancellation.NEVER);
 
         assertThat(turn.toolCalls())
                 .extracting(ProposedToolCall::name)
@@ -460,6 +474,7 @@ class SpringAiAdapterTest {
                         () ->
                                 adapter.respondStreaming(
                                         1001L,
+                                        7L,
                                         List.of(),
                                         delta -> cancelled.set(true),
                                         cancelled::get),
@@ -485,7 +500,7 @@ class SpringAiAdapterTest {
                 catchThrowableOfType(
                         () ->
                                 adapter.respondStreaming(
-                                        1001L, List.of(), delta -> {}, RunCancellation.NEVER),
+                                        1001L, 7L, List.of(), delta -> {}, RunCancellation.NEVER),
                         RunInterruptedException.class);
 
         assertThat(broken).isNotNull();
@@ -498,7 +513,7 @@ class SpringAiAdapterTest {
         Budgeted stub = budgetedOver(12_000, chunk("ok"));
         List<ChatMessage> memory = turns(10, 5000);
 
-        stub.adapter().respond(1001L, memory);
+        stub.adapter().respond(1001L, 7L, memory);
 
         ArgumentCaptor<List<Message>> sent = ArgumentCaptor.forClass(List.class);
         verify(stub.spec()).messages(sent.capture());
@@ -512,7 +527,7 @@ class SpringAiAdapterTest {
     void theLastTwoTurnsSurviveEvenABudgetThatFitsNone() {
         Budgeted stub = budgetedOver(100, chunk("ok"));
 
-        stub.adapter().respond(1001L, turns(5, 5000));
+        stub.adapter().respond(1001L, 7L, turns(5, 5000));
 
         ArgumentCaptor<List<Message>> sent = ArgumentCaptor.forClass(List.class);
         verify(stub.spec()).messages(sent.capture());
@@ -534,7 +549,7 @@ class SpringAiAdapterTest {
                             return chunk("ok");
                         });
 
-        AssistantTurn turn = stub.adapter().respond(1001L, turns(3, 5000));
+        AssistantTurn turn = stub.adapter().respond(1001L, 7L, turns(3, 5000));
 
         assertThat(turn.text()).isEqualTo("ok");
         assertThat(attempts.get()).isEqualTo(2);
@@ -549,7 +564,7 @@ class SpringAiAdapterTest {
                         new IllegalStateException(
                                 "Error: context_length_exceeded: the conversation is too long"));
 
-        assertThatThrownBy(() -> stub.adapter().respond(1001L, turns(3, 5000)))
+        assertThatThrownBy(() -> stub.adapter().respond(1001L, 7L, turns(3, 5000)))
                 .isInstanceOf(BusinessException.class)
                 .satisfies(
                         ex -> {
@@ -598,7 +613,7 @@ class SpringAiAdapterTest {
                 new SpringAiAdapter(
                         builder,
                         new ToolRegistry(List.of()),
-                        () -> "",
+                        (customerId, conversationId) -> "",
                         "test-model",
                         maxPromptChars,
                         new AiConcurrencyGuard(64));
@@ -625,7 +640,7 @@ class SpringAiAdapterTest {
         return new SpringAiAdapter(
                 builder,
                 new ToolRegistry(List.of()),
-                () -> "",
+                (customerId, conversationId) -> "",
                 "test-model",
                 40_000,
                 new AiConcurrencyGuard(64));

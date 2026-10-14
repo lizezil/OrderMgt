@@ -21,6 +21,13 @@ public interface PendingActionRepository {
     List<PendingAction> findByIdIn(Collection<Long> ids);
 
     /**
+     * The most recently confirmed action of one conversation, if any -- what the customer means by
+     * "that order I just placed". Scoped by customer as well as by conversation, so a fact handed
+     * to the model can never be another customer's order however the conversation id was obtained.
+     */
+    Optional<PendingAction> findLatestConfirmed(Long customerId, Long conversationId);
+
+    /**
      * Which of {@code conversationIds} have a live card right now -- PENDING and not yet past its
      * deadline, checked against {@code now} because the sweeper may not have run since it lapsed.
      * One query, so the sidebar derives WAITING_APPROVAL without an N+1.

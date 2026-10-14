@@ -23,11 +23,13 @@ import com.example.ordermgt.assistant.domain.AiUsage;
 import com.example.ordermgt.assistant.domain.AssistantTurn;
 import com.example.ordermgt.assistant.domain.ChatMessage;
 import com.example.ordermgt.assistant.domain.Conversation;
+import com.example.ordermgt.assistant.domain.GroundingProvider;
 import com.example.ordermgt.assistant.domain.PendingAction;
 import com.example.ordermgt.assistant.domain.PendingActionRepository;
 import com.example.ordermgt.assistant.domain.ProposedToolCall;
 import com.example.ordermgt.assistant.domain.RunCancellation;
 import com.example.ordermgt.assistant.infrastructure.ai.MockAiAdapter;
+import com.example.ordermgt.assistant.infrastructure.ai.prompt.AiPrompts;
 import com.example.ordermgt.assistant.infrastructure.persist.AiInvocationMapper;
 import com.example.ordermgt.assistant.infrastructure.persist.AiInvocationPO;
 import com.example.ordermgt.assistant.infrastructure.schedule.PendingActionSweeper;
@@ -90,11 +92,12 @@ class OrderAssistantBusinessFlowTest {
             NEXT.set(null);
         }
 
-        private static AssistantTurn current(Long customerId, List<ChatMessage> memory) {
+        private static AssistantTurn current(
+                Long customerId, Long conversationId, List<ChatMessage> memory) {
             Function<List<ChatMessage>, AssistantTurn> behaviour = NEXT.getAndSet(null);
             return behaviour != null
                     ? behaviour.apply(memory)
-                    : DELEGATE.respond(customerId, memory);
+                    : DELEGATE.respond(customerId, conversationId, memory);
         }
 
         @Bean
@@ -103,17 +106,19 @@ class OrderAssistantBusinessFlowTest {
             return new AiAssistantPort() {
 
                 @Override
-                public AssistantTurn respond(Long customerId, List<ChatMessage> memory) {
-                    return current(customerId, memory);
+                public AssistantTurn respond(
+                        Long customerId, Long conversationId, List<ChatMessage> memory) {
+                    return current(customerId, conversationId, memory);
                 }
 
                 @Override
                 public AssistantTurn respondStreaming(
                         Long customerId,
+                        Long conversationId,
                         List<ChatMessage> memory,
                         Consumer<String> onTextDelta,
                         RunCancellation cancellation) {
-                    AssistantTurn turn = current(customerId, memory);
+                    AssistantTurn turn = current(customerId, conversationId, memory);
                     for (int i = 0; i < turn.text().length(); i += 6) {
                         onTextDelta.accept(
                                 turn.text().substring(i, Math.min(turn.text().length(), i + 6)));
@@ -141,6 +146,9 @@ class OrderAssistantBusinessFlowTest {
     @Autowired private AiInvocationMapper aiInvocationMapper;
 
     @Autowired private CatalogRepository catalogRepository;
+
+    /** The real one: the facts a turn is handed are part of the business flow being tested here. */
+    @Autowired private GroundingProvider groundingProvider;
 
     @Autowired private MockMvc mockMvc;
 
@@ -506,6 +514,88 @@ class OrderAssistantBusinessFlowTest {
         mockMvc.perform(get("/api/does-not-exist").with(user(String.valueOf(newCustomer()))))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("NOT_FOUND"));
+    }
+
+    /**
+     * 回复人话化的端到端验收（ADR-0015）：走一遍顾客真会走的那条路——「下单 → 确认 → 追问刚刚那一单」， 而且挑最难的一轮：模型只调用工具、一个字都没写。
+     *
+     * <p>钉住四件外部可观察的事：顾客读到的是服务端渲染的中文人话，正文里一行 `[工具名] {JSON}` 都没有；原始负载仍然是
+     * 机器那一份，随响应一起出去；那份人话同时就是记忆，下一轮追问早前的结果时订单号与金额都还在场（US-2.1 不回退）；
+     * 「刚刚这个订单」的订单号是服务端事实，只在这段会话、这位客户面前出现。
+     */
+    @Test
+    void theOrderJustConfirmedIsAnsweredInProseAndRememberedByTheNextTurn() throws Exception {
+        long customer = newCustomer();
+        String lines = "{\"lines\":[{\"sku\":\"GIZMO-03\",\"quantity\":2}]}";
+
+        // 1) 下单：模型提议、顾客确认。确认之后订单号只落在动作的结果引用上——transcript 里从来没有它。
+        ScriptedAiConfiguration.program(
+                memory ->
+                        AssistantTurn.of(
+                                "我已经为你准备好订单，请确认。",
+                                List.of(new ProposedToolCall("createOrder", lines, true)),
+                                AiUsage.EMPTY));
+        AssistantResult proposal = assistantService.chat(customer, null, "帮我下单 2 个 GIZMO-03");
+        Long conversationId = proposal.conversationId();
+        String token = proposal.actions().get(0).token();
+        assertThat(actionConfirmationService.confirm(customer, token).status())
+                .isEqualTo("CONFIRMED");
+        String orderNo = pendingActionRepository.findByToken(token).orElseThrow().getResultRef();
+        assertThat(orderNo).isNotBlank();
+
+        // 2) 追问「刚刚这个订单」：那一轮模型把补全 token 全花在工具调用上，正文为空。
+        ScriptedAiConfiguration.program(
+                memory ->
+                        AssistantTurn.of(
+                                "",
+                                List.of(
+                                        new ProposedToolCall(
+                                                "getOrderByNumber",
+                                                "{\"orderNumber\":\"" + orderNo + "\"}",
+                                                false)),
+                                AiUsage.EMPTY));
+        AssistantResult lookup = assistantService.chat(customer, conversationId, "查看刚刚这个订单");
+
+        // 顾客读到的是：订单号、中文状态、带符号的金额、逐行明细，而且这一行不是日志样式的一坨数据。
+        assertThat(lookup.reply())
+                .contains(orderNo)
+                .contains("已创建")
+                .contains("¥10.00")
+                .contains("GIZMO-03");
+        assertThat(lookup.reply())
+                .doesNotContain("[getOrderByNumber]", "[queryMyOrders]", "{\"orderNo\"");
+        // 原始负载没有消失，它只是不再出现在正文里：给机器的那一份照旧随响应出去。
+        assertThat(lookup.executed())
+                .singleElement()
+                .satisfies(
+                        tool ->
+                                assertThat(tool.resultJson())
+                                        .contains("\"orderNo\":\"" + orderNo + "\""));
+
+        // 3) 记忆：人话渲染就是下一轮读到的内容，订单号与金额都还在（US-2.1 不回退）。
+        AtomicReference<List<ChatMessage>> memory = new AtomicReference<>(List.of());
+        ScriptedAiConfiguration.program(
+                seen -> {
+                    memory.set(seen);
+                    return AssistantTurn.of("就是刚确认的那一单。", List.of(), AiUsage.EMPTY);
+                });
+        assistantService.chat(customer, conversationId, "我第一轮查到的是哪一单，金额多少？");
+        assertThat(memory.get())
+                .extracting(ChatMessage::content)
+                .allSatisfy(
+                        text ->
+                                assertThat(text)
+                                        .doesNotContain("[queryMyOrders]", "[getOrderByNumber]"));
+        assertThat(memory.get())
+                .extracting(ChatMessage::content)
+                .anySatisfy(text -> assertThat(text).contains(orderNo).contains("¥10.00"));
+
+        // 4) grounding：那个订单号由服务端带进提示词；换一个会话就没有，换一个客户更不可能有。
+        assertThat(groundingProvider.facts(customer, conversationId))
+                .contains(AiPrompts.LAST_CONFIRMED_ORDER_HEADER, orderNo);
+        assertThat(groundingProvider.facts(customer, conversationService.start(customer).getId()))
+                .doesNotContain(AiPrompts.LAST_CONFIRMED_ORDER_HEADER);
+        assertThat(groundingProvider.facts(newCustomer(), conversationId)).doesNotContain(orderNo);
     }
 
     private static long newCustomer() {
