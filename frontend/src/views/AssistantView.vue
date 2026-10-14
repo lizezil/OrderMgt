@@ -275,7 +275,15 @@ function watchRun(conversationId: number, runId: number): void {
         },
         // The Run settled. What is on screen already equals what was persisted, so the bubble
         // stays; the sidebar's state comes from the status stream.
-        onClosed: () => stopWatchingRun(),
+        onClosed: () => {
+          stopWatchingRun()
+          // ...unless it never said a word: a bubble still waiting on its first character must not
+          // outlive the turn that was going to write it. Nothing is lost -- the server persisted
+          // what it had, and history shows it on the next open.
+          if (awaitingWords(live)) {
+            messages.value = messages.value.filter((message) => message !== live)
+          }
+        },
       },
       controller.signal,
     )
@@ -565,6 +573,12 @@ async function send(): Promise<void> {
       // arrived) and is now an ordinary ASSISTANT message on the server. Keep the bubble; the stop
       // was the point, so there is nothing to report.
       if (placeholder && cancelledReply !== null) placeholder.content = cancelledReply
+      // A stop before the first word persisted nothing (the server skips a blank reply), so a
+      // placeholder still waiting on its first character waits on words that are never coming.
+      // Retract it rather than leave the typing indicator running forever.
+      if (placeholder && awaitingWords(placeholder)) {
+        messages.value = messages.value.filter((message) => message !== placeholder)
+      }
       return
     }
     messages.value = messages.value.filter((message) => message !== placeholder)
@@ -604,6 +618,15 @@ function onComposerEnter(event: KeyboardEvent): void {
   if (event.isComposing || event.keyCode === 229) return
   event.preventDefault()
   void send()
+}
+
+/**
+ * A reply on screen that has not said its first word yet -- the streaming bubble before the stream
+ * delivers anything. It draws the typing indicator instead of an empty box. History can never hand
+ * one of these over: the server skips a blank reply, so "no words" always means "still waiting".
+ */
+function awaitingWords(message: Message): boolean {
+  return message.role === 'ASSISTANT' && !(message.content ?? '').trim()
 }
 
 function onResolved(message: Message, card: ActionCard): void {
@@ -698,7 +721,19 @@ onMounted(async () => {
           :class="message.role.toLowerCase()"
         >
           <p class="speaker">{{ message.role === 'CUSTOMER' ? '你' : '助手' }}</p>
-          <div class="said" v-html="renderMarkdown(message.content || '')" />
+          <!-- The reply's first word can be seconds away (a queued turn, a slow model): an empty
+               box reads as a broken render, so the bubble shows the wait itself instead. -->
+          <div
+            v-if="awaitingWords(message)"
+            class="said pending"
+            role="status"
+            aria-label="正在输入"
+          >
+            <span class="dot"></span>
+            <span class="dot"></span>
+            <span class="dot"></span>
+          </div>
+          <div v-else class="said" v-html="renderMarkdown(message.content || '')" />
           <div v-if="index === retryIndex" class="retry">
             <span class="retry-note">没有收到回复</span>
             <button class="btn" @click="retry(message)">重试</button>

@@ -349,6 +349,31 @@ describe('流式回复', () => {
     expect(wrapper.get('.meter').text()).toContain('模型耗时 321 ms')
   })
 
+  it('首字还没到时气泡显示输入指示，而不是一个空框', async () => {
+    listConversationsMock.mockResolvedValue([conversation(7, '下单')])
+    let emitDelta!: (delta: string) => void
+    chatStreamMock.mockImplementation((_message, _id, handlers) => {
+      emitDelta = handlers.onToken
+      return new Promise<ChatResponse>(() => {})
+    })
+
+    const wrapper = await mountView()
+    await wrapper.get('textarea').setValue('帮我下单 2 个 GADGET-02')
+    await sendButton(wrapper).trigger('click')
+    await flushPromises()
+
+    // 气泡已经在位，但一个字都还没有：三个点占着位置，不留下空白的框。
+    const pending = wrapper.get('article.assistant .said.pending')
+    expect(pending.findAll('.dot')).toHaveLength(3)
+    expect(pending.text()).toBe('')
+
+    emitDelta('好的，我先核对库存。')
+    await nextTick()
+
+    expect(wrapper.find('.said.pending').exists()).toBe(false)
+    expect(wrapper.get('article.assistant .said').text()).toBe('好的，我先核对库存。')
+  })
+
   it('服务端没收到这条消息时撤回乐观气泡、把草稿还给客户，并报出原因', async () => {
     vi.useFakeTimers()
     try {
@@ -966,6 +991,27 @@ describe('停止运行中的一轮', () => {
     expect(wrapper.text()).toContain('我先说半句')
     expect(wrapper.emitted('error')).toBeUndefined()
     expect(wrapper.find('.thinking').exists()).toBe(false)
+  })
+
+  it('一个字都还没出就停：服务端什么也没存，占位气泡跟着收回', async () => {
+    const stream = streaming()
+    const wrapper = await mountView()
+    await sendLine(wrapper, '帮我下单 2 个 GADGET-02')
+
+    // 客户消息 + 还在等首字的助手占位。
+    expect(wrapper.findAll('article')).toHaveLength(2)
+    expect(wrapper.find('.said.pending').exists()).toBe(true)
+
+    stream.on(0).onRun(42)
+    stream.on(0).onCancelled('')
+    stream.reject(0, new ApiError(RUN_CANCELLED, '本轮已停止', 200))
+    await flushPromises()
+
+    // 没有回复就没有气泡，更不能留一个永远等不到字的输入指示。
+    expect(wrapper.find('article.assistant').exists()).toBe(false)
+    expect(wrapper.emitted('error')).toBeUndefined()
+    // 问题确实没被回答，于是回到那条唯一的出路：重发。
+    expect(wrapper.get('.retry-note').text()).toBe('没有收到回复')
   })
 
   it('停止只掐正在跑的那一轮，不动排在后面的队', async () => {

@@ -539,6 +539,46 @@ textarea {
   line-height: 1.75;
 }
 
+/* The reply before its first word: the bubble is already in place, so the wait is shown as three
+   dots inside it -- a blank box would read as a render that failed. Padded out to the height of one
+   line of the reply (line-height 1.75 of 15px, plus the same 9/13 padding and border), so the
+   thread does not jump when the words land. */
+.line .said.pending {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 19px 13px;
+}
+
+.line .said.pending .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ink-faint);
+  animation: typing 1.4s ease-in-out infinite both;
+}
+
+.line .said.pending .dot:nth-child(2) {
+  animation-delay: 0.16s;
+}
+
+.line .said.pending .dot:nth-child(3) {
+  animation-delay: 0.32s;
+}
+
+@keyframes typing {
+  0%,
+  60%,
+  100% {
+    opacity: 0.28;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+
 /* An authorization slip is a document, not a turn: it keeps the full measure, wherever it sits. */
 .line .slip {
   align-self: stretch;
@@ -1227,5 +1267,12 @@ h1 {
   * {
     animation-duration: 0.001s !important;
     transition-duration: 0.001s !important;
+  }
+
+  /* Collapsing an *infinite* loop to 0.001s would restart it every frame instead of ending it,
+     so the typing dots stop outright and simply sit there, mid-weight. */
+  .line .said.pending .dot {
+    animation: none !important;
+    opacity: 0.55;
   }
 }
