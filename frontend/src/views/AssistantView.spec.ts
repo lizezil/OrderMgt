@@ -154,13 +154,14 @@ describe('打开助手', () => {
     expect(historyMock).not.toHaveBeenCalled()
   })
 
-  it('以方括号开头的行按机器输出排版，其余行按散文', async () => {
+  it('订单回复按散文与行内代码呈现，不再有机器文本块', async () => {
     listConversationsMock.mockResolvedValue([conversation(7, '查询')])
     historyMock.mockResolvedValue([
       {
         id: 1,
         role: 'ASSISTANT',
-        content: '我查到了这些：\n[queryMyOrders] {"total":0}',
+        content:
+          '你名下有 1 张订单：\n\n`ORD-1` · 已创建 · ¥19.90\n- `WIDGET-01` Widget × 1 = ¥19.90',
         createdAt: '',
         action: null,
       } as Message,
@@ -168,9 +169,12 @@ describe('打开助手', () => {
 
     const wrapper = await mountView()
 
-    expect(wrapper.findAll('code.data').map((code) => code.text())).toEqual([
-      '[queryMyOrders] {"total":0}',
+    expect(wrapper.text()).toContain('你名下有 1 张订单')
+    expect(wrapper.findAll('article.assistant .said code').map((code) => code.text())).toEqual([
+      'ORD-1',
+      'WIDGET-01',
     ])
+    expect(wrapper.find('pre.md-machine').exists()).toBe(false)
   })
 })
 
@@ -1292,5 +1296,33 @@ describe('快速操作的守卫', () => {
     expect(historyMock).toHaveBeenCalledTimes(2)
     expect(wrapper.get('.slip-state').text()).toBe('已过期')
     expect(wrapper.emitted('error')).toBeUndefined()
+  })
+
+  /**
+   * 「新对话」的 POST 与它的状态推送是同一次创建的两个出口：服务端在 201 之前就把这条会话的 `state` 帧推给了
+   * store（它得先建会话才能回会话 id）。视图若把响应体再插一次，侧栏就会出现同一会话的两行。
+   */
+  it('状态帧抢在 POST 响应之前到达：侧栏仍只有一条新对话', async () => {
+    listConversationsMock.mockResolvedValue([])
+    let resolveCreation!: (conversation: Conversation) => void
+    startConversationMock.mockImplementation(
+      () =>
+        new Promise<Conversation>((resolve) => {
+          resolveCreation = resolve
+        }),
+    )
+
+    const wrapper = await mountView()
+    const newConversation = wrapper
+      .findAll('button')
+      .find((candidate) => candidate.text().includes('新对话'))
+    if (!newConversation) throw new Error('找不到新对话按钮')
+    await newConversation.trigger('click') // POST /conversations 还挂着
+    useSessionStore().upsert(conversation(7, null)) // 推送先到
+    resolveCreation(conversation(7, null)) // 响应体后到，同一个 id
+    await flushPromises()
+
+    expect(wrapper.findAll('.entry')).toHaveLength(1)
+    expect(wrapper.get('.entry.active').text()).toContain('新对话')
   })
 })

@@ -344,7 +344,10 @@ function watchRun(conversationId: number, runId: number): void {
 /** Starts a conversation, files it at the top of the rail and makes it active. */
 async function createConversation(): Promise<Conversation> {
   const conversation = await api.startConversation()
-  conversations.value = [conversation, ...conversations.value]
+  // Through the store, not by prepending: the status stream already reports the new conversation
+  // (its `state` frame is pushed while the POST is still in flight), so a plain insert would file
+  // the same id twice and the rail would show two rows for one conversation.
+  store.upsert(conversation)
   activeId.value = conversation.id
   return conversation
 }
