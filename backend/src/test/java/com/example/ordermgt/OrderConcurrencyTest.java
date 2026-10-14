@@ -1,6 +1,7 @@
 package com.example.ordermgt;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 
 import com.example.ordermgt.assistant.application.ActionConfirmationService;
@@ -173,10 +174,10 @@ class OrderConcurrencyTest {
                                     MvcResult result =
                                             mockMvc.perform(
                                                             post("/api/orders")
-                                                                    .header(
-                                                                            "X-Customer-Id",
-                                                                            String.valueOf(
-                                                                                    customer))
+                                                                    .with(
+                                                                            user(
+                                                                                    String.valueOf(
+                                                                                            customer)))
                                                                     .header("Idempotency-Key", key)
                                                                     .contentType(
                                                                             MediaType
@@ -300,10 +301,10 @@ class OrderConcurrencyTest {
                                     MvcResult result =
                                             mockMvc.perform(
                                                             post("/api/assistant/chat")
-                                                                    .header(
-                                                                            "X-Customer-Id",
-                                                                            String.valueOf(
-                                                                                    customer))
+                                                                    .with(
+                                                                            user(
+                                                                                    String.valueOf(
+                                                                                            customer)))
                                                                     .header("Idempotency-Key", key)
                                                                     .contentType(
                                                                             MediaType

@@ -12,6 +12,7 @@ import com.example.ordermgt.assistant.application.ActionCardFactory;
 import com.example.ordermgt.assistant.application.AssistantService;
 import com.example.ordermgt.assistant.application.ConversationRunQueue;
 import com.example.ordermgt.assistant.application.ConversationService;
+import com.example.ordermgt.assistant.application.CustomerRateLimiter;
 import com.example.ordermgt.assistant.application.RunRegistry;
 import com.example.ordermgt.assistant.application.RunService;
 import com.example.ordermgt.assistant.domain.AiAssistantPort;
@@ -24,7 +25,9 @@ import com.example.ordermgt.assistant.domain.RunRepository;
 import com.example.ordermgt.assistant.domain.ToolRegistry;
 import com.example.ordermgt.idempotency.application.IdempotencyGuard;
 import com.example.ordermgt.idempotency.domain.IdempotencyRepository;
+import com.example.ordermgt.security.CurrentCustomerResolver;
 import com.example.ordermgt.shared.error.GlobalExceptionHandler;
+import com.example.ordermgt.testsupport.TestAuth;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
 import java.util.List;
@@ -76,7 +79,8 @@ class ArchiveContractTest {
                         mapper,
                         conversationService,
                         queue,
-                        mock(ConversationEventPublisher.class));
+                        mock(ConversationEventPublisher.class),
+                        CustomerRateLimiter.unlimited());
 
         mvc =
                 MockMvcBuilders.standaloneSetup(
@@ -90,8 +94,10 @@ class ArchiveContractTest {
                                         mock(ConversationEventPublisher.class),
                                         mock(AiAssistantPort.class),
                                         new ObjectMapper(),
-                                        mapper))
+                                        mapper,
+                                        CustomerRateLimiter.unlimited()))
                         .setControllerAdvice(new GlobalExceptionHandler())
+                        .setCustomArgumentResolvers(new CurrentCustomerResolver())
                         .build();
     }
 
@@ -105,7 +111,7 @@ class ArchiveContractTest {
 
         mvc.perform(
                         post("/api/assistant/conversations/{id}/archive", CONVERSATION)
-                                .header("X-Customer-Id", CUSTOMER))
+                                .with(TestAuth.authenticatedAs(CUSTOMER)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("ARCHIVED"))
                 .andExpect(jsonPath("$.data.state").value("IDLE"));
@@ -120,7 +126,7 @@ class ArchiveContractTest {
 
         mvc.perform(
                         post("/api/assistant/conversations/{id}/archive", CONVERSATION)
-                                .header("X-Customer-Id", CUSTOMER))
+                                .with(TestAuth.authenticatedAs(CUSTOMER)))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("CONFLICT"));
     }
@@ -133,7 +139,7 @@ class ArchiveContractTest {
 
         mvc.perform(
                         post("/api/assistant/conversations/{id}/restore", CONVERSATION)
-                                .header("X-Customer-Id", CUSTOMER))
+                                .with(TestAuth.authenticatedAs(CUSTOMER)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("ACTIVE"));
     }
@@ -145,7 +151,7 @@ class ArchiveContractTest {
 
         mvc.perform(
                         post("/api/assistant/conversations/{id}/archive", CONVERSATION)
-                                .header("X-Customer-Id", CUSTOMER))
+                                .with(TestAuth.authenticatedAs(CUSTOMER)))
                 .andExpect(status().isForbidden());
     }
 
@@ -157,14 +163,14 @@ class ArchiveContractTest {
         when(conversationRepository.findByCustomer(CUSTOMER, true))
                 .thenReturn(List.of(active, archived));
 
-        mvc.perform(get("/api/assistant/conversations").header("X-Customer-Id", CUSTOMER))
+        mvc.perform(get("/api/assistant/conversations").with(TestAuth.authenticatedAs(CUSTOMER)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.length()").value(1))
                 .andExpect(jsonPath("$.data[0].id").value(7));
 
         mvc.perform(
                         get("/api/assistant/conversations")
-                                .header("X-Customer-Id", CUSTOMER)
+                                .with(TestAuth.authenticatedAs(CUSTOMER))
                                 .queryParam("includeArchived", "true"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.length()").value(2))

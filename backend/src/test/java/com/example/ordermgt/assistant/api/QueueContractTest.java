@@ -15,14 +15,17 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.example.ordermgt.assistant.application.AssistantService;
 import com.example.ordermgt.assistant.application.ConversationRunQueue;
 import com.example.ordermgt.assistant.application.ConversationService;
+import com.example.ordermgt.assistant.application.CustomerRateLimiter;
 import com.example.ordermgt.assistant.application.RunRegistry;
 import com.example.ordermgt.assistant.application.RunService;
 import com.example.ordermgt.assistant.domain.AiAssistantPort;
 import com.example.ordermgt.idempotency.application.IdempotencyGuard;
 import com.example.ordermgt.idempotency.domain.IdempotencyRepository;
+import com.example.ordermgt.security.CurrentCustomerResolver;
 import com.example.ordermgt.shared.api.ErrorCode;
 import com.example.ordermgt.shared.error.BusinessException;
 import com.example.ordermgt.shared.error.GlobalExceptionHandler;
+import com.example.ordermgt.testsupport.TestAuth;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -69,7 +72,8 @@ class QueueContractTest {
                         mapper,
                         conversationService,
                         queue,
-                        mock(ConversationEventPublisher.class));
+                        mock(ConversationEventPublisher.class),
+                        CustomerRateLimiter.unlimited());
 
         return MockMvcBuilders.standaloneSetup(
                         new ConversationController(
@@ -82,8 +86,10 @@ class QueueContractTest {
                                 mock(ConversationEventPublisher.class),
                                 mock(AiAssistantPort.class),
                                 new ObjectMapper(),
-                                mapper))
+                                mapper,
+                                CustomerRateLimiter.unlimited()))
                 .setControllerAdvice(new GlobalExceptionHandler())
+                .setCustomArgumentResolvers(new CurrentCustomerResolver())
                 .build();
     }
 
@@ -109,7 +115,7 @@ class QueueContractTest {
                                         "/api/assistant/conversations/{id}/queue/{itemId}",
                                         CONVERSATION,
                                         itemId)
-                                .header("X-Customer-Id", CUSTOMER))
+                                .with(TestAuth.authenticatedAs(CUSTOMER)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value("OK"));
 
@@ -119,7 +125,7 @@ class QueueContractTest {
                                         "/api/assistant/conversations/{id}/queue/{itemId}",
                                         CONVERSATION,
                                         itemId)
-                                .header("X-Customer-Id", CUSTOMER))
+                                .with(TestAuth.authenticatedAs(CUSTOMER)))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("NOT_FOUND"));
     }
@@ -133,7 +139,7 @@ class QueueContractTest {
                                         "/api/assistant/conversations/{id}/queue/{itemId}",
                                         CONVERSATION,
                                         "q-does-not-exist")
-                                .header("X-Customer-Id", CUSTOMER))
+                                .with(TestAuth.authenticatedAs(CUSTOMER)))
                 .andExpect(status().isNotFound());
     }
 
@@ -166,7 +172,7 @@ class QueueContractTest {
 
         mvc.perform(
                         post("/api/assistant/conversations/{id}/messages", CONVERSATION)
-                                .header("X-Customer-Id", CUSTOMER)
+                                .with(TestAuth.authenticatedAs(CUSTOMER))
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .content("{\"message\":\"帮我下单\"}"))
                 .andExpect(status().isConflict())
@@ -208,7 +214,7 @@ class QueueContractTest {
     private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder request(
             String message) {
         return get("/api/assistant/conversations/{id}/stream", CONVERSATION)
-                .header("X-Customer-Id", CUSTOMER)
+                .with(TestAuth.authenticatedAs(CUSTOMER))
                 .queryParam("message", message);
     }
 

@@ -16,5 +16,11 @@ public final class Paging {
      */
     public static final long MAX_SIZE = 100L;
 
+    /**
+     * The page ceiling: (MAX_PAGE - 1) * MAX_SIZE stays far below Long.MAX_VALUE, so the offset
+     * arithmetic cannot overflow into a negative offset that silently serves the first page.
+     */
+    public static final long MAX_PAGE = 10_000_000L;
+
     private Paging() {}
 }

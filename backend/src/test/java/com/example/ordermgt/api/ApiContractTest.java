@@ -26,6 +26,7 @@ import com.example.ordermgt.assistant.application.AssistantResult;
 import com.example.ordermgt.assistant.application.AssistantService;
 import com.example.ordermgt.assistant.application.ConversationRunQueue;
 import com.example.ordermgt.assistant.application.ConversationService;
+import com.example.ordermgt.assistant.application.CustomerRateLimiter;
 import com.example.ordermgt.assistant.application.RunRegistry;
 import com.example.ordermgt.assistant.application.RunService;
 import com.example.ordermgt.assistant.domain.AiAssistantPort;
@@ -41,6 +42,7 @@ import com.example.ordermgt.idempotency.application.IdempotencyGuard;
 import com.example.ordermgt.idempotency.domain.IdempotencyRecord;
 import com.example.ordermgt.idempotency.domain.IdempotencyRepository;
 import com.example.ordermgt.idempotency.domain.IdempotencyStatus;
+import com.example.ordermgt.order.api.CreateOrderRequest;
 import com.example.ordermgt.order.api.OrderApiMapper;
 import com.example.ordermgt.order.api.OrderController;
 import com.example.ordermgt.order.application.OrderService;
@@ -48,9 +50,11 @@ import com.example.ordermgt.order.domain.Order;
 import com.example.ordermgt.order.domain.OrderLine;
 import com.example.ordermgt.order.domain.OrderNumber;
 import com.example.ordermgt.order.domain.OrderStatus;
+import com.example.ordermgt.security.CurrentCustomerResolver;
 import com.example.ordermgt.shared.api.ErrorCode;
 import com.example.ordermgt.shared.error.BusinessException;
 import com.example.ordermgt.shared.error.GlobalExceptionHandler;
+import com.example.ordermgt.testsupport.TestAuth;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
@@ -90,6 +94,8 @@ class ApiContractTest {
 
     private ConversationService conversationService;
 
+    private IdempotencyGuard guard;
+
     private MockMvc mvc;
 
     @BeforeEach
@@ -101,8 +107,7 @@ class ApiContractTest {
         assistantService = mock(AssistantService.class);
         conversationService = mock(ConversationService.class);
 
-        IdempotencyGuard guard =
-                new IdempotencyGuard(idempotencyRepository, new ObjectMapper(), 24);
+        guard = new IdempotencyGuard(idempotencyRepository, new ObjectMapper(), 24);
 
         LocalValidatorFactoryBean validator = new LocalValidatorFactoryBean();
         validator.afterPropertiesSet();
@@ -128,7 +133,8 @@ class ApiContractTest {
                         assistantMapper,
                         conversationService,
                         runQueue,
-                        mock(ConversationEventPublisher.class));
+                        mock(ConversationEventPublisher.class),
+                        CustomerRateLimiter.unlimited());
 
         mvc =
                 MockMvcBuilders.standaloneSetup(
@@ -153,28 +159,121 @@ class ApiContractTest {
                                         mock(ConversationEventPublisher.class),
                                         mock(AiAssistantPort.class),
                                         new ObjectMapper(),
-                                        assistantMapper))
+                                        assistantMapper,
+                                        CustomerRateLimiter.unlimited()))
                         .setControllerAdvice(new GlobalExceptionHandler())
+                        .setCustomArgumentResolvers(new CurrentCustomerResolver())
                         .setValidator(validator)
                         .setMessageConverters(new MappingJackson2HttpMessageConverter(wire))
                         .build();
     }
 
+    /** No session, no API: an anonymous call is told to sign in, never shown data. */
     @Test
-    void missingCustomerHeaderReturnsValidationError() throws Exception {
-        mvc.perform(get("/api/orders"))
+    void unauthenticatedRequestReturns401NotA500() throws Exception {
+        mvc.perform(get("/api/orders").with(TestAuth.anonymous()))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("UNAUTHORIZED"));
+    }
+
+    /** Every client mistake must land on an actionable status, never the catch-all 500. */
+    @Test
+    void malformedJsonReturnsValidationErrorNotA500() throws Exception {
+        mvc.perform(
+                        post("/api/orders")
+                                .with(TestAuth.authenticatedAs(CUSTOMER))
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content("{\"lines\":["))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
-                .andExpect(
-                        jsonPath("$.message")
-                                .value(org.hamcrest.Matchers.containsString("X-Customer-Id")));
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"));
+    }
+
+    /**
+     * A principal that is not a numeric customer id cannot be mapped to an account -- it fails
+     * closed with 401 rather than guessing (or 500ing).
+     */
+    @Test
+    void nonNumericPrincipalReturns401NotA500() throws Exception {
+        mvc.perform(get("/api/orders").with(TestAuth.authenticatedAs("abc")))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("UNAUTHORIZED"));
+    }
+
+    @Test
+    void nonNumericPageParamReturnsValidationErrorNotA500() throws Exception {
+        mvc.perform(
+                        get("/api/orders")
+                                .with(TestAuth.authenticatedAs(CUSTOMER))
+                                .param("page", "abc"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"));
+    }
+
+    @Test
+    void wrongContentTypeReturns415NotA500() throws Exception {
+        mvc.perform(
+                        post("/api/orders")
+                                .with(TestAuth.authenticatedAs(CUSTOMER))
+                                .contentType(MediaType.TEXT_PLAIN)
+                                .content("hello"))
+                .andExpect(status().isUnsupportedMediaType());
+    }
+
+    @Test
+    void overlongChatMessageReturnsValidationError() throws Exception {
+        mvc.perform(
+                        post("/api/assistant/chat")
+                                .with(TestAuth.authenticatedAs(CUSTOMER))
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content("{\"message\":\"" + "字".repeat(4001) + "\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"));
+    }
+
+    @Test
+    void oversizedOrderLineCountReturnsValidationError() throws Exception {
+        String lines =
+                java.util.stream.IntStream.range(0, 101)
+                        .mapToObj(i -> "{\"sku\":\"S" + i + "\",\"quantity\":1}")
+                        .collect(java.util.stream.Collectors.joining(","));
+        mvc.perform(
+                        post("/api/orders")
+                                .with(TestAuth.authenticatedAs(CUSTOMER))
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content("{\"lines\":[" + lines + "]}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"));
+    }
+
+    @Test
+    void oversizedQuantityReturnsValidationErrorInsteadOfADataTruncation500() throws Exception {
+        mvc.perform(
+                        post("/api/orders")
+                                .with(TestAuth.authenticatedAs(CUSTOMER))
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(
+                                        "{\"lines\":[{\"sku\":\"WIDGET-01\",\"quantity\":1000001}]}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"));
+    }
+
+    @Test
+    void overlongIdempotencyKeyReturnsValidationErrorNotA500() throws Exception {
+        mvc.perform(
+                        post("/api/orders")
+                                .with(TestAuth.authenticatedAs(CUSTOMER))
+                                .header("Idempotency-Key", "k".repeat(129))
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content("{\"lines\":[{\"sku\":\"WIDGET-01\",\"quantity\":2}]}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"));
     }
 
     @Test
     void orderWithoutLinesReturnsValidationError() throws Exception {
         mvc.perform(
                         post("/api/orders")
-                                .header("X-Customer-Id", CUSTOMER)
+                                .with(TestAuth.authenticatedAs(CUSTOMER))
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .content("{\"lines\":[]}"))
                 .andExpect(status().isBadRequest())
@@ -185,7 +284,7 @@ class ApiContractTest {
     void nonPositiveQuantityReturnsValidationError() throws Exception {
         mvc.perform(
                         post("/api/orders")
-                                .header("X-Customer-Id", CUSTOMER)
+                                .with(TestAuth.authenticatedAs(CUSTOMER))
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .content("{\"lines\":[{\"sku\":\"WIDGET-01\",\"quantity\":0}]}"))
                 .andExpect(status().isBadRequest())
@@ -198,7 +297,7 @@ class ApiContractTest {
 
         mvc.perform(
                         post("/api/orders")
-                                .header("X-Customer-Id", CUSTOMER)
+                                .with(TestAuth.authenticatedAs(CUSTOMER))
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .content("{\"lines\":[{\"sku\":\"WIDGET-01\",\"quantity\":2}]}"))
                 .andExpect(status().isCreated())
@@ -216,12 +315,16 @@ class ApiContractTest {
                         Optional.of(
                                 record(
                                         "k2",
-                                        IdempotencyGuard.hashOf("WIDGET-01:2"),
+                                        guard.hashOfJson(
+                                                new CreateOrderRequest(
+                                                        List.of(
+                                                                new CreateOrderRequest.Line(
+                                                                        "WIDGET-01", 2)))),
                                         "{\"orderNo\":\"ORD-REPLAY\",\"status\":\"CREATED\",\"totalAmount\":19.90,\"lines\":[],\"createdAt\":null,\"updatedAt\":null}")));
 
         mvc.perform(
                         post("/api/orders")
-                                .header("X-Customer-Id", CUSTOMER)
+                                .with(TestAuth.authenticatedAs(CUSTOMER))
                                 .header("Idempotency-Key", "k2")
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .content("{\"lines\":[{\"sku\":\"WIDGET-01\",\"quantity\":2}]}"))
@@ -239,7 +342,7 @@ class ApiContractTest {
 
         mvc.perform(
                         post("/api/orders")
-                                .header("X-Customer-Id", CUSTOMER)
+                                .with(TestAuth.authenticatedAs(CUSTOMER))
                                 .header("Idempotency-Key", "k3")
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .content("{\"lines\":[{\"sku\":\"WIDGET-01\",\"quantity\":2}]}"))
@@ -270,7 +373,9 @@ class ApiContractTest {
                 .when(actionConfirmationService)
                 .confirm(CUSTOMER, "tok");
 
-        mvc.perform(post("/api/assistant/actions/tok/confirm").header("X-Customer-Id", CUSTOMER))
+        mvc.perform(
+                        post("/api/assistant/actions/tok/confirm")
+                                .with(TestAuth.authenticatedAs(CUSTOMER)))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("FORBIDDEN"));
     }
@@ -283,7 +388,7 @@ class ApiContractTest {
 
         mvc.perform(
                         post("/api/assistant/actions/deadbeef/confirm")
-                                .header("X-Customer-Id", CUSTOMER))
+                                .with(TestAuth.authenticatedAs(CUSTOMER)))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("NOT_FOUND"));
     }
@@ -294,7 +399,9 @@ class ApiContractTest {
                 .when(actionConfirmationService)
                 .confirm(CUSTOMER, "old");
 
-        mvc.perform(post("/api/assistant/actions/old/confirm").header("X-Customer-Id", CUSTOMER))
+        mvc.perform(
+                        post("/api/assistant/actions/old/confirm")
+                                .with(TestAuth.authenticatedAs(CUSTOMER)))
                 .andExpect(status().isGone())
                 .andExpect(jsonPath("$.code").value("ACTION_EXPIRED"));
     }
@@ -303,7 +410,7 @@ class ApiContractTest {
     void emptyAssistantMessageReturnsValidationError() throws Exception {
         mvc.perform(
                         post("/api/assistant/chat")
-                                .header("X-Customer-Id", CUSTOMER)
+                                .with(TestAuth.authenticatedAs(CUSTOMER))
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .content("{\"message\":\"\"}"))
                 .andExpect(status().isBadRequest())
@@ -325,7 +432,7 @@ class ApiContractTest {
 
         mvc.perform(
                         post("/api/assistant/chat")
-                                .header("X-Customer-Id", CUSTOMER)
+                                .with(TestAuth.authenticatedAs(CUSTOMER))
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .content("{\"message\":\"hello\"}"))
                 .andExpect(status().isOk())
@@ -349,7 +456,7 @@ class ApiContractTest {
 
         mvc.perform(
                         post("/api/assistant/chat")
-                                .header("X-Customer-Id", CUSTOMER)
+                                .with(TestAuth.authenticatedAs(CUSTOMER))
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .content("{\"message\":\"hello\"}"))
                 .andExpect(status().isBadGateway())
@@ -376,7 +483,7 @@ class ApiContractTest {
 
         mvc.perform(
                         get("/api/assistant/conversations/7/invocations")
-                                .header("X-Customer-Id", CUSTOMER))
+                                .with(TestAuth.authenticatedAs(CUSTOMER)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value("OK"))
                 .andExpect(jsonPath("$.data.length()").value(1))

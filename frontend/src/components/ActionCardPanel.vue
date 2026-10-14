@@ -1,14 +1,16 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import type { ActionCard, ActionResolution } from '../types'
-import { api } from '../api'
-import { EXPIRY_SOON_MINUTES, MS_PER_MINUTE } from '../constants'
+import { api, ApiError, ACTION_EXPIRED } from '../api'
+import { EXPIRY_SOON_MINUTES, EXPIRY_TICK_MS, MS_PER_MINUTE } from '../constants'
 import { errorMessage } from '../errors'
 
 const props = defineProps<{ card: ActionCard }>()
 const emit = defineEmits<{
   (e: 'resolved', card: ActionCard): void
   (e: 'error', message: string): void
+  /** The server already moved this card (410 expired / 409 resolved elsewhere): re-read it. */
+  (e: 'stale'): void
 }>()
 
 const busy = defineModel<boolean>('busy', { default: false })
@@ -41,10 +43,33 @@ const stateLabel = computed(() => {
 
 const stampText = computed(() => (props.card.status === 'PENDING' ? '' : stateLabel.value))
 
+/** The wall clock the countdown reads, ticked while the card is pending: a computed that only
+ * depends on `expiresAt` would evaluate `Date.now()` once and freeze the label forever. */
+const now = ref(Date.now())
+let ticker: ReturnType<typeof setInterval> | null = null
+
+watch(
+  isPending,
+  (pending) => {
+    if (pending && ticker === null) {
+      ticker = setInterval(() => {
+        now.value = Date.now()
+      }, EXPIRY_TICK_MS)
+    } else if (!pending && ticker !== null) {
+      clearInterval(ticker)
+      ticker = null
+    }
+  },
+  { immediate: true },
+)
+onUnmounted(() => {
+  if (ticker !== null) clearInterval(ticker)
+})
+
 const expiryLabel = computed(() => {
   if (!isPending.value) return ''
   const at = new Date(props.card.expiresAt)
-  const minutes = Math.round((at.getTime() - Date.now()) / MS_PER_MINUTE)
+  const minutes = Math.round((at.getTime() - now.value) / MS_PER_MINUTE)
   return minutes > EXPIRY_SOON_MINUTES ? `${minutes} 分钟后过期` : '即将过期'
 })
 
@@ -58,6 +83,16 @@ async function resolve(kind: 'confirm' | 'reject'): Promise<void> {
     justResolved.value = true
     emit('resolved', { ...props.card, status: resolution.status as ActionCard['status'] })
   } catch (error) {
+    if (
+      error instanceof ApiError &&
+      (error.code === ACTION_EXPIRED || error.status === 409 || error.status === 410)
+    ) {
+      // The server already moved this card (expired, or resolved from another tab): ask the owner
+      // to re-read the thread so the slip stamps the truth, instead of reporting a "failure" and
+      // leaving a button the server will refuse forever.
+      emit('stale')
+      return
+    }
     emit('error', errorMessage(error, '操作失败'))
   } finally {
     busy.value = false

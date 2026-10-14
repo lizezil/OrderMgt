@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { api, ApiError, QUEUE_DROPPED, RUN_CANCELLED } from '../api'
 import {
   LOCAL_MESSAGE_ID_START,
@@ -204,25 +204,36 @@ async function open(conversation: Conversation): Promise<void> {
   stopWatchingRun()
   activeId.value = conversation.id
   usage.value = null
+  const ticket = ++openTicket
   loading.value = true
+  let history: Message[]
   try {
-    messages.value = await api.history(conversation.id)
+    history = await api.history(conversation.id)
   } catch (error) {
-    fail(error)
+    // A superseded open's failure belongs to a screen that no longer exists; only the newest
+    // click gets to report (and to flip the loading flag off -- see the finally below).
+    if (ticket === openTicket) fail(error)
+    return
   } finally {
-    loading.value = false
+    if (ticket === openTicket) loading.value = false
   }
+  // The click that opened this one was itself superseded while its history was in flight: its
+  // thread must not repaint the screen the newer click is showing.
+  if (ticket !== openTicket) return
+  messages.value = history
   await scrollToEnd()
   // Coming back to a conversation whose turn is still running: reattach and keep watching it, so
   // the customer sees the reply being written rather than an empty thread (ADR-0014).
-  if (
-    activeId.value === conversation.id &&
-    conversation.state === 'RUNNING' &&
-    conversation.runId
-  ) {
+  if (conversation.state === 'RUNNING' && conversation.runId) {
     watchRun(conversation.id, conversation.runId)
   }
 }
+
+/**
+ * Monotonic ticket for {@link open()}: only the newest click may write the thread, the loading
+ * flag and the reattach. A slow history read landing after a newer open is stale by definition.
+ */
+let openTicket = 0
 
 /** The reattach in progress, if any; aborted when the view moves to another conversation. */
 let watching: AbortController | null = null
@@ -403,6 +414,19 @@ async function reconcile(
   return 'landed'
 }
 
+/** Every stream this screen opened, so leaving the screen can tear them all down at once. */
+const sendControllers = new Set<AbortController>()
+
+/** Flipped on unmount: after it, failures need no reporting and no reconciliation. */
+let unmounted = false
+
+onUnmounted(() => {
+  unmounted = true
+  for (const controller of sendControllers) controller.abort()
+  sendControllers.clear()
+  stopWatchingRun()
+})
+
 /**
  * Sends one message. Not gated on a turn already running: on a busy conversation the server puts
  * this one in line and answers on this same stream with a `queued` frame, so a second Enter while
@@ -412,13 +436,16 @@ async function send(): Promise<void> {
   const text = draft.value.trim()
   if (!text) return
 
+  // The composer empties and goes busy before any await: a second Enter inside the switch's race
+  // window then reads an empty draft instead of firing the same words twice.
+  draft.value = ''
+  inFlight.value++
+
   // The message belongs to the conversation the in-flight switch settles on, never to the one
   // that happened to be active a moment ago. A failed switch already reported itself; the
   // composer then speaks for whatever is active, as before.
   await pendingSwitch.catch(() => {})
 
-  draft.value = ''
-  inFlight.value++
   // Identity for the reconcile below: ids the screen already held before this send, so re-sending
   // identical words can be told apart from the older turn that happens to say the same thing.
   const knownIds = new Set(messages.value.map((message) => message.id))
@@ -441,6 +468,10 @@ async function send(): Promise<void> {
   let myItemId: string | null = null
   let myRunId: number | null = null
   let cancelledReply: string | null = null
+  // The abort handle for this send: unmounting the screen aborts it, so no fetch outlives the
+  // component that was reading it.
+  const controller = new AbortController()
+  sendControllers.add(controller)
   await scrollToEnd()
 
   try {
@@ -462,31 +493,36 @@ async function send(): Promise<void> {
     placeholder = reply
     const target = conversationId
 
-    const response = await api.chatStream(text, target, {
-      onToken: (delta) => {
-        reply.content = (reply.content ?? '') + delta
-        void scrollToEnd()
+    const response = await api.chatStream(
+      text,
+      target,
+      {
+        onToken: (delta) => {
+          reply.content = (reply.content ?? '') + delta
+          void scrollToEnd()
+        },
+        onQueued: (turn) => {
+          // Remember the id so the turn's own frames (started / done / failed) can clear its marker.
+          myItemId = turn.itemId
+          store.noteQueued(target, turn.itemId, text)
+        },
+        // The turn is out of the line now; the server says so before its first token, so the count
+        // never keeps calling a running turn "waiting".
+        onStarted: () => {
+          if (myItemId !== null) store.forgetQueued(target, myItemId)
+        },
+        // The run exists now: this is the handle the stop button targets.
+        onRun: (runId) => {
+          myRunId = runId
+          liveRun.value = { conversationId: target, runId }
+        },
+        // The customer stopped it; keep the half reply the server persisted.
+        onCancelled: (reply) => {
+          cancelledReply = reply
+        },
       },
-      onQueued: (turn) => {
-        // Remember the id so the turn's own frames (started / done / failed) can clear its marker.
-        myItemId = turn.itemId
-        store.noteQueued(target, turn.itemId, text)
-      },
-      // The turn is out of the line now; the server says so before its first token, so the count
-      // never keeps calling a running turn "waiting".
-      onStarted: () => {
-        if (myItemId !== null) store.forgetQueued(target, myItemId)
-      },
-      // The run exists now: this is the handle the stop button targets.
-      onRun: (runId) => {
-        myRunId = runId
-        liveRun.value = { conversationId: target, runId }
-      },
-      // The customer stopped it; keep the half reply the server persisted.
-      onCancelled: (reply) => {
-        cancelledReply = reply
-      },
-    })
+      controller.signal,
+    )
 
     if (myItemId !== null) store.forgetQueued(target, myItemId)
     // The turn belongs to the conversation it was asked in. A queued turn can land minutes after
@@ -522,6 +558,9 @@ async function send(): Promise<void> {
       messages.value = messages.value.filter((message) => message !== sent)
       return
     }
+    // Leaving this screen aborted the stream on purpose: a decision like the stop button's, not a
+    // failure to reconcile or report. The server finishes and persists the turn regardless.
+    if (unmounted) return
     const outcome =
       conversationId === null ? 'not-sent' : await reconcile(conversationId, text, knownIds)
     if (outcome === 'not-sent') {
@@ -530,6 +569,7 @@ async function send(): Promise<void> {
     }
     if (outcome !== 'recovered') fail(error)
   } finally {
+    sendControllers.delete(controller)
     inFlight.value--
     // This turn's run is over -- done, failed, stopped or dropped -- so there is nothing to stop.
     if (myRunId !== null && liveRun.value?.runId === myRunId) liveRun.value = null
@@ -539,6 +579,22 @@ async function send(): Promise<void> {
 
 function onResolved(message: Message, card: ActionCard): void {
   message.action = card
+}
+
+/**
+ * A 409/410 on resolve means the server moved this card without us (it expired, or another tab
+ * resolved it): the honest fix is to re-read the thread so the slip stamps the server's state,
+ * not to keep offering a button the server will refuse forever.
+ */
+async function refreshFromServer(): Promise<void> {
+  const conversationId = activeId.value
+  if (conversationId === null) return
+  try {
+    const history = await api.history(conversationId)
+    if (activeId.value === conversationId) messages.value = history
+  } catch (error) {
+    fail(error)
+  }
 }
 
 onMounted(async () => {
@@ -622,6 +678,7 @@ onMounted(async () => {
             v-if="message.action"
             :card="message.action"
             @resolved="(card) => onResolved(message, card)"
+            @stale="refreshFromServer"
             @error="fail"
           />
         </article>

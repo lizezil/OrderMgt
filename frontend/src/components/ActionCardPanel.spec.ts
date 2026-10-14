@@ -1,12 +1,21 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { defineComponent, h, ref, type PropType } from 'vue'
 import { describe, expect, it, vi } from 'vitest'
-import { api } from '../api'
+import { api, ApiError } from '../api'
 import type { ActionCard } from '../types'
 import ActionCardPanel from './ActionCardPanel.vue'
 
-// The card only ever talks to these two endpoints; everything else it renders is props.
-vi.mock('../api', () => ({ api: { confirm: vi.fn(), reject: vi.fn() } }))
+// The card only ever talks to these two endpoints; everything else it renders is props. The real
+// ApiError travels through so `instanceof` in the panel still holds -- a 410/409 is told apart by
+// the error's code and status, not by its text.
+vi.mock('../api', async () => {
+  const actual = await vi.importActual<typeof import('../api')>('../api')
+  return {
+    ApiError: actual.ApiError,
+    ACTION_EXPIRED: actual.ACTION_EXPIRED,
+    api: { confirm: vi.fn(), reject: vi.fn() },
+  }
+})
 
 const confirmMock = vi.mocked(api.confirm)
 const rejectMock = vi.mocked(api.reject)
@@ -71,6 +80,25 @@ describe('待授权的卡片', () => {
 
     expect(wrapper.get('.clock').text()).toBe('即将过期')
   })
+
+  it('倒计时自己往前走：一分钟的流逝就改口，不必等卡片数据更新', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+      const wrapper = mount(ActionCardPanel, {
+        props: { card: card({ expiresAt: '2026-01-01T00:01:30Z' }) },
+      })
+      expect(wrapper.get('.clock').text()).toBe('2 分钟后过期')
+
+      // 墙钟走了一分钟：节拍醒来重读时间，标签随之改口——卡片数据一动没动。
+      vi.setSystemTime(new Date('2026-01-01T00:01:00Z'))
+      await vi.advanceTimersByTimeAsync(30_000)
+
+      expect(wrapper.get('.clock').text()).toBe('即将过期')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 describe('授权就是那扇门', () => {
@@ -123,6 +151,28 @@ describe('授权就是那扇门', () => {
     expect(wrapper.emitted('error')?.[0]).toEqual(['确认单已过期'])
     expect(wrapper.get('.slip-state').text()).toBe('待授权')
     expect(wrapper.findAll('button')).toHaveLength(2)
+  })
+
+  it('410（卡已过期）不是报错而是请求重读：服务端已经改了这张卡，本地的待授权是旧的', async () => {
+    confirmMock.mockRejectedValue(new ApiError('ACTION_EXPIRED', '确认单已过期', 410))
+    const wrapper = mount(ActionCardPanel, { props: { card: card() } })
+
+    await wrapper.get('button.authority').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.emitted('stale')).toHaveLength(1)
+    expect(wrapper.emitted('error')).toBeUndefined()
+  })
+
+  it('409（在别处已被处理）同理：请求重读，让服务端的新状态盖章', async () => {
+    confirmMock.mockRejectedValue(new ApiError('CONFLICT', '这张确认单已经被处理过了', 409))
+    const wrapper = mount(ActionCardPanel, { props: { card: card() } })
+
+    await wrapper.get('button.authority').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.emitted('stale')).toHaveLength(1)
+    expect(wrapper.emitted('error')).toBeUndefined()
   })
 })
 

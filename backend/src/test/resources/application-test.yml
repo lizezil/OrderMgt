@@ -23,9 +23,24 @@ spring:
       api-key: test-key-never-used
 
 assistant:
+  # PIN pairs for SecurityContractTest's real login flow; every other suite authenticates with
+  # spring-security-test's user() post-processor and never exercises the provider.
+  auth:
+    pins: "1001:1111,2002:2222"
+  ai:
+    # Integration suites are not about quota: they reuse customers across many sends. The contract
+    # for it lives in RateLimitContractTest and the limiter's unit tests, which bring their own
+    # tiny limits and a fake clock.
+    rate-limit: 1000000
   action:
     # Keep the expiry sweeper out of the way: tests drive expiry explicitly.
     sweep-interval-ms: 3600000
+
+# CSRF is off for the ordinary suite (requests carry no token); SecurityContractTest turns it
+# back on explicitly and covers both the blocked-without-token and the pass-with-token cases.
+security:
+  csrf:
+    enabled: false
 
 idempotency:
   # Same for the idempotency sweep: the test calls it directly.

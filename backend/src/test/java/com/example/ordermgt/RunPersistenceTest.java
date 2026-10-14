@@ -2,6 +2,7 @@ package com.example.ordermgt;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -235,8 +236,7 @@ class RunPersistenceTest {
     private org.springframework.test.web.servlet.ResultActions listFor(Long customer)
             throws Exception {
         return mockMvc.perform(
-                        get("/api/assistant/conversations")
-                                .header("X-Customer-Id", String.valueOf(customer)))
+                        get("/api/assistant/conversations").with(user(String.valueOf(customer))))
                 .andExpect(status().isOk());
     }
 

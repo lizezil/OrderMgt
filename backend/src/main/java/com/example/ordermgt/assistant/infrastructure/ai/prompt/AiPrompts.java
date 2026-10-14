@@ -34,5 +34,12 @@ public final class AiPrompts {
     /** One catalog row: sku, name, unit price, then a newline. */
     public static final String CATALOG_ROW = "- %s %s unit price %s\n";
 
+    /**
+     * Appended when the catalog had to be cut to fit the prompt budget: without it the model would
+     * take the truncated list for the whole catalog and refuse items it cannot see.
+     */
+    public static final String CATALOG_TRUNCATED =
+            "(The catalog is too large to list in full; the items above are a partial view.)\n";
+
     private AiPrompts() {}
 }

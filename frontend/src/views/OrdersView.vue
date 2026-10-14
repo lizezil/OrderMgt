@@ -11,16 +11,26 @@ const size = DEFAULT_PAGE_SIZE
 const total = ref(0)
 const selected = ref<Order | null>(null)
 const error = ref('')
+const loading = ref(false)
 
-async function load(): Promise<void> {
+/**
+ * Loads one page. The page number commits only on success: a failed flip must not leave the pager
+ * pointing at a page whose rows never arrived -- the counter and the ledger have to stay about the
+ * same thing.
+ */
+async function load(target: number = page.value): Promise<void> {
   error.value = ''
+  loading.value = true
   try {
-    const result = await api.listOrders(page.value, size)
+    const result = await api.listOrders(target, size)
     orders.value = result.items
     total.value = result.total
+    page.value = target
     selected.value = null
   } catch (caught) {
     error.value = errorMessage(caught, '加载失败')
+  } finally {
+    loading.value = false
   }
 }
 
@@ -29,8 +39,7 @@ function pages(): number {
 }
 
 function changePage(delta: number): void {
-  page.value += delta
-  void load()
+  void load(page.value + delta)
 }
 
 /** A state is a stamped mark: executed reads green, cancelled reads red, open stays plain. */
@@ -52,12 +61,16 @@ onMounted(load)
         查询一律按请求头里的客户收窄。
       </p>
 
-      <p v-if="error" class="empty">{{ error }}</p>
+      <!-- First load: "loading" first, so an empty ledger is never mistaken for "no orders". -->
+      <p v-if="loading && !orders.length" class="empty">加载中…</p>
+      <p v-else-if="error" class="empty">{{ error }}</p>
       <p v-else-if="!orders.length" class="empty">
         这个客户还没有订单。去「助手」说一句「帮我下单 2 个 GADGET-02」，确认后就会落在这里。
       </p>
 
-      <template v-else>
+      <!-- A failed page-flip keeps the stale ledger visible under the error banner: the pager must
+           stay reachable so the customer can simply flip again. -->
+      <template v-if="orders.length">
         <table class="ledger">
           <thead>
             <tr>
@@ -85,9 +98,13 @@ onMounted(load)
         </table>
 
         <div class="pager">
-          <button class="btn" :disabled="page <= 1" @click="changePage(-1)">上一页</button>
+          <button class="btn" :disabled="loading || page <= 1" @click="changePage(-1)">
+            上一页
+          </button>
           <span class="data">{{ page }} / {{ pages() }} · 共 {{ total }} 单</span>
-          <button class="btn" :disabled="page >= pages()" @click="changePage(1)">下一页</button>
+          <button class="btn" :disabled="loading || page >= pages()" @click="changePage(1)">
+            下一页
+          </button>
         </div>
 
         <section v-if="selected" class="docket-open">

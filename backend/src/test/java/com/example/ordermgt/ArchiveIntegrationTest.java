@@ -1,6 +1,7 @@
 package com.example.ordermgt;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -124,7 +125,7 @@ class ArchiveIntegrationTest {
         MvcResult result =
                 mockMvc.perform(
                                 post("/api/assistant/conversations")
-                                        .header("X-Customer-Id", customer))
+                                        .with(user(String.valueOf(customer))))
                         .andExpect(status().isCreated())
                         .andReturn();
         return id(result);
@@ -134,13 +135,13 @@ class ArchiveIntegrationTest {
             Long conversationId, Long customer) throws Exception {
         return mockMvc.perform(
                 post("/api/assistant/conversations/{id}/archive", conversationId)
-                        .header("X-Customer-Id", customer));
+                        .with(user(String.valueOf(customer))));
     }
 
     private void sendBlocking(Long conversationId, Long customer, String message) throws Exception {
         mockMvc.perform(
                         post("/api/assistant/conversations/{id}/messages", conversationId)
-                                .header("X-Customer-Id", customer)
+                                .with(user(String.valueOf(customer)))
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .content("{\"message\":\"" + message + "\"}"))
                 .andExpect(status().isOk());
@@ -150,7 +151,7 @@ class ArchiveIntegrationTest {
             boolean includeArchived, Long customer) throws Exception {
         return mockMvc.perform(
                         get("/api/assistant/conversations")
-                                .header("X-Customer-Id", customer)
+                                .with(user(String.valueOf(customer)))
                                 .queryParam("includeArchived", String.valueOf(includeArchived)))
                 .andExpect(status().isOk());
     }

@@ -156,6 +156,22 @@ class OrderServiceTest {
     }
 
     @Test
+    void anOverflowingPageIsClampedInsteadOfServingTheFirstPageUnderABogusNumber() {
+        when(orderRepository.findByCustomer(eq(7L), anyLong(), anyLong())).thenReturn(List.of());
+        when(orderRepository.countByCustomer(7L)).thenReturn(0L);
+
+        PageResult<Order> result = service.listByCustomer(7L, Long.MAX_VALUE, 20);
+
+        // (page-1)*size overflowed long to a negative offset, which the driver clamps to 0: the
+        // first page's rows came back under page=Long.MAX_VALUE and a client paging forward would
+        // never terminate. The page must be capped where the offset cannot overflow.
+        verify(orderRepository)
+                .findByCustomer(
+                        eq(7L), org.mockito.ArgumentMatchers.longThat(o -> o >= 0), eq(20L));
+        assertThat(result.page()).isLessThanOrEqualTo(10_000_000L);
+    }
+
+    @Test
     void viewingAnotherCustomersOrderIsForbidden() {
         when(orderRepository.findByNumber(any())).thenReturn(Optional.of(order(2002L, "ORD-1")));
 

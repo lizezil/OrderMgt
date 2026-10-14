@@ -35,7 +35,7 @@ public class OrderService {
 
     @Transactional(readOnly = true)
     public PageResult<Order> listByCustomer(Long customerId, long page, long size) {
-        long safePage = Math.max(page, Paging.FIRST_PAGE);
+        long safePage = Math.min(Math.max(page, Paging.FIRST_PAGE), Paging.MAX_PAGE);
         long safeSize = size <= 0 || size > Paging.MAX_SIZE ? Paging.DEFAULT_SIZE : size;
         List<Order> items =
                 orderRepository.findByCustomer(customerId, (safePage - 1) * safeSize, safeSize);

@@ -1,12 +1,13 @@
 import { ReadableStream } from 'node:stream/web'
 import { TextEncoder } from 'node:util'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { api, chatStream, getCustomerId, setCustomerId } from './api'
+import { api, chatStream, login, logout, me, onUnauthorized } from './api'
 import type { ChatResponse, QueuedTurn } from './types'
 
 /**
  * What this file pins is the SPA's half of two contracts the backend cannot enforce for it:
- * which customer a request speaks for, and how a streamed reply is reassembled.
+ * which session a request speaks for (cookie + CSRF, never a header the page can write), and how
+ * a streamed reply is reassembled.
  */
 
 function jsonResponse(body: unknown, status = 200, statusText = 'OK'): Response {
@@ -57,20 +58,13 @@ const DONE: ChatResponse = {
   latencyMs: 42,
 }
 
-describe('身份：客户号就是请求头', () => {
-  beforeEach(() => localStorage.clear())
-
-  it('没设置过时默认 1001，设置后按浏览器持久化', () => {
-    expect(getCustomerId()).toBe('1001')
-
-    setCustomerId('2002')
-
-    expect(getCustomerId()).toBe('2002')
-    expect(localStorage.getItem('ordermgt.customerId')).toBe('2002')
+describe('身份：会话 cookie + CSRF，不再有客户号请求头', () => {
+  beforeEach(() => {
+    document.cookie = 'XSRF-TOKEN=; expires=Thu, 01 Jan 1970 00:00:00 GMT'
+    onUnauthorized(() => {})
   })
 
-  it('每个请求都带上 X-Customer-Id —— 服务端据此把查询收窄到本人', async () => {
-    setCustomerId('4242')
+  it('任何请求都不再携带 X-Customer-Id —— 服务端只认会话', async () => {
     const fetchMock = vi.fn().mockResolvedValue(ok([]))
     vi.stubGlobal('fetch', fetchMock)
 
@@ -78,7 +72,107 @@ describe('身份：客户号就是请求头', () => {
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
     expect(url).toBe('/api/orders?page=2&size=50')
-    expect(init.headers).toMatchObject({ 'X-Customer-Id': '4242' })
+    expect(init.headers).not.toMatchObject({ 'X-Customer-Id': expect.anything() })
+    expect((init.headers as Record<string, string>)['X-Customer-Id']).toBeUndefined()
+  })
+
+  it('写操作带上 XSRF-TOKEN cookie 的原值 —— 服务端要求它与 cookie 一致', async () => {
+    document.cookie = 'XSRF-TOKEN=tok123'
+    const fetchMock = vi.fn().mockResolvedValue(ok(null))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await api.startConversation()
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(init.headers).toMatchObject({ 'X-XSRF-TOKEN': 'tok123' })
+  })
+
+  it('GET 不带 CSRF 头 —— 它不是变更，服务端也不校验', async () => {
+    document.cookie = 'XSRF-TOKEN=tok123'
+    const fetchMock = vi.fn().mockResolvedValue(ok([]))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await api.listOrders()
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect((init.headers as Record<string, string>)['X-XSRF-TOKEN']).toBeUndefined()
+  })
+
+  it('登录把客户号和 PIN 打在 JSON 里，不进 URL', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(ok({ customerId: '1001' }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(login('1001', '1111')).resolves.toBe('1001')
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('/api/auth/login')
+    expect(init.method).toBe('POST')
+    expect(init.body).toBe(JSON.stringify({ customerId: '1001', pin: '1111' }))
+  })
+
+  it('me() 在未登录时返回 null 而不是抛错 —— 首屏检查不是错误路径', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          jsonResponse({ code: 'UNAUTHORIZED', message: 'please sign in', data: null }, 401),
+        ),
+    )
+
+    await expect(me()).resolves.toBeNull()
+  })
+
+  it('登出是 POST 到 /api/auth/logout', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(ok(null))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await logout()
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('/api/auth/logout')
+    expect(init.method).toBe('POST')
+  })
+
+  it('业务请求的 401 触发掉登录处理 —— 会话过期直接回登录页', async () => {
+    let unauthorized = 0
+    onUnauthorized(() => {
+      unauthorized += 1
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          jsonResponse({ code: 'UNAUTHORIZED', message: 'please sign in', data: null }, 401),
+        ),
+    )
+
+    await expect(api.listOrders()).rejects.toMatchObject({ status: 401 })
+
+    expect(unauthorized).toBe(1)
+  })
+
+  it('登录失败的 401 不触发掉登录处理 —— 那是 PIN 错，不是会话过期', async () => {
+    let unauthorized = 0
+    onUnauthorized(() => {
+      unauthorized += 1
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          jsonResponse(
+            { code: 'UNAUTHORIZED', message: 'customer id or PIN is incorrect', data: null },
+            401,
+          ),
+        ),
+    )
+
+    await expect(login('1001', '0000')).rejects.toMatchObject({ status: 401 })
+
+    expect(unauthorized).toBe(0)
   })
 })
 
@@ -133,8 +227,6 @@ describe('统一响应体', () => {
 })
 
 describe('流式回复的客户端契约', () => {
-  beforeEach(() => localStorage.clear())
-
   it('token 增量按序回调，done 事件给出完整回复（卡片整轮一起到）', async () => {
     vi.stubGlobal(
       'fetch',
@@ -154,6 +246,27 @@ describe('流式回复的客户端契约', () => {
 
     expect(deltas).toEqual(['我', '准备好了'])
     expect(result).toEqual(DONE)
+  })
+
+  it('中止信号随流式请求一起交给 fetch，中止后调用以中止错误收场', async () => {
+    const fetchMock = vi.fn(
+      (_url: string, init: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener('abort', () =>
+            reject(new DOMException('The operation was aborted.', 'AbortError')),
+          )
+        }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const controller = new AbortController()
+    const pending = chatStream('你好', 7, { onToken: () => {} }, controller.signal)
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(init.signal).toBeInstanceOf(AbortSignal)
+
+    controller.abort()
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
   })
 
   it('token 自带的行首空格是正文的一部分 —— Spring 的 SseEmitter 不写分隔空格', async () => {
@@ -219,8 +332,7 @@ describe('流式回复的客户端契约', () => {
     })
   })
 
-  it('流式请求也带客户头并声明接受 SSE —— 这正是用 fetch 而不是 EventSource 的原因', async () => {
-    setCustomerId('9001')
+  it('流式请求声明接受 SSE，但不带任何身份头 —— 身份就是会话 cookie', async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValue(streamResponse([frame('done', JSON.stringify(DONE))]))
@@ -232,10 +344,8 @@ describe('流式回复的客户端契约', () => {
     expect(url).toBe(
       '/api/assistant/conversations/3/stream?message=' + encodeURIComponent('我有哪些订单？'),
     )
-    expect(init.headers).toMatchObject({
-      'X-Customer-Id': '9001',
-      Accept: 'text/event-stream',
-    })
+    expect(init.headers).toMatchObject({ Accept: 'text/event-stream' })
+    expect((init.headers as Record<string, string>)['X-Customer-Id']).toBeUndefined()
   })
 
   it('会话不属于该客户时（403）直接失败，不进入解析', async () => {

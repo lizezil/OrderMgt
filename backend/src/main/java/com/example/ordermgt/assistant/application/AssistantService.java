@@ -14,6 +14,7 @@ import com.example.ordermgt.assistant.domain.PendingActionRepository;
 import com.example.ordermgt.assistant.domain.ProposedToolCall;
 import com.example.ordermgt.assistant.domain.Run;
 import com.example.ordermgt.assistant.domain.RunCancelledException;
+import com.example.ordermgt.assistant.domain.RunInterruptedException;
 import com.example.ordermgt.assistant.domain.RunRepository;
 import com.example.ordermgt.assistant.domain.RunStatus;
 import com.example.ordermgt.assistant.domain.ToolRegistry;
@@ -112,8 +113,21 @@ public class AssistantService {
             turn = modelCall.get();
             result = complete(context, turn);
         } catch (RunCancelledException ex) {
-            persistHalfTurn(context, ex.partial());
+            persistHalfTurn(
+                    context, ex.partial(), null, AiInvocationOutcome.CANCELLED, CANCELLED_REASON);
             runRepository.save(run.finish(RunStatus.CANCELLED, CANCELLED_REASON, Instant.now()));
+            throw ex;
+        } catch (RunInterruptedException ex) {
+            // The customer did not ask for this, but the words already streamed were already seen:
+            // they land in the transcript, marked as cut off, so the reply is never a blank.
+            persistHalfTurn(
+                    context,
+                    ex.partial(),
+                    INTERRUPTED_SUFFIX,
+                    AiInvocationOutcome.ERROR,
+                    INTERRUPTED_REASON);
+            runRepository.save(
+                    run.finish(RunStatus.INTERRUPTED, INTERRUPTED_REASON, Instant.now()));
             throw ex;
         } catch (RuntimeException ex) {
             // The model call may never have happened (null turn) or may have answered and been
@@ -132,16 +146,30 @@ public class AssistantService {
     /** Recorded on a Run the customer stopped, so the row explains itself. */
     public static final String CANCELLED_REASON = "stopped by the customer";
 
+    /** Recorded on a Run whose upstream died mid-reply; the half text has been preserved. */
+    public static final String INTERRUPTED_REASON =
+            "upstream failed mid-reply; partial text preserved";
+
+    /** Appended to the half reply so the transcript itself says the answer was cut off. */
+    public static final String INTERRUPTED_SUFFIX = "\n\n[生成中断]";
+
     /**
-     * A stopped turn still owes the transcript the half reply and the audit its CANCELLED row
-     * (ADR-0012). What is deliberately NOT done is anything the turn had not yet reached: no tool
-     * results, no confirmation cards -- those are only ever produced by {@link #complete}, which a
-     * stop never reaches.
+     * A half turn still owes the transcript its text and the audit its row (ADR-0012): CANCELLED
+     * for a stop, an annotated message plus ERROR for a mid-reply upstream death. What is
+     * deliberately NOT done is anything the turn had not yet reached: no tool results, no
+     * confirmation cards -- those are only ever produced by {@link #complete}, which neither a stop
+     * nor an interruption reaches.
      */
-    private void persistHalfTurn(TurnContext context, AssistantTurn partial) {
+    private void persistHalfTurn(
+            TurnContext context,
+            AssistantTurn partial,
+            String suffix,
+            AiInvocationOutcome outcome,
+            String reason) {
         String half = partial == null ? "" : partial.text();
         if (!half.isBlank()) {
-            conversationService.appendAssistantMessage(context.conversation().getId(), half);
+            conversationService.appendAssistantMessage(
+                    context.conversation().getId(), half + (suffix == null ? "" : suffix));
         }
         recordInvocation(
                 AiInvocation.record(
@@ -151,8 +179,8 @@ public class AssistantService {
                         partial == null ? null : partial.usage().promptTokens(),
                         partial == null ? null : partial.usage().completionTokens(),
                         partial == null ? null : partial.latencyMs(),
-                        AiInvocationOutcome.CANCELLED,
-                        CANCELLED_REASON,
+                        outcome,
+                        reason,
                         null));
     }
 

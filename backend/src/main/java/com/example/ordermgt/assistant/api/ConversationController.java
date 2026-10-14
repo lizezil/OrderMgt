@@ -6,6 +6,7 @@ import com.example.ordermgt.assistant.application.AssistantService;
 import com.example.ordermgt.assistant.application.ConversationRunQueue;
 import com.example.ordermgt.assistant.application.ConversationService;
 import com.example.ordermgt.assistant.application.ConversationView;
+import com.example.ordermgt.assistant.application.CustomerRateLimiter;
 import com.example.ordermgt.assistant.application.RunRegistry;
 import com.example.ordermgt.assistant.application.RunService;
 import com.example.ordermgt.assistant.domain.AiAssistantPort;
@@ -13,6 +14,7 @@ import com.example.ordermgt.assistant.domain.Run;
 import com.example.ordermgt.assistant.domain.RunCancellation;
 import com.example.ordermgt.assistant.domain.RunCancelledException;
 import com.example.ordermgt.idempotency.application.IdempotencyGuard;
+import com.example.ordermgt.security.CurrentCustomer;
 import com.example.ordermgt.shared.api.ApiResponse;
 import com.example.ordermgt.shared.api.ErrorCode;
 import com.example.ordermgt.shared.error.BusinessException;
@@ -44,8 +46,8 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
  * Conversations are the unit of memory. "新对话" is simply POST here; the SPA keeps a sidebar of these
  * so a customer can come back to an earlier thread.
  *
- * <p>Every route is scoped by X-Customer-Id -- a conversation belonging to someone else is
- * indistinguishable from one that does not exist as far as the caller can tell.
+ * <p>Every route is scoped by the signed-in session's customer id -- a conversation belonging to
+ * someone else is indistinguishable from one that does not exist as far as the caller can tell.
  */
 @Slf4j
 @RequiredArgsConstructor
@@ -63,12 +65,12 @@ public class ConversationController {
     private final AiAssistantPort aiAssistantPort;
     private final ObjectMapper objectMapper;
     private final AssistantApiMapper mapper;
+    private final CustomerRateLimiter rateLimiter;
 
     /** 新对话. A conversation that just started has no Run and no card, so its state is IDLE. */
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    public ApiResponse<ConversationResponse> start(
-            @RequestHeader("X-Customer-Id") Long customerId) {
+    public ApiResponse<ConversationResponse> start(@CurrentCustomer Long customerId) {
         ConversationResponse created =
                 mapper.toResponse(ConversationView.idle(conversationService.start(customerId)));
         // Other tabs learn about the new conversation from the stream, not from a refresh.
@@ -78,7 +80,7 @@ public class ConversationController {
 
     @GetMapping
     public ApiResponse<List<ConversationResponse>> list(
-            @RequestHeader("X-Customer-Id") Long customerId,
+            @CurrentCustomer Long customerId,
             @RequestParam(name = "includeArchived", defaultValue = "false")
                     boolean includeArchived) {
         return ApiResponse.ok(
@@ -90,7 +92,7 @@ public class ConversationController {
     /** Full history, with each message's card resolved to its current state. */
     @GetMapping("/{conversationId}/messages")
     public ApiResponse<List<MessageResponse>> history(
-            @RequestHeader("X-Customer-Id") Long customerId, @PathVariable Long conversationId) {
+            @CurrentCustomer Long customerId, @PathVariable Long conversationId) {
         return ApiResponse.ok(
                 conversationService.history(customerId, conversationId).stream()
                         .map(mapper::toResponse)
@@ -104,7 +106,7 @@ public class ConversationController {
      */
     @GetMapping("/{conversationId}/invocations")
     public ApiResponse<List<InvocationResponse>> invocations(
-            @RequestHeader("X-Customer-Id") Long customerId, @PathVariable Long conversationId) {
+            @CurrentCustomer Long customerId, @PathVariable Long conversationId) {
         return ApiResponse.ok(
                 conversationService.invocations(customerId, conversationId).stream()
                         .map(mapper::toResponse)
@@ -113,7 +115,7 @@ public class ConversationController {
 
     @PostMapping("/{conversationId}/messages")
     public ApiResponse<ChatResponse> send(
-            @RequestHeader("X-Customer-Id") Long customerId,
+            @CurrentCustomer Long customerId,
             @PathVariable Long conversationId,
             @RequestHeader(value = IdempotencyGuard.KEY_HEADER, required = false)
                     String idempotencyKey,
@@ -129,7 +131,7 @@ public class ConversationController {
      */
     @PostMapping("/{conversationId}/archive")
     public ApiResponse<ConversationResponse> archive(
-            @RequestHeader("X-Customer-Id") Long customerId, @PathVariable Long conversationId) {
+            @CurrentCustomer Long customerId, @PathVariable Long conversationId) {
         conversationService.archive(customerId, conversationId);
         events.stateChanged(customerId, conversationId);
         return ApiResponse.ok(
@@ -139,7 +141,7 @@ public class ConversationController {
     /** Brings an archived conversation back into the default list. Idempotent. */
     @PostMapping("/{conversationId}/restore")
     public ApiResponse<ConversationResponse> restore(
-            @RequestHeader("X-Customer-Id") Long customerId, @PathVariable Long conversationId) {
+            @CurrentCustomer Long customerId, @PathVariable Long conversationId) {
         conversationService.restore(customerId, conversationId);
         events.stateChanged(customerId, conversationId);
         return ApiResponse.ok(
@@ -154,7 +156,7 @@ public class ConversationController {
      */
     @PostMapping("/{conversationId}/runs/{runId}/stop")
     public ApiResponse<Void> stopRun(
-            @RequestHeader("X-Customer-Id") Long customerId,
+            @CurrentCustomer Long customerId,
             @PathVariable Long conversationId,
             @PathVariable Long runId) {
         conversationService.getOwned(customerId, conversationId);
@@ -177,7 +179,7 @@ public class ConversationController {
             value = "/{conversationId}/runs/{runId}/events",
             produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter runEvents(
-            @RequestHeader("X-Customer-Id") Long customerId,
+            @CurrentCustomer Long customerId,
             @PathVariable Long conversationId,
             @PathVariable Long runId) {
         conversationService.getOwned(customerId, conversationId);
@@ -279,13 +281,16 @@ public class ConversationController {
      */
     @GetMapping(value = "/{conversationId}/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter stream(
-            @RequestHeader("X-Customer-Id") Long customerId,
+            @CurrentCustomer Long customerId,
             @PathVariable Long conversationId,
             @RequestParam String message) {
         // Ownership before admission: a stranger's request must not be able to tell a busy
         // conversation from a quiet one, nor take a slot in its line. 403/404 arrives as JSON,
         // before the response is committed to SSE.
         conversationService.getOwned(customerId, conversationId);
+        // Rate limit before the SSE promise: past the customer's quota this answers a plain JSON
+        // 429 with Retry-After -- never an error frame on a stream the client already accepted.
+        rateLimiter.admit(customerId);
 
         SseEmitter emitter = new SseEmitter(AiCallPolicy.STREAM_TIMEOUT_MS);
         // The container learns about a dead connection (or the 120s timeout) through these
@@ -342,7 +347,7 @@ public class ConversationController {
      */
     @DeleteMapping("/{conversationId}/queue/{itemId}")
     public ApiResponse<Void> cancelQueued(
-            @RequestHeader("X-Customer-Id") Long customerId,
+            @CurrentCustomer Long customerId,
             @PathVariable Long conversationId,
             @PathVariable String itemId) {
         conversationService.getOwned(customerId, conversationId);
@@ -438,11 +443,7 @@ public class ConversationController {
                     "streaming turn failed for conversation {}: {}",
                     conversationId,
                     ex.getMessage());
-            deliver(
-                    emitter,
-                    clientGone,
-                    "error",
-                    ex.getMessage() == null ? "streaming response failed" : ex.getMessage());
+            deliver(emitter, clientGone, "error", safeErrorMessage(ex));
             completeQuietly(emitter);
         } finally {
             // Close the handle before handing the slot on: a reattach to this run must find it
@@ -466,6 +467,19 @@ public class ConversationController {
             RunRegistry.Handle live = handle.get();
             return live != null && live.isCancelled();
         };
+    }
+
+    /**
+     * What the wire is told when a stream fails. A {@link BusinessException} carries a message
+     * written for the caller and travels verbatim; anything else is an internal detail -- raw SQL
+     * or framework text (and the 404/403 wording that would let a stranger probe conversation ids)
+     * stays in the log, and the client gets one stable sentence it can show.
+     */
+    private static String safeErrorMessage(Exception ex) {
+        if (ex instanceof BusinessException business) {
+            return business.getMessage();
+        }
+        return "the assistant could not finish this reply; please retry";
     }
 
     private String runPayload(Long runId) {

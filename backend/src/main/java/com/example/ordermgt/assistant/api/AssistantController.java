@@ -1,6 +1,7 @@
 package com.example.ordermgt.assistant.api;
 
 import com.example.ordermgt.idempotency.application.IdempotencyGuard;
+import com.example.ordermgt.security.CurrentCustomer;
 import com.example.ordermgt.shared.api.ApiResponse;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -27,7 +28,7 @@ public class AssistantController {
      */
     @PostMapping("/chat")
     public ApiResponse<ChatResponse> chat(
-            @RequestHeader("X-Customer-Id") Long customerId,
+            @CurrentCustomer Long customerId,
             @RequestParam(required = false) Long conversationId,
             @RequestHeader(value = IdempotencyGuard.KEY_HEADER, required = false)
                     String idempotencyKey,

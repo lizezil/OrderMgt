@@ -30,5 +30,19 @@ public final class AiCallPolicy {
 
     public static final Duration HTTP_READ_TIMEOUT = Duration.ofSeconds(60);
 
+    /**
+     * When upstream rate-limits us without (or with an unparseable) Retry-After -- and on the
+     * blocking transport, always, because its error handler drops the header -- this is the wait we
+     * pass on. Honest about being a guess: it is advice, not a promise.
+     */
+    public static final int UPSTREAM_429_FALLBACK_RETRY_SECONDS = 5;
+
+    /**
+     * The wait suggested when every AI permit is taken ({@code AiConcurrencyGuard}). Drains are
+     * unbounded (a stream can hold its permit up to the stream timeout), so this is a hint that
+     * retrying soon is worth trying -- not a promise that one will succeed.
+     */
+    public static final int BUSY_RETRY_AFTER_SECONDS = 2;
+
     private AiCallPolicy() {}
 }

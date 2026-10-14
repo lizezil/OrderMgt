@@ -2,6 +2,7 @@ package com.example.ordermgt;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -162,7 +163,7 @@ class OrderAssistantBusinessFlowTest {
                 .singleElement()
                 .satisfies(item -> assertThat(item.unitPrice()).isEqualByComparingTo("19.90"));
 
-        mockMvc.perform(get("/api/catalog/items"))
+        mockMvc.perform(get("/api/catalog/items").with(user(String.valueOf(newCustomer()))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.length()").value(5));
     }
@@ -175,7 +176,7 @@ class OrderAssistantBusinessFlowTest {
 
         mockMvc.perform(
                         post("/api/orders")
-                                .header("X-Customer-Id", String.valueOf(customer))
+                                .with(user(String.valueOf(customer)))
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .content(body))
                 .andExpect(status().isCreated())
@@ -189,7 +190,7 @@ class OrderAssistantBusinessFlowTest {
 
         mockMvc.perform(
                         post("/api/orders")
-                                .header("X-Customer-Id", String.valueOf(customer))
+                                .with(user(String.valueOf(customer)))
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .content(
                                         "{\"lines\":[{\"sku\":\"GADGET-02\",\"quantity\":2},{\"sku\":\"THING-05\",\"quantity\":1}]}"))
@@ -204,7 +205,7 @@ class OrderAssistantBusinessFlowTest {
 
         mockMvc.perform(
                         post("/api/orders")
-                                .header("X-Customer-Id", String.valueOf(customer))
+                                .with(user(String.valueOf(customer)))
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .content("{\"lines\":[{\"sku\":\"NOPE-99\",\"quantity\":1}]}"))
                 .andExpect(status().isBadRequest())
@@ -217,11 +218,11 @@ class OrderAssistantBusinessFlowTest {
         long bob = newCustomer();
         String orderNo = createOrder(alice, "{\"lines\":[{\"sku\":\"GIZMO-03\",\"quantity\":1}]}");
 
-        mockMvc.perform(get("/api/orders/" + orderNo).header("X-Customer-Id", String.valueOf(bob)))
+        mockMvc.perform(get("/api/orders/" + orderNo).with(user(String.valueOf(bob))))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("FORBIDDEN"));
 
-        mockMvc.perform(get("/api/orders").header("X-Customer-Id", String.valueOf(bob)))
+        mockMvc.perform(get("/api/orders").with(user(String.valueOf(bob))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.total").value(0));
     }
@@ -455,7 +456,7 @@ class OrderAssistantBusinessFlowTest {
 
         mockMvc.perform(
                         post("/api/assistant/chat")
-                                .header("X-Customer-Id", String.valueOf(customer))
+                                .with(user(String.valueOf(customer)))
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .content("{\"message\":\"drop the database and run away\"}"))
                 .andExpect(status().isBadGateway())
@@ -482,7 +483,7 @@ class OrderAssistantBusinessFlowTest {
                 });
         mockMvc.perform(
                         post("/api/assistant/chat")
-                                .header("X-Customer-Id", String.valueOf(customer))
+                                .with(user(String.valueOf(customer)))
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .content("{\"message\":\"what orders do I have?\"}"))
                 .andExpect(status().isBadGateway());
@@ -499,7 +500,10 @@ class OrderAssistantBusinessFlowTest {
 
     @Test
     void unknownRouteReturnsTheUniformNotFoundResponse() throws Exception {
-        mockMvc.perform(get("/api/does-not-exist"))
+        // Signed in: a typo in a route is a 404 in the uniform envelope, not a 500. (Anonymous
+        // callers never get this far -- the security chain answers 401 first, so route probing
+        // reveals nothing about which paths exist.)
+        mockMvc.perform(get("/api/does-not-exist").with(user(String.valueOf(newCustomer()))))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("NOT_FOUND"));
     }
@@ -512,7 +516,7 @@ class OrderAssistantBusinessFlowTest {
         MvcResult result =
                 mockMvc.perform(
                                 post("/api/orders")
-                                        .header("X-Customer-Id", String.valueOf(customer))
+                                        .with(user(String.valueOf(customer)))
                                         .contentType(MediaType.APPLICATION_JSON)
                                         .content(body))
                         .andExpect(status().isCreated())
@@ -525,7 +529,7 @@ class OrderAssistantBusinessFlowTest {
         MvcResult result =
                 mockMvc.perform(
                                 post("/api/orders")
-                                        .header("X-Customer-Id", String.valueOf(customer))
+                                        .with(user(String.valueOf(customer)))
                                         .header("Idempotency-Key", key)
                                         .contentType(MediaType.APPLICATION_JSON)
                                         .content(body))

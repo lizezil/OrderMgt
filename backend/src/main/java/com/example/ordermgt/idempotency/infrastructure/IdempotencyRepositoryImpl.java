@@ -64,10 +64,20 @@ public class IdempotencyRepositoryImpl implements IdempotencyRepository {
     }
 
     @Override
-    public boolean reclaim(Long id) {
+    public void markResultUnknown(Long id) {
+        IdempotencyRecordPO patch = new IdempotencyRecordPO();
+        patch.setId(id);
+        patch.setStatus(IdempotencyStatus.RESULT_UNKNOWN.name());
+        patch.setCompletedAt(Instant.now());
+        mapper.updateById(patch);
+    }
+
+    @Override
+    public boolean reclaim(Long id, Instant newExpiresAt) {
         IdempotencyRecordPO patch = new IdempotencyRecordPO();
         patch.setStatus(IdempotencyStatus.IN_PROGRESS.name());
         patch.setCompletedAt(null);
+        patch.setExpiresAt(newExpiresAt);
         // WHERE status = 'FAILED' is the whole point: of N threads retrying a failed key, only
         // the one whose UPDATE actually matches a row gets to run the action again.
         return mapper.update(
@@ -81,14 +91,9 @@ public class IdempotencyRepositoryImpl implements IdempotencyRepository {
     }
 
     @Override
-    public int expireStaleInProgress(Instant now) {
-        IdempotencyRecordPO patch = new IdempotencyRecordPO();
-        patch.setStatus(IdempotencyStatus.FAILED.name());
-        patch.setCompletedAt(now);
-        return mapper.update(
-                patch,
-                Wrappers.<IdempotencyRecordPO>lambdaUpdate()
-                        .eq(IdempotencyRecordPO::getStatus, IdempotencyStatus.IN_PROGRESS.name())
+    public int deleteExpired(Instant now) {
+        return mapper.delete(
+                Wrappers.<IdempotencyRecordPO>lambdaQuery()
                         .le(IdempotencyRecordPO::getExpiresAt, now));
     }
 }

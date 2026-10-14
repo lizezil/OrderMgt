@@ -29,6 +29,7 @@ import com.example.ordermgt.assistant.domain.ProposedToolCall;
 import com.example.ordermgt.assistant.domain.Role;
 import com.example.ordermgt.assistant.domain.Run;
 import com.example.ordermgt.assistant.domain.RunCancelledException;
+import com.example.ordermgt.assistant.domain.RunInterruptedException;
 import com.example.ordermgt.assistant.domain.RunRepository;
 import com.example.ordermgt.assistant.domain.RunStatus;
 import com.example.ordermgt.assistant.domain.ToolRegistry;
@@ -310,6 +311,37 @@ class AssistantServiceTest {
         ArgumentCaptor<AiInvocation> audits = ArgumentCaptor.forClass(AiInvocation.class);
         verify(aiInvocationRepository).save(audits.capture());
         assertThat(audits.getValue().outcome()).isEqualTo(AiInvocationOutcome.CANCELLED);
+    }
+
+    /**
+     * 上游在吐字之后断掉（不是客户停的）：已经看过的话照样落库，但标注[生成中断]，Run 收 INTERRUPTED，审计记 ERROR；异常继续往上抛，流式端点以 error
+     * 帧收尾——前端的重试因此看得到 之前说过的话，而不是一段凭空消失的回答。
+     */
+    @Test
+    void anUpstreamInterruptionKeepsTheHalfTextAnnotatedAndClosesTheRunInterrupted() {
+        AssistantTurn partial = AssistantTurn.of("你有 3 张订单", List.of(), AiUsage.EMPTY);
+        ArgumentCaptor<Run> runs = ArgumentCaptor.forClass(Run.class);
+
+        assertThatThrownBy(
+                        () ->
+                                service.executeTurn(
+                                        context(),
+                                        run -> {},
+                                        () -> {
+                                            throw new RunInterruptedException(
+                                                    partial,
+                                                    new IllegalStateException(
+                                                            "upstream went away"));
+                                        }))
+                .isInstanceOf(RunInterruptedException.class);
+
+        verify(conversationService).appendAssistantMessage(CONVERSATION, "你有 3 张订单\n\n[生成中断]");
+        verify(runRepository, times(2)).save(runs.capture());
+        assertThat(runs.getAllValues().get(1).status()).isEqualTo(RunStatus.INTERRUPTED);
+        assertThat(runs.getAllValues().get(1).endedAt()).isNotNull();
+        ArgumentCaptor<AiInvocation> audits = ArgumentCaptor.forClass(AiInvocation.class);
+        verify(aiInvocationRepository).save(audits.capture());
+        assertThat(audits.getValue().outcome()).isEqualTo(AiInvocationOutcome.ERROR);
     }
 
     /** 停止发生在模型开口之前：没有半截可留，就不落一条空的助手消息，但 Run 与审计照旧。 */

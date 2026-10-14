@@ -8,20 +8,60 @@ import type {
   PageResult,
   QueuedTurn,
 } from './types'
-import { DEFAULT_CUSTOMER_ID, DEFAULT_PAGE_SIZE, FIRST_PAGE } from './constants'
+import { CLIENT_STREAM_TIMEOUT_MS, DEFAULT_PAGE_SIZE, FIRST_PAGE } from './constants'
 
 /**
- * The customer is simulated by a header, so it is a per-browser setting rather than a
- * login. Switching it is how you demo that the assistant cannot see anyone else's orders.
+ * The customer is the session, not a header: the browser holds an HttpOnly session cookie the
+ * server issues at PIN login, and identity never appears in anything the page can write. The one
+ * piece of client-side auth state is the CSRF token, which the server plants in a readable XSRF
+ * cookie and this SPA echoes back as the X-XSRF-TOKEN header on every mutation.
  */
-const CUSTOMER_KEY = 'ordermgt.customerId'
 
-export function getCustomerId(): string {
-  return localStorage.getItem(CUSTOMER_KEY) ?? DEFAULT_CUSTOMER_ID
+/** Register the handler a 401 anywhere (any request or stream) triggers: show the login page. */
+export function onUnauthorized(handler: () => void): void {
+  unauthorizedHandler = handler
 }
 
-export function setCustomerId(id: string): void {
-  localStorage.setItem(CUSTOMER_KEY, id)
+let unauthorizedHandler: (() => void) | null = null
+
+function reportUnauthorized(): void {
+  unauthorizedHandler?.()
+}
+
+function readXsrfCookie(): string | null {
+  const match = /(?:^|;\s*)XSRF-TOKEN=([^;]*)/.exec(document.cookie)
+  return match ? decodeURIComponent(match[1]) : null
+}
+
+/** Mints the XSRF cookie if it is missing; the app calls it once at startup. */
+export async function ensureCsrf(): Promise<void> {
+  if (readXsrfCookie()) return
+  await fetch('/api/auth/csrf', { credentials: 'same-origin' })
+}
+
+/** Signs in with customerId + PIN; resolves to the customer id the session now speaks for. */
+export async function login(customerId: string, pin: string): Promise<string> {
+  const data = await request<{ customerId: string }>('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ customerId, pin }),
+  })
+  return data.customerId
+}
+
+/** Ends the session server-side; the next request is anonymous again. */
+export async function logout(): Promise<void> {
+  await request<null>('/api/auth/logout', { method: 'POST' })
+}
+
+/** The signed-in customer id, or null when nobody is signed in (no error thrown for 401). */
+export async function me(): Promise<string | null> {
+  try {
+    const data = await request<{ customerId: string }>('/api/auth/me')
+    return data.customerId
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 401) return null
+    throw error
+  }
 }
 
 export class ApiError extends Error {
@@ -41,18 +81,26 @@ interface Envelope<T> {
   data: T
 }
 
+const SAFE_METHODS = new Set(['GET', 'HEAD'])
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(path, {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Customer-Id': getCustomerId(),
-      ...(init.headers ?? {}),
-    },
-  })
+  const method = (init.method ?? 'GET').toUpperCase()
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...((init.headers as Record<string, string> | undefined) ?? {}),
+  }
+  // The CSRF cookie is readable on purpose; the server accepts the raw value in this header.
+  if (!SAFE_METHODS.has(method)) {
+    const xsrf = readXsrfCookie()
+    if (xsrf) headers['X-XSRF-TOKEN'] = xsrf
+  }
+  const response = await fetch(path, { ...init, headers, credentials: 'same-origin' })
 
   const envelope = (await response.json().catch(() => null)) as Envelope<T> | null
   if (!response.ok || !envelope || envelope.code !== 'OK') {
+    // A dead session anywhere means the login page again -- except on the login call itself,
+    // where 401 simply means "wrong PIN".
+    if (response.status === 401 && path !== '/api/auth/login') reportUnauthorized()
     throw new ApiError(
       envelope?.code ?? `HTTP_${response.status}`,
       envelope?.message ?? response.statusText ?? '请求失败',
@@ -74,6 +122,19 @@ export const QUEUE_DROPPED = 'QUEUE_DROPPED'
 
 /** Error code for a turn the customer stopped (see `cancelled` below). Not a failure. */
 export const RUN_CANCELLED = 'RUN_CANCELLED'
+
+/** Error code for a confirmation card the server has already expired (HTTP 410). */
+export const ACTION_EXPIRED = 'ACTION_EXPIRED'
+
+/**
+ * The caller's abort, if any, plus a hard ceiling. The server closes a turn's stream at 120s; this
+ * slightly larger client-side bound is what stops a proxy-frozen connection from pinning the caller
+ * forever, and the caller's own signal is what lets a view tear its streams down on unmount.
+ */
+function streamSignal(signal?: AbortSignal): AbortSignal {
+  const ceiling = AbortSignal.timeout(CLIENT_STREAM_TIMEOUT_MS)
+  return signal ? AbortSignal.any([signal, ceiling]) : ceiling
+}
 
 /** What a streaming turn reports as it goes: prose deltas, and its place in line if it has one. */
 export interface ChatStreamHandlers {
@@ -106,12 +167,18 @@ export async function chatStream(
   message: string,
   conversationId: number,
   handlers: ChatStreamHandlers,
+  signal?: AbortSignal,
 ): Promise<ChatResponse> {
   const response = await fetch(
     `/api/assistant/conversations/${conversationId}/stream?message=${encodeURIComponent(message)}`,
-    { headers: { 'X-Customer-Id': getCustomerId(), Accept: 'text/event-stream' } },
+    {
+      headers: { Accept: 'text/event-stream' },
+      credentials: 'same-origin',
+      signal: streamSignal(signal),
+    },
   )
   if (!response.ok || !response.body) {
+    if (response.status === 401) reportUnauthorized()
     throw new ApiError(
       `HTTP_${response.status}`,
       response.statusText || '流式请求失败',
@@ -197,11 +264,13 @@ export async function runStream(
   const response = await fetch(
     `/api/assistant/conversations/${conversationId}/runs/${runId}/events`,
     {
-      headers: { 'X-Customer-Id': getCustomerId(), Accept: 'text/event-stream' },
-      signal,
+      headers: { Accept: 'text/event-stream' },
+      credentials: 'same-origin',
+      signal: streamSignal(signal),
     },
   )
   if (!response.ok || !response.body) {
+    if (response.status === 401) reportUnauthorized()
     throw new ApiError(
       `HTTP_${response.status}`,
       response.statusText || '重订阅失败',
@@ -241,10 +310,12 @@ export async function eventsStream(
   signal?: AbortSignal,
 ): Promise<void> {
   const response = await fetch('/api/assistant/events', {
-    headers: { 'X-Customer-Id': getCustomerId(), Accept: 'text/event-stream' },
+    headers: { Accept: 'text/event-stream' },
+    credentials: 'same-origin',
     signal,
   })
   if (!response.ok || !response.body) {
+    if (response.status === 401) reportUnauthorized()
     throw new ApiError(
       `HTTP_${response.status}`,
       response.statusText || '状态流连接失败',

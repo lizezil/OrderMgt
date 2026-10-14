@@ -2,11 +2,11 @@ package com.example.ordermgt.assistant.api;
 
 import com.example.ordermgt.assistant.application.ActionConfirmationService;
 import com.example.ordermgt.assistant.application.ActionResolution;
+import com.example.ordermgt.security.CurrentCustomer;
 import com.example.ordermgt.shared.api.ApiResponse;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -30,14 +30,14 @@ public class ActionController {
 
     @PostMapping("/{token}/confirm")
     public ApiResponse<ActionResolution> confirm(
-            @RequestHeader("X-Customer-Id") Long customerId, @PathVariable String token) {
+            @CurrentCustomer Long customerId, @PathVariable String token) {
         return ApiResponse.ok(
                 publish(customerId, actionConfirmationService.confirm(customerId, token)));
     }
 
     @PostMapping("/{token}/reject")
     public ApiResponse<ActionResolution> reject(
-            @RequestHeader("X-Customer-Id") Long customerId, @PathVariable String token) {
+            @CurrentCustomer Long customerId, @PathVariable String token) {
         return ApiResponse.ok(
                 publish(customerId, actionConfirmationService.reject(customerId, token)));
     }

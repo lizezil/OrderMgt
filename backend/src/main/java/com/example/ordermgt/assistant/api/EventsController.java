@@ -2,6 +2,7 @@ package com.example.ordermgt.assistant.api;
 
 import com.example.ordermgt.assistant.application.ConversationEventBus;
 import com.example.ordermgt.assistant.application.ConversationService;
+import com.example.ordermgt.security.CurrentCustomer;
 import com.example.ordermgt.shared.api.ErrorCode;
 import com.example.ordermgt.shared.error.BusinessException;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -13,7 +14,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -84,7 +84,7 @@ public class EventsController {
     }
 
     @GetMapping(produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter events(@RequestHeader("X-Customer-Id") Long customerId) {
+    public SseEmitter events(@CurrentCustomer Long customerId) {
         SseEmitter emitter = emitters.get();
         // Register before the snapshot so no increment can slip into the gap between the two: a
         // frame that arrives early is harmless (the snapshot replaces the list), one that arrives

@@ -13,10 +13,13 @@ import static org.mockito.Mockito.when;
 import com.example.ordermgt.idempotency.domain.IdempotencyRecord;
 import com.example.ordermgt.idempotency.domain.IdempotencyRepository;
 import com.example.ordermgt.idempotency.domain.IdempotencyStatus;
+import com.example.ordermgt.order.api.CreateOrderRequest;
 import com.example.ordermgt.shared.api.ErrorCode;
 import com.example.ordermgt.shared.error.BusinessException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
@@ -123,15 +126,34 @@ class IdempotencyGuardTest {
         when(repository.tryClaim(any())).thenReturn(Optional.empty());
         when(repository.find(1L, OPERATION, KEY))
                 .thenReturn(Optional.of(record(9L, IdempotencyStatus.FAILED, null, HASH)));
-        when(repository.reclaim(9L)).thenReturn(true);
+        when(repository.reclaim(anyLong(), any(Instant.class))).thenReturn(true);
 
         Map<String, Object> result =
                 guard.execute(
                         1L, OPERATION, KEY, HASH, () -> Map.of("orderNo", "ORD-2"), Map.class);
 
         assertThat(result).containsEntry("orderNo", "ORD-2");
-        verify(repository).reclaim(9L);
         verify(repository).complete(eq(9L), anyString());
+    }
+
+    @Test
+    void reclaimGivesTheRetryAFullWindowInsteadOfTheOriginalExpiry() {
+        when(repository.tryClaim(any())).thenReturn(Optional.empty());
+        when(repository.find(1L, OPERATION, KEY))
+                .thenReturn(Optional.of(record(9L, IdempotencyStatus.FAILED, null, HASH)));
+        when(repository.reclaim(anyLong(), any(Instant.class))).thenReturn(true);
+
+        Instant before = Instant.now();
+        guard.execute(1L, OPERATION, KEY, HASH, () -> Map.of("orderNo", "ORD-2"), Map.class);
+
+        // A reclaimed record that kept its original expires_at could be swept mid-run, flipping
+        // it to FAILED while the action is still executing -- which lets a second retry run the
+        // same action concurrently.
+        var captor = org.mockito.ArgumentCaptor.forClass(Instant.class);
+        verify(repository).reclaim(eq(9L), captor.capture());
+        assertThat(captor.getValue())
+                .isAfter(before.plus(Duration.ofHours(23)))
+                .isBefore(Instant.now().plus(Duration.ofHours(25)));
     }
 
     @Test
@@ -140,7 +162,7 @@ class IdempotencyGuardTest {
         when(repository.find(1L, OPERATION, KEY))
                 .thenReturn(Optional.of(record(9L, IdempotencyStatus.FAILED, null, HASH)))
                 .thenReturn(Optional.of(record(9L, IdempotencyStatus.IN_PROGRESS, null, HASH)));
-        when(repository.reclaim(9L)).thenReturn(false);
+        when(repository.reclaim(anyLong(), any(Instant.class))).thenReturn(false);
 
         assertThatThrownBy(() -> guard.execute(1L, OPERATION, KEY, HASH, () -> Map.of(), Map.class))
                 .isInstanceOf(BusinessException.class)
@@ -161,7 +183,7 @@ class IdempotencyGuardTest {
                                         IdempotencyStatus.COMPLETED,
                                         "{\"orderNo\":\"ORD-1\"}",
                                         HASH)));
-        when(repository.reclaim(9L)).thenReturn(false);
+        when(repository.reclaim(anyLong(), any(Instant.class))).thenReturn(false);
 
         Map<String, Object> replayed =
                 guard.execute(
@@ -197,6 +219,92 @@ class IdempotencyGuardTest {
 
         verify(repository).markFailed(9L);
         verify(repository, never()).complete(anyLong(), anyString());
+    }
+
+    @Test
+    void aResponseWriteFailureIsNotAFailedActionAndMustNotInviteARerun() {
+        when(repository.tryClaim(any()))
+                .thenReturn(Optional.of(record(9L, IdempotencyStatus.IN_PROGRESS, null, HASH)));
+        org.mockito.Mockito.doThrow(new IllegalStateException("data too long for column"))
+                .when(repository)
+                .complete(anyLong(), anyString());
+
+        assertThatThrownBy(
+                        () ->
+                                guard.execute(
+                                        1L,
+                                        OPERATION,
+                                        KEY,
+                                        HASH,
+                                        () -> Map.of("orderNo", "ORD-1"),
+                                        Map.class))
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).errorCode())
+                .isEqualTo(ErrorCode.RESULT_UNKNOWN);
+
+        verify(repository).markResultUnknown(9L);
+        verify(repository, never()).markFailed(anyLong());
+    }
+
+    @Test
+    void aRetryAfterALostResponseIsRefusedWithoutRunningTheActionAgain() {
+        when(repository.tryClaim(any())).thenReturn(Optional.empty());
+        when(repository.find(1L, OPERATION, KEY))
+                .thenReturn(Optional.of(record(9L, IdempotencyStatus.RESULT_UNKNOWN, null, HASH)));
+
+        assertThatThrownBy(
+                        () ->
+                                guard.execute(
+                                        1L,
+                                        OPERATION,
+                                        KEY,
+                                        HASH,
+                                        () -> {
+                                            throw new AssertionError(
+                                                    "the action must not run again");
+                                        },
+                                        Map.class))
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).errorCode())
+                .isEqualTo(ErrorCode.RESULT_UNKNOWN);
+
+        verify(repository, never()).reclaim(anyLong(), any(Instant.class));
+        verify(repository, never()).markFailed(anyLong());
+    }
+
+    @Test
+    void anOverlongKeyIsRefusedUpfrontRatherThanByTheDatabase() {
+        assertThatThrownBy(
+                        () ->
+                                guard.execute(
+                                        1L,
+                                        OPERATION,
+                                        "k".repeat(129),
+                                        HASH,
+                                        () -> Map.of(),
+                                        Map.class))
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).errorCode())
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+
+        verify(repository, never()).tryClaim(any());
+    }
+
+    @Test
+    void theJsonFingerprintSeparatesStructuresTheOldStringJoinWouldConfuse() {
+        // The old fingerprint joined lines as "sku:qty,sku:qty", so a sku containing those
+        // separators spelled the same string as two separate lines -- a reused key would replay
+        // the wrong order instead of returning a conflict.
+        var twoLines =
+                new CreateOrderRequest(
+                        List.of(
+                                new CreateOrderRequest.Line("A", 1),
+                                new CreateOrderRequest.Line("B", 2)));
+        var trickySku = new CreateOrderRequest(List.of(new CreateOrderRequest.Line("A:1,B", 2)));
+
+        assertThat(guard.hashOfJson(twoLines)).hasSize(64);
+        assertThat(guard.hashOfJson(twoLines)).isEqualTo(guard.hashOfJson(twoLines));
+        assertThat(guard.hashOfJson(twoLines)).isNotEqualTo(guard.hashOfJson(trickySku));
     }
 
     @Test

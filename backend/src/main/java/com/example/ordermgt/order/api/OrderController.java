@@ -3,11 +3,11 @@ package com.example.ordermgt.order.api;
 import com.example.ordermgt.idempotency.application.IdempotencyGuard;
 import com.example.ordermgt.order.application.OrderService;
 import com.example.ordermgt.order.domain.Order;
+import com.example.ordermgt.security.CurrentCustomer;
 import com.example.ordermgt.shared.api.ApiResponse;
 import com.example.ordermgt.shared.api.PageResult;
 import com.example.ordermgt.shared.api.Paging;
 import jakarta.validation.Valid;
-import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -38,7 +38,7 @@ public class OrderController {
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public ApiResponse<OrderResponse> create(
-            @RequestHeader("X-Customer-Id") Long customerId,
+            @CurrentCustomer Long customerId,
             @RequestHeader(value = IdempotencyGuard.KEY_HEADER, required = false)
                     String idempotencyKey,
             @Valid @RequestBody CreateOrderRequest request) {
@@ -48,10 +48,7 @@ public class OrderController {
                         customerId,
                         CREATE_ORDER,
                         idempotencyKey,
-                        IdempotencyGuard.hashOf(
-                                request.lines().stream()
-                                        .map(line -> line.sku() + ":" + line.quantity())
-                                        .collect(Collectors.joining(","))),
+                        idempotencyGuard.hashOfJson(request),
                         () ->
                                 mapper.toResponse(
                                         orderService.createOrder(customerId, request.toCommands())),
@@ -61,7 +58,7 @@ public class OrderController {
 
     @GetMapping
     public ApiResponse<PageResult<OrderResponse>> list(
-            @RequestHeader("X-Customer-Id") Long customerId,
+            @CurrentCustomer Long customerId,
             @RequestParam(required = false) Long page,
             @RequestParam(required = false) Long size) {
         PageResult<Order> result =
@@ -79,7 +76,7 @@ public class OrderController {
 
     @GetMapping("/{orderNo}")
     public ApiResponse<OrderResponse> get(
-            @RequestHeader("X-Customer-Id") Long customerId, @PathVariable String orderNo) {
+            @CurrentCustomer Long customerId, @PathVariable String orderNo) {
         return ApiResponse.ok(mapper.toResponse(orderService.getByNumber(customerId, orderNo)));
     }
 }

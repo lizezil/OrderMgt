@@ -14,6 +14,7 @@ import com.example.ordermgt.assistant.application.AssistantResult;
 import com.example.ordermgt.assistant.application.AssistantService;
 import com.example.ordermgt.assistant.application.ConversationRunQueue;
 import com.example.ordermgt.assistant.application.ConversationService;
+import com.example.ordermgt.assistant.application.CustomerRateLimiter;
 import com.example.ordermgt.assistant.application.RunRegistry;
 import com.example.ordermgt.assistant.application.RunService;
 import com.example.ordermgt.assistant.domain.AiAssistantPort;
@@ -21,6 +22,8 @@ import com.example.ordermgt.assistant.domain.AiUsage;
 import com.example.ordermgt.assistant.domain.AssistantTurn;
 import com.example.ordermgt.assistant.domain.Conversation;
 import com.example.ordermgt.assistant.domain.ConversationStatus;
+import com.example.ordermgt.shared.api.ErrorCode;
+import com.example.ordermgt.shared.error.BusinessException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.time.Instant;
@@ -84,7 +87,8 @@ class ConversationControllerTest {
                         events,
                         aiAssistantPort,
                         new ObjectMapper(),
-                        mapper);
+                        mapper,
+                        CustomerRateLimiter.unlimited());
         Conversation conversation =
                 Conversation.rehydrate(
                         CONVERSATION,
@@ -168,7 +172,8 @@ class ConversationControllerTest {
     @Test
     void upstreamFailureStillEmitsErrorOnTheWire() throws Exception {
         when(assistantService.prepare(CUSTOMER, CONVERSATION, QUESTION)).thenReturn(context);
-        RuntimeException boom = new IllegalStateException("上游模型超时");
+        // A BusinessException's message was written for the caller; it travels verbatim.
+        RuntimeException boom = new BusinessException(ErrorCode.UPSTREAM_AI_ERROR, "上游模型超时");
         when(assistantService.executeTurn(eq(context), any(), any())).thenThrow(boom);
 
         controller.streamTurn(emitter, new AtomicBoolean(false), CUSTOMER, CONVERSATION, QUESTION);
@@ -177,6 +182,23 @@ class ConversationControllerTest {
         verify(emitter).send(events.capture());
         assertThat(wireOf(events.getValue())).contains("event:error").contains("data:上游模型超时");
         verify(assistantService, never()).recordFailure(any(), any(), any());
+        verify(emitter).complete();
+    }
+
+    /** 内部细节不上线：原始异常文本（SQL、框架内部、404/403 措辞）留在日志里，线上只给稳定文案。 */
+    @Test
+    void anInternalFailureIsSanitizedOnTheWireButKeptInTheLog() throws Exception {
+        when(assistantService.prepare(CUSTOMER, CONVERSATION, QUESTION)).thenReturn(context);
+        when(assistantService.executeTurn(eq(context), any(), any()))
+                .thenThrow(new IllegalStateException("Data too long for column 'response_json'"));
+
+        controller.streamTurn(emitter, new AtomicBoolean(false), CUSTOMER, CONVERSATION, QUESTION);
+
+        ArgumentCaptor<SseEventBuilder> events = ArgumentCaptor.forClass(SseEventBuilder.class);
+        verify(emitter).send(events.capture());
+        String wire = wireOf(events.getValue());
+        assertThat(wire).contains("event:error");
+        assertThat(wire).doesNotContain("response_json").doesNotContain("Data too long");
         verify(emitter).complete();
     }
 

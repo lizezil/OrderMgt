@@ -3,6 +3,7 @@ package com.example.ordermgt.assistant.api;
 import com.example.ordermgt.assistant.application.AssistantService;
 import com.example.ordermgt.assistant.application.ConversationRunQueue;
 import com.example.ordermgt.assistant.application.ConversationService;
+import com.example.ordermgt.assistant.application.CustomerRateLimiter;
 import com.example.ordermgt.idempotency.application.IdempotencyGuard;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
@@ -31,9 +32,13 @@ public class ChatSender {
     private final ConversationService conversationService;
     private final ConversationRunQueue runQueue;
     private final ConversationEventPublisher events;
+    private final CustomerRateLimiter rateLimiter;
 
     public ChatResponse send(
             Long customerId, Long conversationId, String idempotencyKey, String message) {
+        // Admission before anything else: one customer's burst must be refused at the door with a
+        // Retry-After, before an idempotency claim is taken or a queue slot is considered.
+        rateLimiter.admit(customerId);
         return idempotencyGuard.execute(
                 customerId,
                 OPERATION,

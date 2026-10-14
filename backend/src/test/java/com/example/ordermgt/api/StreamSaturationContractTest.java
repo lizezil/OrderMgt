@@ -12,10 +12,13 @@ import com.example.ordermgt.assistant.api.ConversationEventPublisher;
 import com.example.ordermgt.assistant.application.AssistantService;
 import com.example.ordermgt.assistant.application.ConversationRunQueue;
 import com.example.ordermgt.assistant.application.ConversationService;
+import com.example.ordermgt.assistant.application.CustomerRateLimiter;
 import com.example.ordermgt.assistant.application.RunRegistry;
 import com.example.ordermgt.assistant.application.RunService;
 import com.example.ordermgt.assistant.domain.AiAssistantPort;
+import com.example.ordermgt.security.CurrentCustomerResolver;
 import com.example.ordermgt.shared.error.GlobalExceptionHandler;
+import com.example.ordermgt.testsupport.TestAuth;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
@@ -55,8 +58,10 @@ class StreamSaturationContractTest {
                                         mock(ConversationEventPublisher.class),
                                         mock(AiAssistantPort.class),
                                         new ObjectMapper(),
-                                        Mappers.getMapper(AssistantApiMapper.class)))
+                                        Mappers.getMapper(AssistantApiMapper.class),
+                                        CustomerRateLimiter.unlimited()))
                         .setControllerAdvice(new GlobalExceptionHandler())
+                        .setCustomArgumentResolvers(new CurrentCustomerResolver())
                         .build();
     }
 
@@ -64,7 +69,7 @@ class StreamSaturationContractTest {
     void saturatedPoolAnswersServiceUnavailableBeforeStreaming() throws Exception {
         mvc.perform(
                         get("/api/assistant/conversations/{id}/stream", 7L)
-                                .header("X-Customer-Id", 1001L)
+                                .with(TestAuth.authenticatedAs("1001"))
                                 .queryParam("message", "我有哪些订单？"))
                 .andExpect(status().isServiceUnavailable())
                 .andExpect(jsonPath("$.code").value("SERVICE_BUSY"));

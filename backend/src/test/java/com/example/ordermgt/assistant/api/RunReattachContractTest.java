@@ -12,6 +12,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.example.ordermgt.assistant.application.AssistantService;
 import com.example.ordermgt.assistant.application.ConversationRunQueue;
 import com.example.ordermgt.assistant.application.ConversationService;
+import com.example.ordermgt.assistant.application.CustomerRateLimiter;
 import com.example.ordermgt.assistant.application.RunRegistry;
 import com.example.ordermgt.assistant.application.RunService;
 import com.example.ordermgt.assistant.domain.AiAssistantPort;
@@ -20,9 +21,11 @@ import com.example.ordermgt.assistant.domain.RunRepository;
 import com.example.ordermgt.assistant.domain.RunStatus;
 import com.example.ordermgt.idempotency.application.IdempotencyGuard;
 import com.example.ordermgt.idempotency.domain.IdempotencyRepository;
+import com.example.ordermgt.security.CurrentCustomerResolver;
 import com.example.ordermgt.shared.api.ErrorCode;
 import com.example.ordermgt.shared.error.BusinessException;
 import com.example.ordermgt.shared.error.GlobalExceptionHandler;
+import com.example.ordermgt.testsupport.TestAuth;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -70,7 +73,8 @@ class RunReattachContractTest {
                         mapper,
                         conversationService,
                         queue,
-                        mock(ConversationEventPublisher.class));
+                        mock(ConversationEventPublisher.class),
+                        CustomerRateLimiter.unlimited());
 
         mvc =
                 MockMvcBuilders.standaloneSetup(
@@ -84,8 +88,10 @@ class RunReattachContractTest {
                                         mock(ConversationEventPublisher.class),
                                         mock(AiAssistantPort.class),
                                         new ObjectMapper(),
-                                        mapper))
+                                        mapper,
+                                        CustomerRateLimiter.unlimited()))
                         .setControllerAdvice(new GlobalExceptionHandler())
+                        .setCustomArgumentResolvers(new CurrentCustomerResolver())
                         // The running app writes SSE frames through Boot's UTF-8 string converter;
                         // standalone MockMvc's default is ISO-8859-1, which would mangle CJK.
                         .setMessageConverters(
@@ -165,7 +171,7 @@ class RunReattachContractTest {
     private org.springframework.test.web.servlet.ResultActions reattach() throws Exception {
         return mvc.perform(
                 get("/api/assistant/conversations/{id}/runs/{runId}/events", CONVERSATION, RUN)
-                        .header("X-Customer-Id", CUSTOMER));
+                        .with(TestAuth.authenticatedAs(CUSTOMER)));
     }
 
     private static Run run(RunStatus status) {

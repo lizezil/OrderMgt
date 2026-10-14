@@ -24,6 +24,7 @@ vi.mock('../api', async () => {
     ApiError: actual.ApiError,
     QUEUE_DROPPED: actual.QUEUE_DROPPED,
     RUN_CANCELLED: actual.RUN_CANCELLED,
+    ACTION_EXPIRED: actual.ACTION_EXPIRED,
     api: {
       listConversations: vi.fn(),
       history: vi.fn(),
@@ -268,6 +269,7 @@ describe('有问无答的回合', () => {
       '帮我下单 1 个 GIZMO-03',
       7,
       expect.objectContaining({ onToken: expect.any(Function) }),
+      expect.any(AbortSignal),
     )
   })
 
@@ -315,6 +317,7 @@ describe('流式回复', () => {
       '帮我下单 2 个 GADGET-02',
       7,
       expect.objectContaining({ onToken: expect.any(Function) }),
+      expect.any(AbortSignal),
     )
 
     emitDelta('我准备好')
@@ -374,6 +377,25 @@ describe('流式回复', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('发送中离开这一页：在飞的流被中止，不留一条还挂着的连接', async () => {
+    listConversationsMock.mockResolvedValue([])
+    let observedSignal: AbortSignal | undefined
+    chatStreamMock.mockImplementation((_message, _id, _handlers, signal) => {
+      observedSignal = signal
+      return new Promise<ChatResponse>(() => {})
+    })
+
+    const wrapper = mount(AssistantView)
+    await flushPromises()
+    await wrapper.get('textarea').setValue('发送中离场')
+    await sendButton(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(observedSignal?.aborted).toBe(false)
+    wrapper.unmount()
+    expect(observedSignal?.aborted).toBe(true)
   })
 })
 
@@ -585,6 +607,7 @@ describe('输入框归属的会话，由正在切换的那一步决定', () => {
       '第二条的问题',
       2,
       expect.objectContaining({ onToken: expect.any(Function) }),
+      expect.any(AbortSignal),
     )
   })
 
@@ -608,6 +631,7 @@ describe('输入框归属的会话，由正在切换的那一步决定', () => {
       '回来后的第一句',
       3,
       expect.objectContaining({ onToken: expect.any(Function) }),
+      expect.any(AbortSignal),
     )
     // 而不是绕过加载、自作主张新建一段（startConversation 默认给的是 7）。
     expect(startConversationMock).not.toHaveBeenCalled()
@@ -629,6 +653,33 @@ describe('输入框归属的会话，由正在切换的那一步决定', () => {
 
     expect(chatStreamMock).toHaveBeenCalledTimes(2)
     expect(chatStreamMock.mock.calls[1]![0]).toBe('第二句')
+  })
+
+  it('切换未落定的窗口里连按两次回车：只发出一条，不把同一句复读进队伍', async () => {
+    listConversationsMock.mockResolvedValue([conversation(1, '第一条')])
+    let resolveCreation!: (conversation: Conversation) => void
+    startConversationMock.mockImplementation(
+      () =>
+        new Promise<Conversation>((resolve) => {
+          resolveCreation = resolve
+        }),
+    )
+
+    const wrapper = await mountView()
+    const newConversation = wrapper
+      .findAll('button')
+      .find((candidate) => candidate.text().includes('新对话'))
+    if (!newConversation) throw new Error('找不到新对话按钮')
+    await newConversation.trigger('click') // POST /conversations 还挂着
+    const textarea = wrapper.get('textarea')
+    await textarea.setValue('只应发出一条')
+    // 竞态窗口里的双击：输入框在第一次回车就该被清空并占忙，第二次没有词可发。
+    await textarea.trigger('keydown', { key: 'Enter' })
+    await textarea.trigger('keydown', { key: 'Enter' })
+    resolveCreation(conversation(2, null))
+    await flushPromises()
+
+    expect(chatStreamMock).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -1016,5 +1067,80 @@ describe('切回一个正在跑的会话', () => {
     await mountView()
 
     expect(runStreamMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('快速操作的守卫', () => {
+  it('前一次打开还挂着时又点了另一段：迟到的历史不覆盖新会话', async () => {
+    let resolveFirst!: (messages: Message[]) => void
+    listConversationsMock.mockResolvedValue([conversation(7, '慢的'), conversation(8, '快的')])
+    const slow: Message = {
+      id: 1,
+      role: 'CUSTOMER',
+      content: '慢会话里的旧消息。',
+      createdAt: '',
+      action: null,
+    }
+    const quick: Message = {
+      id: 2,
+      role: 'ASSISTANT',
+      content: '快会话里的消息。',
+      createdAt: '',
+      action: null,
+    }
+    historyMock
+      .mockImplementationOnce(
+        () =>
+          new Promise<Message[]>((resolve) => {
+            resolveFirst = resolve
+          }),
+      )
+      .mockResolvedValueOnce([quick])
+
+    const wrapper = await mountView() // 打开第一条（7），它的历史还挂着
+    const quickRow = wrapper.findAll('.entry').find((entry) => entry.text().includes('快的'))
+    if (!quickRow) throw new Error('找不到快的那条')
+    await quickRow.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('快会话里的消息。')
+
+    // 迟到的第 7 条历史现在才回来：它属于一个已经不在屏幕上的会话，必须被丢弃。
+    resolveFirst([slow])
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('快会话里的消息。')
+    expect(wrapper.text()).not.toContain('慢会话里的旧消息。')
+  })
+
+  it('确认时发现卡已被服务端改过（410）：重读这条会话，卡片以服务端状态盖章', async () => {
+    const stale = pendingCard()
+    const question: Message = {
+      id: 1,
+      role: 'CUSTOMER',
+      content: '帮我下单',
+      createdAt: '',
+      action: null,
+    }
+    const cardLine: Message = {
+      id: 2,
+      role: 'ASSISTANT',
+      content: stale.summary,
+      createdAt: '',
+      action: stale,
+    }
+    listConversationsMock.mockResolvedValue([conversation(7, '下单')])
+    historyMock
+      .mockResolvedValueOnce([question, cardLine])
+      .mockResolvedValueOnce([question, { ...cardLine, action: { ...stale, status: 'EXPIRED' } }])
+    vi.mocked(api.confirm).mockRejectedValue(new ApiError('ACTION_EXPIRED', '确认单已过期', 410))
+
+    const wrapper = await mountView()
+    await wrapper.get('.slip button.authority').trigger('click')
+    await flushPromises()
+
+    expect(historyMock).toHaveBeenCalledTimes(2)
+    expect(wrapper.get('.slip-state').text()).toBe('已过期')
+    expect(wrapper.emitted('error')).toBeUndefined()
   })
 })

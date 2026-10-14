@@ -19,21 +19,31 @@ public interface IdempotencyRepository {
     void markFailed(Long id);
 
     /**
+     * Records that the action itself succeeded but storing its response failed. Distinct from
+     * {@link #markFailed} because the retry semantics are opposite: FAILED may be reclaimed and
+     * re-run, RESULT_UNKNOWN must be refused forever (re-running would duplicate committed work).
+     */
+    void markResultUnknown(Long id);
+
+    /**
      * Reclaims a FAILED record for a retry by flipping it to IN_PROGRESS. The transition is
      * conditional on the row still being FAILED, so under concurrent retries exactly one caller
      * wins; an unconditional update would let every retrying thread acquire execution rights and
-     * run the action again.
+     * run the action again. The expiry is refreshed so the sweeper cannot fail the record mid-retry
+     * -- that would reopen the key to a second concurrent execution.
      *
      * @return true when this caller won the race, false when someone else already reclaimed it
      */
-    boolean reclaim(Long id);
+    boolean reclaim(Long id, Instant newExpiresAt);
 
     /**
-     * Fails every key still IN_PROGRESS whose {@code expires_at} has passed. A key left IN_PROGRESS
-     * this long means the process died between running the action and marking it done; failing it
-     * reopens the key for a retry (see {@code IdempotencySweeper}).
+     * Deletes every key whose {@code expires_at} has passed, regardless of status. Deletion is what
+     * makes retention real: the key becomes claimable again, replays stop, and the table stays
+     * bounded. A key left IN_PROGRESS this long means the process died between running the action
+     * and marking it done; after retention the duplicate risk of a re-run is accepted (see {@code
+     * IdempotencySweeper}).
      *
-     * @return how many rows changed
+     * @return how many rows were deleted
      */
-    int expireStaleInProgress(Instant now);
+    int deleteExpired(Instant now);
 }

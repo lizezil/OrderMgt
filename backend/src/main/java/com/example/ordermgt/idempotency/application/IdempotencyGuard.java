@@ -45,6 +45,9 @@ public class IdempotencyGuard {
     /** The header callers use to supply a key. */
     public static final String KEY_HEADER = "Idempotency-Key";
 
+    /** Matches idempotency_records.idempotency_key VARCHAR(128); enforced here, not by the DB. */
+    public static final int KEY_MAX = 128;
+
     private final IdempotencyRepository repository;
     private final ObjectMapper objectMapper;
 
@@ -68,21 +71,39 @@ public class IdempotencyGuard {
         if (idempotencyKey == null || idempotencyKey.isBlank()) {
             return action.get();
         }
+        if (idempotencyKey.length() > KEY_MAX) {
+            throw new BusinessException(
+                    ErrorCode.VALIDATION_FAILED,
+                    "Idempotency-Key must be at most " + KEY_MAX + " characters");
+        }
 
         Claim<T> claim = claim(customerId, operation, idempotencyKey, requestHash, responseType);
         if (claim.isReplay()) {
             return claim.replayedValue();
         }
 
+        T value;
         try {
-            T value = action.get();
-            repository.complete(claim.recordId(), write(value));
-            return value;
+            value = action.get();
         } catch (RuntimeException ex) {
-            // Best effort: a failed attempt must not block a corrected retry.
+            // The action itself failed: nothing committed, so a corrected retry must be allowed.
             repository.markFailed(claim.recordId());
             throw ex;
         }
+        try {
+            repository.complete(claim.recordId(), write(value));
+        } catch (RuntimeException ex) {
+            // The action already committed. Marking FAILED here would let a retry run it again --
+            // a duplicate order -- so the key is sealed as RESULT_UNKNOWN and retries refused.
+            log.error(
+                    "action succeeded but its response could not be stored, key={}: {}",
+                    idempotencyKey,
+                    ex.getMessage());
+            repository.markResultUnknown(claim.recordId());
+            throw new BusinessException(
+                    ErrorCode.RESULT_UNKNOWN, ErrorCode.RESULT_UNKNOWN.defaultMessage());
+        }
+        return value;
     }
 
     private <T> Claim<T> claim(
@@ -134,12 +155,13 @@ public class IdempotencyGuard {
         return switch (existing.status()) {
             case COMPLETED -> Claim.replayed(read(existing.responseJson(), responseType));
             case IN_PROGRESS -> throw inProgress();
+            case RESULT_UNKNOWN -> throw resultUnknown();
             case FAILED -> {
                 log.info(
                         "retrying previously failed idempotent operation {} key={}",
                         operation,
                         idempotencyKey);
-                if (repository.reclaim(existing.id())) {
+                if (repository.reclaim(existing.id(), now.plus(retention()))) {
                     yield Claim.claimed(existing.id());
                 }
                 // Lost the reclaim race: another retrying thread already flipped this record out
@@ -157,6 +179,7 @@ public class IdempotencyGuard {
                 yield switch (raced.status()) {
                     case COMPLETED -> Claim.replayed(read(raced.responseJson(), responseType));
                     case IN_PROGRESS, FAILED -> throw inProgress();
+                    case RESULT_UNKNOWN -> throw resultUnknown();
                 };
             }
         };
@@ -166,6 +189,11 @@ public class IdempotencyGuard {
         return new BusinessException(
                 ErrorCode.IDEMPOTENCY_CONFLICT,
                 "same idempotency key request is still in progress, retry later");
+    }
+
+    private static BusinessException resultUnknown() {
+        return new BusinessException(
+                ErrorCode.RESULT_UNKNOWN, ErrorCode.RESULT_UNKNOWN.defaultMessage());
     }
 
     private Duration retention() {
@@ -202,6 +230,19 @@ public class IdempotencyGuard {
             return HexFormat.of().formatHex(digest.digest());
         } catch (NoSuchAlgorithmException ex) {
             throw new IllegalStateException("SHA-256 unavailable", ex);
+        }
+    }
+
+    /**
+     * Fingerprints a request by its canonical JSON, so field content can never impersonate a
+     * separator the way a hand-joined {@code "sku:qty,sku:qty"} string could.
+     */
+    public String hashOfJson(Object request) {
+        try {
+            return hashOf(objectMapper.writeValueAsString(request));
+        } catch (JsonProcessingException ex) {
+            throw new BusinessException(
+                    ErrorCode.INTERNAL_ERROR, "failed to fingerprint the request body");
         }
     }
 

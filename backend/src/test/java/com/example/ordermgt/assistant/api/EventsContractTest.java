@@ -15,7 +15,9 @@ import com.example.ordermgt.assistant.application.ConversationView;
 import com.example.ordermgt.assistant.domain.Conversation;
 import com.example.ordermgt.assistant.domain.ConversationState;
 import com.example.ordermgt.assistant.domain.ConversationStatus;
+import com.example.ordermgt.security.CurrentCustomerResolver;
 import com.example.ordermgt.shared.error.GlobalExceptionHandler;
+import com.example.ordermgt.testsupport.TestAuth;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
@@ -67,6 +69,7 @@ class EventsContractTest {
         mvc =
                 MockMvcBuilders.standaloneSetup(controller)
                         .setControllerAdvice(new GlobalExceptionHandler())
+                        .setCustomArgumentResolvers(new CurrentCustomerResolver())
                         .build();
     }
 
@@ -82,7 +85,7 @@ class EventsContractTest {
                                         ConversationStatus.ARCHIVED,
                                         ConversationState.IDLE)));
 
-        mvc.perform(get("/api/assistant/events").header("X-Customer-Id", CUSTOMER))
+        mvc.perform(get("/api/assistant/events").with(TestAuth.authenticatedAs(CUSTOMER)))
                 .andExpect(status().isOk());
 
         String frame = wireOf(singleSend());
@@ -95,7 +98,7 @@ class EventsContractTest {
     void anIncrementAfterTheSnapshotIsPushedOnTheSameConnection() throws Exception {
         when(conversationService.listFor(CUSTOMER, true)).thenReturn(List.of());
 
-        mvc.perform(get("/api/assistant/events").header("X-Customer-Id", CUSTOMER))
+        mvc.perform(get("/api/assistant/events").with(TestAuth.authenticatedAs(CUSTOMER)))
                 .andExpect(status().isOk());
         // The stream is registered, so a later state change goes to the very same emitter.
         bus.publish(CUSTOMER, "state", "{\"id\":7,\"state\":\"RUNNING\"}");
@@ -113,7 +116,7 @@ class EventsContractTest {
         bus.register(CUSTOMER, new SseEmitter(0L));
         bus.register(CUSTOMER, new SseEmitter(0L));
 
-        mvc.perform(get("/api/assistant/events").header("X-Customer-Id", CUSTOMER))
+        mvc.perform(get("/api/assistant/events").with(TestAuth.authenticatedAs(CUSTOMER)))
                 .andExpect(status().isServiceUnavailable())
                 .andExpect(jsonPath("$.code").value("SERVICE_BUSY"));
     }

@@ -2,6 +2,7 @@ package com.example.ordermgt;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -117,7 +118,7 @@ class SmokeDemoFlowTest {
         // 3) 确认：这时才落库，金额按目录价算。
         mockMvc.perform(
                         post("/api/assistant/actions/" + token + "/confirm")
-                                .header("X-Customer-Id", String.valueOf(customer)))
+                                .with(user(String.valueOf(customer))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("CONFIRMED"))
                 .andExpect(jsonPath("$.data.replayed").value(false))
@@ -127,7 +128,7 @@ class SmokeDemoFlowTest {
         // 4) 重复确认：重放上一次的结果，不产生第二张订单。
         mockMvc.perform(
                         post("/api/assistant/actions/" + token + "/confirm")
-                                .header("X-Customer-Id", String.valueOf(customer)))
+                                .with(user(String.valueOf(customer))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.replayed").value(true));
         assertThat(orderTotal(customer)).isEqualTo(1);
@@ -135,7 +136,7 @@ class SmokeDemoFlowTest {
         // 5) 越权：别人的令牌用不了，别人的订单也一条都看不到。
         mockMvc.perform(
                         post("/api/assistant/actions/" + token + "/confirm")
-                                .header("X-Customer-Id", String.valueOf(other)))
+                                .with(user(String.valueOf(other))))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("FORBIDDEN"));
         assertThat(orderTotal(other)).isZero();
@@ -177,7 +178,7 @@ class SmokeDemoFlowTest {
         MvcResult result =
                 mockMvc.perform(
                                 post("/api/assistant/conversations")
-                                        .header("X-Customer-Id", String.valueOf(customer)))
+                                        .with(user(String.valueOf(customer))))
                         .andExpect(status().isCreated())
                         .andExpect(jsonPath("$.data.id").isNumber())
                         .andReturn();
@@ -188,7 +189,7 @@ class SmokeDemoFlowTest {
         MvcResult result =
                 mockMvc.perform(
                                 post("/api/assistant/conversations/" + conversationId + "/messages")
-                                        .header("X-Customer-Id", String.valueOf(customer))
+                                        .with(user(String.valueOf(customer)))
                                         .contentType(MediaType.APPLICATION_JSON)
                                         .content(body))
                         .andExpect(status().isOk())
@@ -200,7 +201,7 @@ class SmokeDemoFlowTest {
         MvcResult result =
                 mockMvc.perform(
                                 get("/api/assistant/conversations/" + conversationId + "/messages")
-                                        .header("X-Customer-Id", String.valueOf(customer)))
+                                        .with(user(String.valueOf(customer))))
                         .andExpect(status().isOk())
                         .andReturn();
         return readTree(result).get("data");
@@ -208,9 +209,7 @@ class SmokeDemoFlowTest {
 
     private long orderTotal(long customer) throws Exception {
         MvcResult result =
-                mockMvc.perform(
-                                get("/api/orders")
-                                        .header("X-Customer-Id", String.valueOf(customer)))
+                mockMvc.perform(get("/api/orders").with(user(String.valueOf(customer))))
                         .andExpect(status().isOk())
                         .andReturn();
         return readTree(result).get("data").get("total").asLong();

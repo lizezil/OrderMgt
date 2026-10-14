@@ -40,3 +40,13 @@ export const MAX_QUEUE_DEPTH = 5
 export const EXPIRY_SOON_MINUTES = 1
 
 export const MS_PER_MINUTE = 60_000
+
+/** A pending card's countdown re-reads the wall clock this often, so the label cannot freeze. */
+export const EXPIRY_TICK_MS = 30_000
+
+/**
+ * Client-side ceiling on one streaming turn. The server closes a stream at 120s (ADR-0009); this
+ * is the belt for a connection some proxy froze -- without it, a hung fetch pins the caller (and
+ * its in-flight count) forever.
+ */
+export const CLIENT_STREAM_TIMEOUT_MS = 130_000

@@ -109,4 +109,36 @@ describe('翻页', () => {
     expect(buttons()[0]!.attributes('disabled')).toBeUndefined()
     expect(buttons()[1]!.attributes('disabled')).toBeDefined()
   })
+
+  it('翻页失败时页码留在原地：页码与账目不脱节，重试从这一页再翻', async () => {
+    listOrdersMock.mockResolvedValueOnce(page({ total: 25 }))
+    const wrapper = await view()
+    const next = () => wrapper.findAll('.pager button')[1]!
+
+    listOrdersMock.mockRejectedValueOnce(new Error('网络中断'))
+    await next().trigger('click')
+    await flushPromises()
+
+    // 没翻成就没换页：页码必须还指着屏幕上这份账目。
+    expect(wrapper.get('.pager .data').text()).toBe('1 / 2 · 共 25 单')
+    expect(wrapper.text()).toContain('网络中断')
+
+    listOrdersMock.mockResolvedValueOnce(page({ page: 2, total: 25 }))
+    await next().trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('.pager .data').text()).toBe('2 / 2 · 共 25 单')
+  })
+})
+
+describe('加载中', () => {
+  it('首屏还没回来时不冒充「没有订单」', async () => {
+    listOrdersMock.mockReturnValue(new Promise(() => {}))
+
+    const wrapper = mount(OrdersView)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('加载中')
+    expect(wrapper.text()).not.toContain('这个客户还没有订单')
+  })
 })

@@ -1,27 +1,47 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import { getCustomerId, setCustomerId } from './api'
-import { DEFAULT_CUSTOMER_ID } from './constants'
+import { computed, onMounted, ref } from 'vue'
+import { ensureCsrf, logout as apiLogout, me, onUnauthorized } from './api'
 import { useToast } from './toast'
 import AssistantView from './views/AssistantView.vue'
 import CatalogView from './views/CatalogView.vue'
+import LoginView from './views/LoginView.vue'
 import OrdersView from './views/OrdersView.vue'
 
 type Tab = 'assistant' | 'orders' | 'catalog'
 
 const tab = ref<Tab>('assistant')
-const customer = ref(getCustomerId())
-const reload = ref(0)
+/** The signed-in customer id (from the session), or null while signed out / still checking. */
+const customer = ref<string | null>(null)
+const booted = ref(false)
 
-// The customer id stands in for a login, so it belongs to the shell: changing it must
-// rebuild every view, which is what the key below does.
-const viewerKey = computed(() => `${customer.value}-${reload.value}`)
+// The session is the identity: a 401 anywhere (expired session, signed out in another tab)
+// drops straight back to the login page, and signing in as someone else rebuilds every view.
+onMounted(async () => {
+  onUnauthorized(() => {
+    customer.value = null
+  })
+  try {
+    await ensureCsrf()
+    customer.value = await me()
+  } finally {
+    booted.value = true
+  }
+})
 
-function applyCustomer(): void {
-  const next = customer.value.trim() || DEFAULT_CUSTOMER_ID
-  customer.value = next
-  setCustomerId(next)
-  reload.value += 1
+const viewerKey = computed(() => customer.value ?? '')
+
+function signedIn(id: string): void {
+  customer.value = id
+}
+
+async function signOut(): Promise<void> {
+  try {
+    await apiLogout()
+  } finally {
+    // Even a failed logout call ends this tab's session locally; the server-side session is
+    // already gone in the normal case, and a 401 on the next request would do the same thing.
+    customer.value = null
+  }
 }
 
 const { current: toastText, isError: toastIsError, push: pushToast } = useToast()
@@ -29,36 +49,33 @@ const { current: toastText, isError: toastIsError, push: pushToast } = useToast(
 
 <template>
   <div class="shell">
-    <header class="masthead">
-      <div class="wordmark">Order <span>Assistant</span></div>
-      <nav class="views" aria-label="视图">
-        <button class="view" :class="{ active: tab === 'assistant' }" @click="tab = 'assistant'">
-          助手
-        </button>
-        <button class="view" :class="{ active: tab === 'orders' }" @click="tab = 'orders'">
-          订单
-        </button>
-        <button class="view" :class="{ active: tab === 'catalog' }" @click="tab = 'catalog'">
-          商品
-        </button>
-      </nav>
-      <div class="spacer" />
-      <label class="identity">
-        当前客户
-        <input
-          v-model="customer"
-          class="data"
-          @change="applyCustomer"
-          @keyup.enter="applyCustomer"
-        />
-      </label>
-    </header>
+    <LoginView v-if="booted && !customer" @login="signedIn" />
 
-    <div class="stage">
-      <AssistantView v-if="tab === 'assistant'" :key="viewerKey" @error="pushToast" />
-      <OrdersView v-else-if="tab === 'orders'" :key="viewerKey" />
-      <CatalogView v-else />
-    </div>
+    <template v-else-if="customer">
+      <header class="masthead">
+        <div class="wordmark">Order <span>Assistant</span></div>
+        <nav class="views" aria-label="视图">
+          <button class="view" :class="{ active: tab === 'assistant' }" @click="tab = 'assistant'">
+            助手
+          </button>
+          <button class="view" :class="{ active: tab === 'orders' }" @click="tab = 'orders'">
+            订单
+          </button>
+          <button class="view" :class="{ active: tab === 'catalog' }" @click="tab = 'catalog'">
+            商品
+          </button>
+        </nav>
+        <div class="spacer" />
+        <span class="identity-name">客户 {{ customer }}</span>
+        <button class="view" data-testid="logout" @click="signOut">登出</button>
+      </header>
+
+      <div class="stage">
+        <AssistantView v-if="tab === 'assistant'" :key="viewerKey" @error="pushToast" />
+        <OrdersView v-else-if="tab === 'orders'" :key="viewerKey" />
+        <CatalogView v-else />
+      </div>
+    </template>
 
     <div v-if="toastText" class="toast" :class="{ error: toastIsError }">{{ toastText }}</div>
   </div>

@@ -2,6 +2,7 @@ package com.example.ordermgt;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -138,7 +139,7 @@ class AssistantFlowTest {
 
         mockMvc.perform(
                         get("/api/assistant/conversations/{id}/invocations", conversationId)
-                                .header("X-Customer-Id", String.valueOf(owner)))
+                                .with(user(String.valueOf(owner))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value("OK"))
                 .andExpect(jsonPath("$.data.length()").value(1))
@@ -151,13 +152,13 @@ class AssistantFlowTest {
         // never an outline of their model traffic.
         mockMvc.perform(
                         get("/api/assistant/conversations/{id}/invocations", conversationId)
-                                .header("X-Customer-Id", String.valueOf(owner + 1)))
+                                .with(user(String.valueOf(owner + 1))))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("FORBIDDEN"));
     }
 
     @Test
-    void aStaleInProgressKeyIsSweptToFailedButAFreshOneIsLeftAlone() {
+    void anExpiredKeyIsDeletedByTheSweepButAFreshOneIsLeftAlone() {
         Long customer = OWNER + 6;
         Instant now = Instant.now();
         idempotencyRepository.tryClaim(
@@ -187,22 +188,51 @@ class AssistantFlowTest {
                         null,
                         now.plusSeconds(3600)));
 
-        idempotencySweeper.expireStaleInProgress();
+        idempotencySweeper.deleteExpired();
 
-        // Past its expiry and still IN_PROGRESS means the process died mid-flight: fail it so the
-        // key can be retried.
-        assertThat(
-                        idempotencyRepository
-                                .find(customer, "SEND_MESSAGE", "stale-key")
-                                .orElseThrow()
-                                .status())
-                .isEqualTo(IdempotencyStatus.FAILED);
+        // Past its expiry the row is gone: the key becomes claimable again, replays stop, and the
+        // table stays bounded -- retention is a fact, not a comment.
+        assertThat(idempotencyRepository.find(customer, "SEND_MESSAGE", "stale-key")).isEmpty();
         assertThat(
                         idempotencyRepository
                                 .find(customer, "SEND_MESSAGE", "fresh-key")
                                 .orElseThrow()
                                 .status())
                 .isEqualTo(IdempotencyStatus.IN_PROGRESS);
+    }
+
+    @Test
+    void anOversizedResponseStillStoresSoAReplayNeverTurnsIntoARerun() {
+        Long customer = OWNER + 7;
+        Instant now = Instant.now();
+        var claim =
+                idempotencyRepository
+                        .tryClaim(
+                                new IdempotencyRecord(
+                                        null,
+                                        customer,
+                                        "CREATE_ORDER",
+                                        "fat-response-key",
+                                        null,
+                                        IdempotencyStatus.IN_PROGRESS,
+                                        null,
+                                        null,
+                                        now,
+                                        null,
+                                        now.plusSeconds(3600)))
+                        .orElseThrow();
+        // A large order serializes well past the old VARCHAR(8000): storing it must succeed,
+        // because a store failure used to mark the key FAILED and invite a duplicate order.
+        String oversized = "{\"reply\":\"" + "x".repeat(9000) + "\"}";
+
+        idempotencyRepository.complete(claim.id(), oversized);
+
+        assertThat(
+                        idempotencyRepository
+                                .find(customer, "CREATE_ORDER", "fat-response-key")
+                                .orElseThrow()
+                                .responseJson())
+                .isEqualTo(oversized);
     }
 
     @Test
@@ -296,7 +326,7 @@ class AssistantFlowTest {
         MvcResult first =
                 mockMvc.perform(
                                 post("/api/assistant/chat")
-                                        .header("X-Customer-Id", "9500")
+                                        .with(user("9500"))
                                         .header("Idempotency-Key", "chat-key-1")
                                         .contentType(MediaType.APPLICATION_JSON)
                                         .content(body))
@@ -307,7 +337,7 @@ class AssistantFlowTest {
         MvcResult retry =
                 mockMvc.perform(
                                 post("/api/assistant/chat")
-                                        .header("X-Customer-Id", "9500")
+                                        .with(user("9500"))
                                         .header("Idempotency-Key", "chat-key-1")
                                         .contentType(MediaType.APPLICATION_JSON)
                                         .content(body))
@@ -337,7 +367,7 @@ class AssistantFlowTest {
 
         mockMvc.perform(
                         post("/api/orders")
-                                .header("X-Customer-Id", "9600")
+                                .with(user("9600"))
                                 .header("Idempotency-Key", "ORD-IDEM-2")
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .content("{\"lines\":[{\"sku\":\"GIZMO-03\",\"quantity\":9}]}"))
@@ -349,7 +379,7 @@ class AssistantFlowTest {
         MvcResult result =
                 mockMvc.perform(
                                 post("/api/orders")
-                                        .header("X-Customer-Id", "9600")
+                                        .with(user("9600"))
                                         .header("Idempotency-Key", key)
                                         .contentType(MediaType.APPLICATION_JSON)
                                         .content(body))

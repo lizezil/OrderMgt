@@ -1,9 +1,17 @@
 server:
   port: 8081
+  # SIGTERM starts a drain instead of beheading the process: a stream whose tokens are already
+  # being paid for gets up to the shutdown-phase window below to finish and persist its reply
+  # (otherwise the question lands but the answer never does).
+  shutdown: graceful
 
 spring:
   application:
     name: ordermgt
+  lifecycle:
+    # Long enough for a near-complete stream to close, short enough that a redeploy is not held
+    # hostage by the 120s worst-case stream budget.
+    timeout-per-shutdown-phase: 30s
   # Single source of environment variables: the git-ignored .env at the repo root. The
   # `[.properties]` suffix is Spring Boot's extension hint -- without it a file named `.env`
   # has no extension any PropertySourceLoader recognises and the import is rejected. Both the
@@ -24,12 +32,21 @@ spring:
       api-key: ${DASHSCOPE_API_KEY:not-set}
       chat:
         options:
-          model: qwen-max
+          # A pinned snapshot, not the rolling `qwen-max` alias: the alias is silently upgraded
+          # by the provider (behaviour and pricing can shift under us), and the prompt budget
+          # below is sized against this version's 30,720-token input window.
+          model: qwen-max-2025-01-25
           temperature: 0.2
+          # Output ceiling: qwen-max allows 8,192; half of that is more reply than any answer
+          # here needs, and the cap is what stops one runaway generation from billing the rest.
+          max-tokens: 4096
     # Spring AI retries blocking model calls by default -- but with 10 attempts and an exponential
     # backoff of 2s x5 capped at 3 minutes, i.e. a worst case of roughly 19 minutes for one call.
     # These are the only knobs it exposes (no jitter; see AiHttpClientConfig for the timeouts).
     # Streaming is not retried by the framework at all.
+    # R1: an upstream 429 is never replayed -- its response-error handler classifies it as 4xx =>
+    # NonTransientAiException, which this template does not retry, and the streaming replay gate
+    # (SpringAiAdapter.retryBeforeFirstToken) checks the same 429 shape before replaying.
     retry:
       max-attempts: 3
       backoff:
@@ -41,8 +58,30 @@ spring:
 # replayed to the model; memory never crosses conversations. action.ttl-minutes = how long
 # a confirmation card stays valid before it is expired.
 assistant:
+  # Demo-grade identity: customerId:PIN pairs. There is deliberately no user table -- the customer
+  # is a business key, and rotating a PIN means redeploying with a new value. Unknown customer and
+  # wrong PIN share one failure message, so the login endpoint cannot enumerate customer ids.
+  auth:
+    pins: ${ASSISTANT_AUTH_PINS:1001:1111,2002:2222}
   memory:
     window: 20
+  # Prompt budget, in characters (chars/2 ≈ tokens for mostly-Chinese prose). The system prompt,
+  # the grounding facts and the replayed history must together fit max-prompt-chars; history is
+  # trimmed oldest-first (last 2 turns always kept), grounding is capped by its own two knobs,
+  # and a provider context-overflow retries once at half this budget before telling the customer
+  # to start a new conversation. Sized against qwen-max's 30,720-token input window.
+  ai:
+    max-prompt-chars: 40000
+    # Admissions per customer per minute, counted across both chat transports (sliding window,
+    # see CustomerRateLimiter). Past it the entry point answers 429 RATE_LIMITED with a
+    # Retry-After that counts down to when the oldest request slides out of the window.
+    rate-limit: 6
+    # Global cap on model calls in flight (see AiConcurrencyGuard). Past it an admission is
+    # refused with 429 rather than queued, so a burst cannot hold every worker hostage.
+    max-concurrent: 8
+    grounding:
+      max-rows: 200
+      max-chars: 12000
   # How many streaming turns may wait in line behind the one in flight, per conversation
   # (ADR-0012). Past this the send is refused with 429 QUEUE_FULL: a full line is a capacity
   # fact, not a state conflict. The line lives in memory only, so a restart empties it.
@@ -66,12 +105,19 @@ assistant:
     ttl-minutes: 15
     sweep-interval-ms: 60000
 
-# Retries carrying the same Idempotency-Key replay the stored response for this long.
+# Retries carrying the same Idempotency-Key replay the stored response for this long. After it,
+# the key is deleted: replay stops, the key becomes claimable again, the table stays bounded.
 idempotency:
   retention-hours: 24
-  # How often a key left IN_PROGRESS past its expiry is failed so it can be retried (see
-  # IdempotencySweeper).
+  # How often expired keys are deleted (see IdempotencySweeper).
   sweep-interval-ms: 60000
+
+# CSRF stays on in the running app: the single-page frontend reads the XSRF cookie (which is
+# httpOnly=false for exactly this reason) and echoes it back as the X-XSRF-TOKEN header. Tests
+# turn it off and cover the on-case explicitly in SecurityContractTest.
+security:
+  csrf:
+    enabled: true
 
 management:
   endpoints:

@@ -13,6 +13,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.example.ordermgt.assistant.application.AssistantService;
 import com.example.ordermgt.assistant.application.ConversationRunQueue;
 import com.example.ordermgt.assistant.application.ConversationService;
+import com.example.ordermgt.assistant.application.CustomerRateLimiter;
 import com.example.ordermgt.assistant.application.RunRegistry;
 import com.example.ordermgt.assistant.application.RunService;
 import com.example.ordermgt.assistant.domain.AiAssistantPort;
@@ -21,9 +22,11 @@ import com.example.ordermgt.assistant.domain.RunRepository;
 import com.example.ordermgt.assistant.domain.RunStatus;
 import com.example.ordermgt.idempotency.application.IdempotencyGuard;
 import com.example.ordermgt.idempotency.domain.IdempotencyRepository;
+import com.example.ordermgt.security.CurrentCustomerResolver;
 import com.example.ordermgt.shared.api.ErrorCode;
 import com.example.ordermgt.shared.error.BusinessException;
 import com.example.ordermgt.shared.error.GlobalExceptionHandler;
+import com.example.ordermgt.testsupport.TestAuth;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
 import java.util.Optional;
@@ -65,7 +68,8 @@ class StopContractTest {
                         mapper,
                         conversationService,
                         queue,
-                        mock(ConversationEventPublisher.class));
+                        mock(ConversationEventPublisher.class),
+                        CustomerRateLimiter.unlimited());
 
         mvc =
                 MockMvcBuilders.standaloneSetup(
@@ -79,8 +83,10 @@ class StopContractTest {
                                         mock(ConversationEventPublisher.class),
                                         mock(AiAssistantPort.class),
                                         new ObjectMapper(),
-                                        mapper))
+                                        mapper,
+                                        CustomerRateLimiter.unlimited()))
                         .setControllerAdvice(new GlobalExceptionHandler())
+                        .setCustomArgumentResolvers(new CurrentCustomerResolver())
                         .build();
     }
 
@@ -125,7 +131,7 @@ class StopContractTest {
     private org.springframework.test.web.servlet.ResultActions stop() throws Exception {
         return mvc.perform(
                 post("/api/assistant/conversations/{id}/runs/{runId}/stop", CONVERSATION, RUN)
-                        .header("X-Customer-Id", CUSTOMER));
+                        .with(TestAuth.authenticatedAs(CUSTOMER)));
     }
 
     private static Run run(RunStatus status) {

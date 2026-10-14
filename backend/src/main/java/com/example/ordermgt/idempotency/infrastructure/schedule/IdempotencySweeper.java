@@ -8,14 +8,15 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 /**
- * Reopens keys that were left behind by a crash.
+ * Makes retention real by deleting expired keys.
  *
  * <p>{@code IdempotencyGuard} is deliberately not transactional (the guarded action may be a model
  * call), so a process that dies between the action committing and the record being marked COMPLETED
- * leaves the key IN_PROGRESS. Until it expires, a retry with that key is refused with a 409 -- the
- * client is stuck on work that already succeeded. This sweep fails those stale keys once their
- * retention window has passed, and FAILED is exactly the state that allows a retry with the same
- * key.
+ * leaves the key IN_PROGRESS. Until expiry, a retry with that key is refused with a 409 -- the
+ * client is stuck on work that already succeeded. Once the retention window has passed, this sweep
+ * deletes the row entirely: the key becomes claimable again, replays stop, and the table stays
+ * bounded. Deletion (rather than flipping stale rows to FAILED) also means there is no window in
+ * which a half-forgotten key lingers forever.
  */
 @Slf4j
 @RequiredArgsConstructor
@@ -27,11 +28,11 @@ public class IdempotencySweeper {
     @Scheduled(
             fixedDelayString = "${idempotency.sweep-interval-ms:60000}",
             initialDelayString = "${idempotency.sweep-interval-ms:60000}")
-    public void expireStaleInProgress() {
+    public void deleteExpired() {
         try {
-            int failed = idempotencyRepository.expireStaleInProgress(Instant.now());
-            if (failed > 0) {
-                log.info("failed {} stale in-progress idempotency key(s)", failed);
+            int deleted = idempotencyRepository.deleteExpired(Instant.now());
+            if (deleted > 0) {
+                log.info("deleted {} expired idempotency key(s)", deleted);
             }
         } catch (RuntimeException ex) {
             log.warn("idempotency sweep failed: {}", ex.getMessage());

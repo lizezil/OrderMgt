@@ -29,7 +29,7 @@ class CatalogGroundingProviderTest {
                                 new CatalogItem(
                                         2L, "GIZMO-03", "Gizmo", new BigDecimal("4.50"), true)));
 
-        String facts = new CatalogGroundingProvider(catalog).facts();
+        String facts = provider(catalog).facts();
 
         // 每个在售商品都要把 sku 与单价摆到模型面前，它才能照抄而不是编一个。
         assertThat(facts).contains("WIDGET-01").contains("19.90");
@@ -42,6 +42,61 @@ class CatalogGroundingProviderTest {
         when(catalog.findAllActive()).thenReturn(List.of());
 
         // 目录为空时宁可什么都不说，也不能凭空列出一个商品。
-        assertThat(new CatalogGroundingProvider(catalog).facts()).doesNotContain("unit price");
+        assertThat(provider(catalog).facts()).doesNotContain("unit price");
+    }
+
+    /**
+     * 上限是上下文窗口的生存问题：目录涨到几千条时，无上限的 facts() 会把每次调用都变成一次 context-length
+     * 400——助手不是降级，是整体报废。行数与字符双保险，超出即截断并声明是部分视图。
+     */
+    @Test
+    void factsAreCappedSoAVastCatalogCannotBlowTheContextWindow() {
+        CatalogRepository catalog = mock(CatalogRepository.class);
+        List<CatalogItem> many =
+                java.util.stream.IntStream.rangeClosed(1, 500)
+                        .mapToObj(
+                                i ->
+                                        new CatalogItem(
+                                                (long) i,
+                                                "SKU-%04d".formatted(i),
+                                                "Item " + i,
+                                                new java.math.BigDecimal("1.00"),
+                                                true))
+                        .toList();
+        when(catalog.findAllActive()).thenReturn(many);
+
+        String facts = provider(catalog).facts();
+
+        assertThat(facts).contains("SKU-0001");
+        assertThat(facts).doesNotContain("SKU-0201");
+        assertThat(facts).contains("partial");
+        assertThat(facts.length()).isLessThanOrEqualTo(13_000);
+    }
+
+    @Test
+    void aCharBudgetCutsRowsThatTheRowCountAloneWouldKeep() {
+        CatalogRepository catalog = mock(CatalogRepository.class);
+        List<CatalogItem> fewButHuge =
+                java.util.stream.IntStream.rangeClosed(1, 5)
+                        .mapToObj(
+                                i ->
+                                        new CatalogItem(
+                                                (long) i,
+                                                "SKU-%04d".formatted(i),
+                                                "N".repeat(4000),
+                                                new java.math.BigDecimal("1.00"),
+                                                true))
+                        .toList();
+        when(catalog.findAllActive()).thenReturn(fewButHuge);
+
+        String facts = provider(catalog).facts();
+
+        assertThat(facts.length()).isLessThanOrEqualTo(13_000);
+        assertThat(facts).contains("partial");
+    }
+
+    /** 200 rows / 12 000 chars, the same knobs production gets from application.yml. */
+    private static CatalogGroundingProvider provider(CatalogRepository catalog) {
+        return new CatalogGroundingProvider(catalog, 200, 12_000);
     }
 }
