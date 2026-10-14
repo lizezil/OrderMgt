@@ -10,10 +10,9 @@
 4. **价格只有一个来源。** 模型只填 sku 和数量，金额由服务端从 `catalog_items` 解析（[ADR-0006](docs/adr/0006-ground-model-with-catalog.md) 记录了一次真实的 sku 幻觉与修法）。
 
 项目文档都收在 [`docs/`](docs/)：原题需求摘录见 [面试作业-需求摘录.md](docs/面试作业-需求摘录.md)，
-设计定稿（决策表、表结构、接口契约、里程碑与实测记录）见 [面试作业-设计定稿.md](docs/面试作业-设计定稿.md)，
-需求梳理与坑位分析见 [面试作业-需求梳理与坑位分析.md](docs/面试作业-需求梳理与坑位分析.md)，
-直播演示的逐步脚本与讲解要点见 [面试作业-演示脚本与讲解要点.md](docs/面试作业-演示脚本与讲解要点.md)，
-面向追问型面试的备课手册（要求对照/结构/实现/讲法/复习路径）见 [面试作业-准备手册.md](docs/面试作业-准备手册.md)，
+核心设计（决策表、表结构、接口契约、AI 集成与事务边界）见 [面试作业-设计定稿.md](docs/面试作业-设计定稿.md)，
+会话与运行（Run）层的设计见 [会话管理-设计定稿.md](docs/会话管理-设计定稿.md)，
+面试讲解与演示手册（要求对照、考点、演示脚本、高频追问、诚实清单）见 [面试作业-讲解手册.md](docs/面试作业-讲解手册.md)，
 按使用者视角梳理的用户故事见 [用户故事.md](docs/用户故事.md)；
 领域词汇表见 [CONTEXT.md](CONTEXT.md)，所有架构决策见 [docs/adr/](docs/adr/)。
 
@@ -48,7 +47,7 @@ make clean          # 清掉 target/ 与构建出的前端产物
 
 ```bash
 make db-up                                                  # 或 docker compose up -d mysql
-cp .env.example .env                                        # 填入 DASHSCOPE_API_KEY：环境变量的唯一入口
+cp .env.example .env                                        # 填入 AI_API_KEY（或 DASHSCOPE_API_KEY）：环境变量的唯一入口
 export JAVA_HOME="$HOME/.jdks/temurin-17/Contents/Home"     # 或任意 JDK 17
 cd frontend && pnpm install && pnpm build && cd ..          # 可选：把界面也构建进去
 ./mvnw -pl backend spring-boot:run
@@ -70,7 +69,7 @@ cd frontend && pnpm install && pnpm build && cd ..          # 可选：把界面
 ### 方式二：Docker Compose（MySQL + 应用）
 
 ```bash
-cp .env.example .env      # 填入 DASHSCOPE_API_KEY；与方式一的本地运行共用同一份 .env
+cp .env.example .env      # 填入 AI_API_KEY（或 DASHSCOPE_API_KEY）；与方式一的本地运行共用同一份 .env
 docker compose up --build
 ```
 
@@ -91,10 +90,14 @@ docker compose up --build
 
 ## 接口
 
-所有业务接口都需要请求头 `X-Customer-Id`（模拟登录态），并且**一切查询都按它收窄**——这是防越权的核心手段。
+身份走**会话 cookie**，不走请求头：`POST /api/auth/login`（`customerId` + PIN，PIN 配在 `assistant.auth.pins`）建立会话，此后**一切查询都按该会话的客户收窄**——客户端无法再自称是别人，这是防越权的核心手段。未登录一律 `401`，前端据此回到登录页。写操作还要求 `X-XSRF-TOKEN` 头（值取自 `GET /api/auth/csrf` 写下的 `XSRF-TOKEN` cookie），这是 cookie 会话下必须的 CSRF 防护。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
+| POST | `/api/auth/login` | `customerId` + PIN 建会话；未知客户与错误 PIN 共用一条消息，不能被用来枚举客户 |
+| POST | `/api/auth/logout` | 销毁会话 |
+| GET | `/api/auth/me` | 当前会话的客户；未登录 `401` |
+| GET | `/api/auth/csrf` | 取 CSRF token，并写下可读的 `XSRF-TOKEN` cookie |
 | POST | `/api/assistant/chat?conversationId=` | 发消息；不带 `conversationId` 即开新对话。幂等键：请求头 `Idempotency-Key` |
 | POST | `/api/assistant/conversations` | 新对话 |
 | GET | `/api/assistant/conversations?includeArchived=true` | 会话列表；每项带 `status`（`ACTIVE`/`ARCHIVED`）与派生 `state`（`IDLE`/`RUNNING`/`WAITING_APPROVAL`，见 [ADR-0011](docs/adr/0011-run-is-the-unit-of-execution.md)），以及正在跑的 `runId`（无则 `null`）。默认不含归档，`includeArchived=true` 才带 |
@@ -102,7 +105,7 @@ docker compose up --build
 | POST | `/api/assistant/conversations/{id}/restore` | 恢复为 `ACTIVE`（幂等） |
 | GET | `/api/assistant/conversations/{id}/messages` | 历史（含每张卡片的当前状态） |
 | POST | `/api/assistant/conversations/{id}/messages` | 在指定会话里发消息；会话忙时 `409 CONFLICT`（见下） |
-| GET | `/api/assistant/conversations/{id}/stream?message=` | SSE：`token` 事件逐个吐字，最后一发 `done` 带完整结果。SPA 用它做增量渲染（`fetch` + `ReadableStream`，因为要带 `X-Customer-Id` 头）。会话忙时**入队**，先补发 `queued`（带可删除的 `itemId`），轮到它时补发 `started`；被删掉的排队项以 `dropped` 收尾；开始跑时会补发 `run`（带 `runId`，停止按钮要用），被停止则以 `cancelled`（带半截回复）收尾 |
+| GET | `/api/assistant/conversations/{id}/stream?message=` | SSE：`token` 事件逐个吐字，最后一发 `done` 带完整结果。SPA 用它做增量渲染（`fetch` + `ReadableStream`，因为要带会话 cookie 与 CSRF 头）。会话忙时**入队**，先补发 `queued`（带可删除的 `itemId`），轮到它时补发 `started`；被删掉的排队项以 `dropped` 收尾；开始跑时会补发 `run`（带 `runId`，停止按钮要用），被停止则以 `cancelled`（带半截回复）收尾 |
 | POST | `/api/assistant/conversations/{id}/runs/{runId}/stop` | 停止一个 RUNNING 的 Run：真取消上游流、半截文本落库、Run 收 `CANCELLED`（见 [ADR-0012](docs/adr/0012-one-running-run-per-conversation.md)）；对已终态的 Run 幂等无副作用 |
 | GET | `/api/assistant/conversations/{id}/runs/{runId}/events` | 重订阅一个正在跑的 Run：首帧 `snapshot` 带当前累积文本，之后是 `token` 增量；Run 不在了则以 `closed` 收尾（不悬挂）。支持多个订阅者 |
 | DELETE | `/api/assistant/conversations/{id}/queue/{itemId}` | 删掉一条排队项（`itemId` 是内存态 id）；它**不会执行**，其连接收到 `dropped` 后关闭。不在队列里 → `404` |
@@ -114,19 +117,37 @@ docker compose up --build
 | GET | `/api/catalog/items` | 商品与单价 |
 | GET | `/swagger-ui.html` | OpenAPI 文档 |
 
-命令行试一下（假设应用在 8081）：
+助手的两个入口还各有**准入控制**：每客户每分钟的发送数（`assistant.ai.rate-limit`，默认 6）与全进程同时在飞的模型调用数（`assistant.ai.max-concurrent`，默认 8），超出都回 `429 RATE_LIMITED`（带 `Retry-After`）——前者挡住单个客户刷爆预算，后者挡住所有人一起冲垮上游。流式那一路另有一个有界线程池，池满回 `503 SERVICE_BUSY`（见 [ADR-0009](docs/adr/0009-stream-delivery-is-best-effort.md)）。
+
+命令行试一下（假设应用在 8081）。注意**连登录在内的每个写请求都要带 `X-XSRF-TOKEN`**，所以先取一次 CSRF token；登录会刷新它，之后每次写之前重新取：
 
 ```bash
-# 1. 让助手提议下单 —— 只返回卡片，不执行
-curl -s -X POST localhost:8081/api/assistant/chat \
-  -H 'Content-Type: application/json' -H 'X-Customer-Id: 1001' \
+JAR=/tmp/om.jar
+csrf() { curl -s -b $JAR -c $JAR localhost:8081/api/auth/csrf \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"]["token"])'; }
+
+# 1. 登录建会话（PIN 配在 assistant.auth.pins，默认 1001:1111 / 2002:2222）
+curl -s -b $JAR -c $JAR -X POST localhost:8081/api/auth/login \
+  -H 'Content-Type: application/json' -H "X-XSRF-TOKEN: $(csrf)" \
+  -d '{"customerId":"1001","pin":"1111"}'
+
+# 2. 让助手提议下单 —— 只返回卡片，不执行
+curl -s -b $JAR -c $JAR -X POST localhost:8081/api/assistant/chat \
+  -H 'Content-Type: application/json' -H "X-XSRF-TOKEN: $(csrf)" \
   -d '{"message":"帮我下单 3 个 WIDGET-01"}'
 
-# 2. 用上一步返回的 token 确认
-curl -s -X POST localhost:8081/api/assistant/actions/<token>/confirm -H 'X-Customer-Id: 1001'
+# 3. 用上一步返回的 token 确认
+curl -s -b $JAR -c $JAR -X POST localhost:8081/api/assistant/actions/<token>/confirm \
+  -H "X-XSRF-TOKEN: $(csrf)"
 
-# 3. 换成别的客户，看不到也改不了 1001 的数据
-curl -s localhost:8081/api/orders -H 'X-Customer-Id: 2002'
+# 4. 换一个客户登录，看不到也改不了 1001 的数据
+JAR=/tmp/om2.jar
+csrf() { curl -s -b $JAR -c $JAR localhost:8081/api/auth/csrf \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"]["token"])'; }
+curl -s -b $JAR -c $JAR -X POST localhost:8081/api/auth/login \
+  -H 'Content-Type: application/json' -H "X-XSRF-TOKEN: $(csrf)" \
+  -d '{"customerId":"2002","pin":"2222"}'
+curl -s -b $JAR localhost:8081/api/orders
 ```
 
 ## 测试
@@ -140,12 +161,12 @@ make db-up                  # 测试跑在真实 MySQL 上，先把常驻容器�
 
 | 层 | 目标 | 用例 |
 |---|---|---|
-| L1 领域规则（纯单测） | 聚合与值对象的不变量 | `Money`、`Order`/`OrderLine` 状态机、`OrderNumber`、`ToolWhitelist`、`Message`、`Conversation`、`PendingAction`、`AiInvocation`（审计行的列约束） |
-| L2 应用用例（Mockito） | 编排与边界，不碰数据库 | `OrderService`、`ConversationService`、`AssistantService`（含跨会话记忆隔离）、`ActionConfirmationService`、`ActionCardFactory`、`IdempotencyGuard`、`OrderToolSpecs`、`CatalogGroundingProvider`（目录 grounding：每个在售 sku 与单价进提示词） |
-| L3 API 契约（MockMvc） | 统一响应体、校验、状态码、幂等头 | `ApiContractTest`、`StreamSaturationContractTest`（流式池打满 → 503 `SERVICE_BUSY`，不无限排队；`AsyncConfigTest` 逼出线程/队列边界）、`ConversationControllerTest`（断线只终止投递，回合照常落库）、`SpringAiAdapter`（超时/异常归类成 `TIMEOUT`/`ERROR` + 首字节前重放策略 + grounding facts 注入 system prompt） |
-| L4 集成（真 MySQL + 桩模型，不烧 Key） | 端到端业务流与并发正确性 | `AssistantFlowTest`（"提议→不执行→确认→落单→重复确认不重复落单→越权 403"、幂等键重放、每次调用落一行 `ai_invocations`、审计端点只许归属方读）、`OrderAssistantBusinessFlowTest`、`SmokeDemoFlowTest`、`OrderConcurrencyTest`（6 线程真实并发；含"幂等键 FAILED 重试只执行一次"，钉住并验证 `reclaim` 竞态修复） |
-| L5 SPA 单元与组件（Vitest + jsdom） | 后端替客户端保证不了的那半份契约 | `api.spec`（SSE 分帧 / 身份头 / 错误体）、`ActionCardPanel.spec`、`OrdersView.spec`、`AssistantView.spec`、`toast.spec`、`errors.spec` |
-| L6 浏览器端到端（Playwright + Chromium） | 真浏览器里走完"提议 → 确认 → 落单" | `catalog.spec`、`orders-identity.spec`、`assistant-flow.spec` |
+| L1 领域规则（纯单测） | 聚合与值对象的不变量 | `Money`、`Order`/`OrderLine` 状态机、`OrderNumber`、`ToolWhitelist`、`Message`、`Conversation`、`Run` 状态机、`ConversationState` 派生、`PendingAction`、`AiInvocation`（审计行的列约束） |
+| L2 应用用例（Mockito） | 编排与边界，不碰数据库 | `OrderService`、`ConversationService`、`AssistantService`（含跨会话记忆隔离）、`ActionConfirmationService`、`ActionCardFactory`、`IdempotencyGuard`、`IdempotencySweeper`、`OrderToolSpecs`、`CatalogGroundingProvider`、`ConversationRunQueue`、`RunService`、`RunRegistry`、`RunReconciler`、`ConversationEventBus`、`CustomerRateLimiter`、`AiConcurrencyGuard`、`PinAuthenticationProvider`、`SpringAiAdapter`（超时/异常归类成 `TIMEOUT`/`ERROR`、首字节前重放策略逐分支、grounding facts 注入 system prompt） |
+| L3 API 契约（MockMvc） | 统一响应体、校验、状态码、幂等与认证 | `ApiContractTest`、`SecurityContractTest`/`SecurityCsrfContractTest`（未登录 401；写操作缺 CSRF 头被拒）、`RateLimitContractTest`（每客户限流 → 429 `RATE_LIMITED` + `Retry-After`）、`StreamSaturationContractTest`（流式池打满 → 503 `SERVICE_BUSY`，不无限排队；`AsyncConfigTest` 逼出线程/队列边界）、`ConversationControllerTest`（断线只终止投递，回合照常落库）、`QueueContractTest`、`StopContractTest`、`RunReattachContractTest`、`EventsContractTest`、`ArchiveContractTest` |
+| L4 集成（真 MySQL + 桩模型，不烧 Key） | 端到端业务流、Run 生命周期与并发正确性 | `AssistantFlowTest`（"提议→不执行→确认→落单→重复确认不重复落单→越权 403"、幂等键重放、每次调用落一行 `ai_invocations`、审计端点只许归属方读）、`RunPersistenceTest`（Run 落库与终态、重启把残留 `RUNNING` 对账成 `INTERRUPTED`）、`ArchiveIntegrationTest`、`OrderAssistantBusinessFlowTest`、`SmokeDemoFlowTest`、`OrderConcurrencyTest`（6 线程真实并发；含"幂等键 FAILED 重试只执行一次"，钉住并验证 `reclaim` 竞态修复） |
+| L5 SPA 单元与组件（Vitest + jsdom） | 后端替客户端保证不了的那半份契约 | `api.spec`（SSE 分帧 / CSRF 头 / 错误体）、`store.spec`（快照与增量 patch）、`ConversationRow.spec`、`ActionCardPanel.spec`、`OrdersView.spec`、`AssistantView.spec`、`LoginView.spec`、`markdown.spec`、`toast.spec`、`errors.spec` |
+| L6 浏览器端到端（Playwright + Chromium） | 真浏览器里走完"提议 → 确认 → 落单"与会话管理 | `catalog.spec`、`orders-identity.spec`、`assistant-flow.spec`、`sessions.spec`（归档/恢复） |
 
 后两层是各自独立的命令：
 
@@ -154,7 +175,7 @@ make test-frontend   # L5：纯前端，不需要 MySQL
 make test-e2e        # L6：自己去构建 SPA 并起应用（:8082），所以要先 make db-up
 ```
 
-L5 里含金量最高的是一份 `api.spec.ts`：流式回复的分帧（一帧跨两次 `read`、CRLF、多行 `data`）、`done` 事件的整轮语义、每个请求都带 `X-Customer-Id`——这些都是**服务端无法替客户端保证**的契约，也正是这次补齐用例时揪出下面两个真实缺陷的地方。
+L5 里含金量最高的是一份 `api.spec.ts`：流式回复的分帧（一帧跨两次 `read`、CRLF、多行 `data`）、`done` 事件的整轮语义、每个写请求都带 `X-XSRF-TOKEN`、`401` 一律回登录页——这些都是**服务端无法替客户端保证**的契约，也正是这次补齐用例时揪出下面两个真实缺陷的地方。
 
 L6 不信任 Vite dev server：`e2e/support/serve.mjs` 先把 SPA 构建进 `backend/src/main/resources/static`，再以 `mysql,offline` 两个 profile 起后端，于是浏览器访问的就是打包产物本身，与 API 同源、没有代理；助手是 `offline` 的桩适配器，所以每条流都确定、也不产生模型费用。E2E 连的是独立库 `ordermgt_e2e`，每个用例现取一个没人用过的客户号，因此可以反复跑而不必清库。
 
@@ -174,23 +195,25 @@ L6 不信任 Vite dev server：`e2e/support/serve.mjs` 先把 SPA 构建进 `bac
 Makefile          常用命令入口（`make help` 看全部）
 backend/src/main/java/com/example/ordermgt/
 ├── shared/       统一响应体、错误码、分页常量、全局异常处理
-├── config/       MyBatis-Plus、OpenAPI、流式线程池
+├── config/       MyBatis-Plus、OpenAPI、流式线程池、AI HTTP 超时
+├── security/     会话认证（PIN 登录）、CSRF、@CurrentCustomer
 ├── idempotency/  通用幂等组件（domain / application / infrastructure）
 ├── catalog/      商品目录（价格的唯一来源）
 ├── order/        订单领域（Order 聚合根、状态流转、事务边界）
-└── assistant/    助手领域（会话记忆、工具白名单、待确认动作、确认闭环）
+└── assistant/    助手领域（会话记忆、工具白名单、待确认动作、确认闭环、Run）
     ├── AiCallPolicy    模型调用的超时/重试常量（适配器与控制器共用）
-    ├── domain/         无框架依赖：Conversation、Message、PendingAction、ToolSpec、ToolCard、ToolResult、AiAssistantPort
-    ├── application/    AssistantService（编排）、ConversationService、ActionConfirmationService
+    ├── domain/         无框架依赖：Conversation、Message、Run、PendingAction、ToolSpec、ToolCard、ToolResult、AiAssistantPort
+    ├── application/    AssistantService（编排）、ConversationService、ActionConfirmationService、ConversationRunQueue、RunService、RunRegistry、RunReconciler
     ├── infrastructure/ Spring AI 适配器（ai/prompt 下集中提示词）、MyBatis-Plus 持久化、过期清理任务
     └── api/            控制器、DTO 与 MapStruct 的 ApiMapper
 frontend/         Vue 3 SPA（产物直接构建进 backend/src/main/resources/static）
-├── src/          api.ts（含 SSE 客户端）、constants.ts（屏级常量）、视图、组件；同名 *.spec.ts 是 L5 用例
+├── src/          api.ts（含 SSE 客户端与登录）、store.ts（会话状态单例）、constants.ts（屏级常量）、视图、组件；同名 *.spec.ts 是 L5 用例
 ├── e2e/          Playwright 用例（L6）+ support/serve.mjs（构建 SPA 并起离线后端）
 └── vitest.config.ts / playwright.config.ts
 docs/             项目文档
-├── adr/          架构决策记录
-└── 面试作业-*.md  需求梳理 / 设计定稿 / 演示脚本
+├── adr/          架构决策记录（0001–0014）
+├── 面试作业-*.md  需求摘录 / 设计定稿 / 讲解手册
+└── 会话管理-设计定稿.md  Run 层设计
 ```
 
 依赖方向：`api → application → domain`，`infrastructure → domain`（实现端口）。**domain 不依赖任何框架。**
@@ -230,6 +253,20 @@ docs/             项目文档
 **归档是可见性，不是删除。** `POST .../archive` 只改 `conversations.status`（`VARCHAR` 无 CHECK，**零迁移**），归档的会话从默认列表隐藏、仍可读、可一键恢复，**没有硬删除**；**非静止**（有 RUNNING Run 或未过期卡片）归档 → `409`——归档只管可见性，终止是上面那个显式的停止。向已归档会话发一条消息即**自动恢复**为 `ACTIVE`。（[ADR-0013](docs/adr/0013-archive-hides-does-not-delete.md)）
 
 **会话状态靠推送，不靠轮询。** `GET /api/assistant/events` 是每客户一条长活 SSE：首帧全量 `snapshot`（含归档），之后推 `state`（某会话派生状态或 `runId` 变了）与 `queue`（队列变了）增量，`ping` 保活；重连重发快照、客户端整体替换，不做 `Last-Event-ID`。这条流**不走回合池**——它由进程内的 `ConversationEventBus` 维护 emitter 注册表，不长期占线程，配每客户连接数上限（4，超出 `503`）。前端用一个**零依赖**的模块级单例 store（`useSessionStore`，仍只有 `vue` 一个运行时依赖）承载列表 / 运行态 / 队列 / 订阅，`AssistantView` 降为它的一个视图。（[ADR-0014](docs/adr/0014-conversation-state-is-pushed.md)）
+
+## 换一个 OpenAI 兼容网关 / 模型
+
+适配器只讲 OpenAI 协议，端点由环境变量决定，所以换网关不必改代码：
+
+```bash
+AI_BASE_URL=https://api.commandcode.ai/provider   # 不要带 /v1：Spring AI 自己拼 /v1/chat/completions
+AI_MODEL=deepseek/deepseek-v4.1-flash
+AI_API_KEY=<该网关的 key>
+```
+
+三条都写在 `.env`（唯一入口），compose 与 `./mvnw` 裸跑都吃得到。`AI_API_KEY` 与作业自带的 `DASHSCOPE_API_KEY` 二选一即可，两个都没有时 compose **拒绝启动**，而不是拿占位符去调模型。
+
+注意 `AI_BASE_URL` / `AI_MODEL` **留空不等于"用默认值"**：空串会被当成真值传给占位符，`application.yml` 里的默认就不再生效——写成 `AI_BASE_URL=` 会直接启动失败（`OpenAI base URL must be set`）。要换就填真值，不换就整行注释掉（`.env.example` 里就是这么留的）。
 
 ## 没有 Key 也能跑（离线模式）
 
