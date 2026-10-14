@@ -10,6 +10,7 @@ import static org.mockito.Mockito.when;
 
 import com.example.ordermgt.assistant.domain.ToolResult;
 import com.example.ordermgt.assistant.domain.ToolSpec;
+import com.example.ordermgt.catalog.domain.CatalogRepository;
 import com.example.ordermgt.order.application.LineCommand;
 import com.example.ordermgt.order.application.OrderService;
 import com.example.ordermgt.order.domain.Order;
@@ -49,7 +50,11 @@ class OrderToolSpecsTest {
         orderService = mock(OrderService.class);
         specs =
                 new OrderToolDefinitions()
-                        .orderToolSpecs(orderService, new ObjectMapper()).stream()
+                                .orderToolSpecs(
+                                        orderService,
+                                        new ObjectMapper(),
+                                        mock(CatalogRepository.class))
+                                .stream()
                                 .collect(Collectors.toMap(ToolSpec::name, Function.identity()));
     }
 

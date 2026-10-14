@@ -5,8 +5,11 @@ import com.example.ordermgt.assistant.domain.ToolField;
 import com.example.ordermgt.assistant.domain.ToolRegistry;
 import com.example.ordermgt.assistant.domain.ToolResult;
 import com.example.ordermgt.assistant.domain.ToolSpec;
+import com.example.ordermgt.catalog.domain.CatalogItem;
+import com.example.ordermgt.catalog.domain.CatalogRepository;
 import com.example.ordermgt.order.application.LineCommand;
 import com.example.ordermgt.order.application.OrderService;
+import com.example.ordermgt.order.domain.Money;
 import com.example.ordermgt.order.domain.Order;
 import com.example.ordermgt.order.domain.OrderStatus;
 import com.example.ordermgt.shared.api.ErrorCode;
@@ -19,6 +22,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -38,6 +42,9 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 public class OrderToolDefinitions {
 
+    /** What a money row reads when the server cannot state an amount for it. */
+    private static final String UNKNOWN = "—";
+
     /**
      * The whitelist over these definitions. Wired here so the domain class stays framework-free.
      */
@@ -47,7 +54,8 @@ public class OrderToolDefinitions {
     }
 
     @Bean
-    public List<ToolSpec> orderToolSpecs(OrderService orderService, ObjectMapper objectMapper) {
+    public List<ToolSpec> orderToolSpecs(
+            OrderService orderService, ObjectMapper objectMapper, CatalogRepository catalog) {
         return List.of(
                 ToolSpec.readonly(
                         "queryMyOrders",
@@ -90,7 +98,7 @@ public class OrderToolDefinitions {
                         new ToolCard(
                                 "Create Order",
                                 args -> describeLines(objectMapper, args),
-                                args -> lineFields(objectMapper, args)),
+                                args -> lineFields(objectMapper, catalog, args)),
                         (customerId, args) -> {
                             Order order =
                                     orderService.createOrder(
@@ -194,19 +202,68 @@ public class OrderToolDefinitions {
         return sb.toString();
     }
 
-    /** One Item / Quantity pair per ordered line, so nothing about the request is hidden. */
-    private static List<ToolField> lineFields(ObjectMapper mapper, String args) {
+    /**
+     * One Item / Quantity / Unit price / Line total block per ordered line, closed by the order
+     * total, so the customer sees what they are about to pay before authorising -- and every amount
+     * is the catalog's, not the model's word.
+     */
+    private static List<ToolField> lineFields(
+            ObjectMapper mapper, CatalogRepository catalog, String args) {
         List<ToolField> fields = new ArrayList<>();
         JsonNode lines = root(mapper, args).path("lines");
         if (!lines.isArray()) {
             return fields;
         }
+        Money total = Money.ZERO;
+        boolean everyLinePriced = true;
         for (JsonNode line : lines) {
             String sku = line.path("sku").asText("");
-            fields.add(new ToolField("Item", sku.isBlank() ? "—" : sku));
-            fields.add(new ToolField("Quantity", String.valueOf(line.path("quantity").asInt(0))));
+            int quantity = line.path("quantity").asInt(0);
+            Optional<Money> price = unitPrice(catalog, sku);
+            // An unpriceable or non-positive line has no amount -- quoting ¥0.00 for it would read
+            // as a free item rather than as the bad request the confirmation will reject.
+            Optional<Money> lineTotal =
+                    price.filter(ignored -> quantity >= 1).map(unit -> unit.multiply(quantity));
+            fields.add(new ToolField("Item", sku.isBlank() ? UNKNOWN : sku));
+            fields.add(new ToolField("Quantity", String.valueOf(quantity)));
+            fields.add(
+                    new ToolField(
+                            "Unit price", price.map(OrderToolDefinitions::amount).orElse(UNKNOWN)));
+            fields.add(
+                    new ToolField(
+                            "Line total",
+                            lineTotal.map(OrderToolDefinitions::amount).orElse(UNKNOWN)));
+            if (lineTotal.isPresent()) {
+                total = total.plus(lineTotal.get());
+            } else {
+                everyLinePriced = false;
+            }
+        }
+        if (!fields.isEmpty()) {
+            // A partial sum is not a total: if one line could not be priced, the customer cannot be
+            // told what this order costs, so the row says so instead of understating the charge.
+            fields.add(new ToolField("Total", everyLinePriced ? amount(total) : UNKNOWN));
         }
         return fields;
+    }
+
+    /**
+     * The catalog's price for a sku: the only price source there is. Empty when the catalog does
+     * not carry the sku (or has discontinued it) -- an unknown line reads as {@link #UNKNOWN} and
+     * is rejected on confirmation, rather than hiding the whole card behind the raw-arguments
+     * fallback, which would drop the item and quantity too.
+     */
+    private static Optional<Money> unitPrice(CatalogRepository catalog, String sku) {
+        if (sku.isBlank()) {
+            return Optional.empty();
+        }
+        return catalog.findBySku(sku)
+                .filter(CatalogItem::active)
+                .map(item -> Money.of(item.unitPrice()));
+    }
+
+    private static String amount(Money money) {
+        return "¥" + money.amount().toPlainString();
     }
 
     private static Map<String, Object> summarise(Order order) {

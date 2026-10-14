@@ -30,6 +30,10 @@ test.describe('助手：提议、确认、落单', () => {
     await expect(slip.locator('.slip-state')).toHaveText('待授权')
     await expect(slip).toContainText('GADGET-02')
     await expect(slip).toContainText('2')
+    // The card shows the catalog's price, not a number the model made up: 2 × 49.50.
+    await expect(slip).toContainText('49.50')
+    await expect(slip).toContainText('99.00')
+    await expect(slip).toContainText('Total')
     await expect(slip.locator('.clock')).toContainText('过期')
 
     await openTab(page, '订单')

@@ -34,6 +34,7 @@ import com.example.ordermgt.assistant.domain.RunRepository;
 import com.example.ordermgt.assistant.domain.RunStatus;
 import com.example.ordermgt.assistant.domain.ToolRegistry;
 import com.example.ordermgt.assistant.infrastructure.ai.tools.OrderToolDefinitions;
+import com.example.ordermgt.catalog.domain.CatalogRepository;
 import com.example.ordermgt.order.application.OrderService;
 import com.example.ordermgt.shared.api.ErrorCode;
 import com.example.ordermgt.shared.api.PageResult;
@@ -72,6 +73,8 @@ class AssistantServiceTest {
 
     @Mock private OrderService orderService;
 
+    @Mock private CatalogRepository catalogRepository;
+
     private AssistantService service;
 
     @BeforeEach
@@ -79,7 +82,8 @@ class AssistantServiceTest {
         ObjectMapper objectMapper = new ObjectMapper();
         ToolRegistry registry =
                 new ToolRegistry(
-                        new OrderToolDefinitions().orderToolSpecs(orderService, objectMapper));
+                        new OrderToolDefinitions()
+                                .orderToolSpecs(orderService, objectMapper, catalogRepository));
         service =
                 new AssistantService(
                         aiAssistantPort,
