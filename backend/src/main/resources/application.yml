@@ -28,14 +28,19 @@ spring:
     baseline-on-migrate: true
   ai:
     openai:
-      base-url: https://dashscope.aliyuncs.com/compatible-mode
-      api-key: ${DASHSCOPE_API_KEY:not-set}
+      # The OpenAI-compatible gateway the assistant calls. Spring AI appends the chat path itself
+      # (/v1/chat/completions), so the base URL must not include it. Defaults to the assignment's
+      # DashScope endpoint; AI_BASE_URL points the same adapter at any other compatible gateway.
+      base-url: ${AI_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode}
+      # AI_API_KEY is the general slot; DASHSCOPE_API_KEY is the assignment's own name for the same
+      # thing and still works, so an .env written for that endpoint keeps running unchanged.
+      api-key: ${AI_API_KEY:${DASHSCOPE_API_KEY:not-set}}
       chat:
         options:
           # A pinned snapshot, not the rolling `qwen-max` alias: the alias is silently upgraded
           # by the provider (behaviour and pricing can shift under us), and the prompt budget
           # below is sized against this version's 30,720-token input window.
-          model: qwen-max-2025-01-25
+          model: ${AI_MODEL:qwen-max-2025-01-25}
           temperature: 0.2
           # Output ceiling: qwen-max allows 8,192; half of that is more reply than any answer
           # here needs, and the cap is what stops one runaway generation from billing the rest.

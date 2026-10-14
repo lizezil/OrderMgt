@@ -46,9 +46,15 @@ services:
       MYSQL_DATABASE: ${MYSQL_DATABASE:-ordermgt}
       MYSQL_USER: ${MYSQL_USER:-ordermgt}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:-ordermgt}
-      # No default: a missing key must fail loudly rather than silently calling the model
-      # with a placeholder. Put it in .env (git-ignored) or the shell environment.
-      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:?set DASHSCOPE_API_KEY in .env or the environment}
+      # The assistant's model gateway. No default on the key: a missing one must fail loudly rather
+      # than silently calling the model with a placeholder. AI_API_KEY is the general slot,
+      # DASHSCOPE_API_KEY the assignment's own name -- either works. Put it in .env (git-ignored)
+      # or the shell environment.
+      AI_API_KEY: ${AI_API_KEY:-${DASHSCOPE_API_KEY:?set AI_API_KEY (or DASHSCOPE_API_KEY) in .env or the environment}}
+      # Optional: another OpenAI-compatible gateway and model; the defaults mirror application.yml.
+      # The base URL must NOT include /v1 -- Spring AI appends /v1/chat/completions itself.
+      AI_BASE_URL: ${AI_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode}
+      AI_MODEL: ${AI_MODEL:-qwen-max-2025-01-25}
     ports:
       - "${APP_PORT:-8081}:8081"
 
