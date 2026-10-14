@@ -826,6 +826,31 @@ describe('忙时入队', () => {
     expect(wrapper.get('.queue-text').text()).toBe('第二句')
   })
 
+  it('排队中的第二句只留在排队条里，不进会话区；轮到它开始才进对话', async () => {
+    const stream = busyConversation()
+    const wrapper = await mountView()
+    await sendLine(wrapper, '第一句')
+    await sendLine(wrapper, '第二句')
+    stream.on(1).onQueued({ itemId: 'q1', position: 1 })
+    await nextTick()
+
+    // 排队条里看得见它 —— 那里才是它在等的家。
+    expect(wrapper.get('.queue-text').text()).toBe('第二句')
+    // 会话区里还没有它：它没轮到，也不是助手正在回答的那一轮。
+    expect(wrapper.findAll('article.customer').map((line) => line.get('.said').text())).toEqual([
+      '第一句',
+    ])
+
+    stream.on(1).onStarted()
+    await nextTick()
+
+    // 轮到它了：这时才落进对话，排在第一轮后面。
+    expect(wrapper.findAll('article.customer').map((line) => line.get('.said').text())).toEqual([
+      '第一句',
+      '第二句',
+    ])
+  })
+
   it('轮到它开始时撤下排队标记：started 一到，它就是一轮普通的回复', async () => {
     const stream = busyConversation()
     const wrapper = await mountView()
@@ -889,8 +914,11 @@ describe('忙时入队', () => {
 
     stream.resolve(0, reply({ reply: '第一句的回答' }))
     await flushPromises()
+    // 第二句还在排队，所以会话区里只有第一轮；轮到它开始时才补进对话。
+    stream.on(1).onStarted()
+    await nextTick()
 
-    // 气泡按时间顺序排：第一问、它的答案、第二问（还在排队/生成中）。
+    // 气泡按时间顺序排：第一问、它的答案、第二问（轮到它了，正在生成）。
     expect(wrapper.findAll('article').map((line) => line.get('.said').text())).toEqual([
       '第一句',
       '第一句的回答',

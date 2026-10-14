@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { api, ApiError, QUEUE_DROPPED, RUN_CANCELLED } from '../api'
 import {
   LOCAL_MESSAGE_ID_START,
@@ -28,6 +28,19 @@ const archived = store.archived
 /** Whether the archived group at the bottom of the rail is expanded. */
 const showArchived = ref(false)
 const messages = ref<Message[]>([])
+
+/**
+ * The sends still waiting in line, by message id. A conversation runs one turn at a time
+ * (ADR-0012), so a send that lands behind a live turn waits -- and while it waits it is *not* in
+ * the thread: nobody is answering it yet, and the queue strip above the composer is where it shows.
+ * It joins the thread, in order, the moment its turn starts. Held here by id rather than on the
+ * message so the thread's own state stays exactly what the server and the customer made it.
+ */
+const waiting = reactive(new Set<number>())
+
+/** The thread as rendered. A waiting send is only in the queue strip; ordering and identity stay
+ *  with `messages`, so a reply still settles into the place its question occupies. */
+const visibleMessages = computed(() => messages.value.filter((message) => !waiting.has(message.id)))
 const activeId = ref<number | null>(null)
 const draft = ref('')
 const loading = ref(false)
@@ -54,6 +67,37 @@ let localId = LOCAL_MESSAGE_ID_START
 const activeQueue = computed(() => store.queueFor(activeId.value))
 
 const queueFull = computed(() => activeQueue.value.length >= MAX_QUEUE_DEPTH)
+
+/**
+ * Whether a send to this conversation will have to wait in line. Local and cheap: it decides what
+ * shows *first*, so a send behind a busy turn goes straight into the queue strip instead of
+ * flashing through the thread. It is a guess -- the server's frames are the truth -- and both
+ * directions are corrected: `queued` marks a send this did not foresee, and `started` clears a
+ * mark it did (the frames also cover the case where the turn ahead finishes between this call and
+ * the server's admission).
+ */
+function willWait(conversationId: number | null): boolean {
+  if (conversationId === null) return false // a brand-new conversation has no turn to collide with
+  // A line that is not empty means the slot is taken: someone is running and this send goes behind.
+  if (store.queueFor(conversationId).length > 0) return true
+  const known =
+    conversations.value.find((row) => row.id === conversationId) ??
+    archived.value.find((row) => row.id === conversationId)
+  if (known?.state === 'RUNNING') return true
+  // Another send of this screen is still streaming (a count, so >1 means one besides this one).
+  return inFlight.value > 1
+}
+
+/**
+ * The frames that prove the turn is real -- `started`, the Run opening, the first token -- bring its
+ * question and its answer bubble into the thread. Called from each of them, so one lost frame
+ * cannot leave the customer's own words invisible for the whole turn.
+ */
+function enterThread(...lines: (Message | null)[]): void {
+  for (const line of lines) {
+    if (line) waiting.delete(line.id)
+  }
+}
 
 /**
  * The Run the customer can stop right now. Two ways to know it: this screen sent the turn and got
@@ -125,8 +169,9 @@ async function scrollToEnd(): Promise<void> {
  */
 const retryIndex = computed(() => {
   if (sending.value) return -1
-  const last = messages.value.length - 1
-  if (last < 0 || messages.value[last]!.role !== 'CUSTOMER') return -1
+  const thread = visibleMessages.value
+  const last = thread.length - 1
+  if (last < 0 || thread[last]!.role !== 'CUSTOMER') return -1
   const active = conversations.value.find((conversation) => conversation.id === activeId.value)
   if (active?.state === 'RUNNING') return -1
   return last
@@ -471,6 +516,9 @@ async function send(): Promise<void> {
   // Identity for the reconcile below: ids the screen already held before this send, so re-sending
   // identical words can be told apart from the older turn that happens to say the same thing.
   const knownIds = new Set(messages.value.map((message) => message.id))
+  // A busy conversation puts this send in line, and a send in line belongs to the queue strip, not
+  // to the thread (see `waiting`) -- so it is marked here, before it would show for a moment.
+  const inLine = willWait(activeId.value)
   messages.value.push({
     id: localId--,
     role: 'CUSTOMER',
@@ -481,6 +529,7 @@ async function send(): Promise<void> {
   // The array holds the object we pushed, but the template renders Vue's reactive proxy of it;
   // only mutating *that* reference repaints, and it is the identity the cleanup below matches.
   const sent = messages.value[messages.value.length - 1]!
+  if (inLine) waiting.add(sent.id)
   let placeholder: Message | null = null
   // Hoisted so the catch can reconcile the conversation this message went to, even if the customer
   // opened another one while the stream was dying.
@@ -516,6 +565,7 @@ async function send(): Promise<void> {
     })
     const reply = messages.value[messages.value.length - 1]!
     placeholder = reply
+    if (inLine) waiting.add(reply.id)
     const target = conversationId
 
     const response = await api.chatStream(
@@ -523,6 +573,8 @@ async function send(): Promise<void> {
       target,
       {
         onToken: (delta) => {
+          // A token proves the turn is running; the `started` frame should already have said so.
+          enterThread(sent, reply)
           reply.content = (reply.content ?? '') + delta
           void scrollToEnd()
         },
@@ -530,16 +582,22 @@ async function send(): Promise<void> {
           // Remember the id so the turn's own frames (started / done / failed) can clear its marker.
           myItemId = turn.itemId
           store.noteQueued(target, turn.itemId, text)
+          // The server says this one waits: the queue strip is now its home until its turn comes,
+          // which is also the correction for a send that did not look like it would queue.
+          waiting.add(sent.id)
+          waiting.add(reply.id)
         },
         // The turn is out of the line now; the server says so before its first token, so the count
         // never keeps calling a running turn "waiting".
         onStarted: () => {
           if (myItemId !== null) store.forgetQueued(target, myItemId)
+          enterThread(sent, reply)
         },
         // The run exists now: this is the handle the stop button targets.
         onRun: (runId) => {
           myRunId = runId
           liveRun.value = { conversationId: target, runId }
+          enterThread(sent, reply)
         },
         // The customer stopped it; keep the half reply the server persisted.
         onCancelled: (reply) => {
@@ -601,6 +659,11 @@ async function send(): Promise<void> {
   } finally {
     sendControllers.delete(controller)
     inFlight.value--
+    // The send has ended, so it is not in line any more whatever the ending was: a thread must
+    // never keep the customer's own words hidden because a frame never came. (A bubble the ending
+    // did remove -- a dropped queue item, a message the server never got -- is gone from the
+    // thread itself, so showing it here cannot resurrect it.)
+    enterThread(sent, placeholder)
     // This turn's run is over -- done, failed, stopped or dropped -- so there is nothing to stop.
     if (myRunId !== null && liveRun.value?.runId === myRunId) liveRun.value = null
     await scrollToEnd()
@@ -713,9 +776,10 @@ onMounted(async () => {
         </p>
 
         <!-- Markdown, rendered by `renderMarkdown`: it escapes its input first, so the HTML below
-             is only ever the tags that module wrote. -->
+             is only ever the tags that module wrote. A send still waiting its turn is not here:
+             it is in the queue strip above the composer until `started` brings it in (`waiting`). -->
         <article
-          v-for="(message, index) in messages"
+          v-for="(message, index) in visibleMessages"
           :key="message.id"
           class="line"
           :class="message.role.toLowerCase()"
