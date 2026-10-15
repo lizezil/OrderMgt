@@ -77,7 +77,12 @@ const { current: toastText, isError: toastIsError, push: pushToast } = useToast(
       </header>
 
       <div class="stage">
-        <AssistantView v-if="tab === 'assistant'" :key="viewerKey" @error="pushToast" />
+        <AssistantView
+          v-if="tab === 'assistant'"
+          :key="viewerKey"
+          :customer="customer"
+          @error="pushToast"
+        />
         <OrdersView v-else-if="tab === 'orders'" :key="viewerKey" />
         <CatalogView v-else />
       </div>

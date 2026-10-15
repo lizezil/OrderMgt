@@ -4,6 +4,15 @@ server:
   # being paid for gets up to the shutdown-phase window below to finish and persist its reply
   # (otherwise the question lands but the answer never does).
   shutdown: graceful
+  servlet:
+    session:
+      # 空闲上限：60 分钟内没有请求，容器自己让这段会话过期（US-6.4）。演示要在几十分钟里不被踢，
+      # 真实使用要短得多——这个数字就是那句话。
+      timeout: 60m
+      cookie:
+        # 浏览器端 cookie 的上限，与下面的绝对上限一致：cookie 不会比会话本身活得更久。
+        # HttpOnly 由 Spring Boot 默认给出，前端拿不到它，也就伪造不了身份。
+        max-age: 12h
 
 spring:
   application:
@@ -123,6 +132,11 @@ idempotency:
 security:
   csrf:
     enabled: true
+  session:
+    # 绝对上限：无论多活跃，一段会话到此为止（US-6.4）。servlet 会话只有空闲超时，管得住"多久没动"、
+    # 管不住"连着动了 12 小时"，所以这一条由 SessionLifetimeFilter 自己把关。它与 cookie 的 Max-Age
+    # 一致：客户端的凭证与服务端的会话同寿，谁都不会比对方多活一截。
+    absolute-lifetime: 12h
 
 management:
   endpoints:

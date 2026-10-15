@@ -224,6 +224,24 @@ describe('统一响应体', () => {
     expect(fetchMock.mock.calls[0]![0]).toBe('/api/assistant/chat')
     expect(fetchMock.mock.calls[1]![0]).toBe('/api/assistant/chat?conversationId=7')
   })
+
+  it('不带游标读历史：要的就是最近一段（US-2.7）', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(ok([]))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await api.history(7)
+
+    expect(fetchMock.mock.calls[0]![0]).toBe('/api/assistant/conversations/7/messages')
+  })
+
+  it('带上游标读历史：往上翻一段，游标是屏幕上最旧那条的 id', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(ok([]))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await api.history(7, 40)
+
+    expect(fetchMock.mock.calls[0]![0]).toBe('/api/assistant/conversations/7/messages?beforeId=40')
+  })
 })
 
 describe('流式回复的客户端契约', () => {
@@ -346,6 +364,22 @@ describe('流式回复的客户端契约', () => {
     )
     expect(init.headers).toMatchObject({ Accept: 'text/event-stream' })
     expect((init.headers as Record<string, string>)['X-Customer-Id']).toBeUndefined()
+  })
+
+  it('重试这一轮在 query 上说明白：服务端据此复用最后那条提问，而不是再收一遍（US-2.6）', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(streamResponse([frame('done', JSON.stringify(DONE))]))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await chatStream('我有哪些订单？', 3, { onToken: () => {} }, undefined, true)
+
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe(
+      '/api/assistant/conversations/3/stream?message=' +
+        encodeURIComponent('我有哪些订单？') +
+        '&retry=true',
+    )
   })
 
   it('会话不属于该客户时（403）直接失败，不进入解析', async () => {

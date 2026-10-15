@@ -269,6 +269,39 @@ public class AssistantService {
     }
 
     /**
+     * The setup for a retry (US-2.6): the customer's last question is already committed, so this
+     * re-runs the model on it without appending a second copy. It is a brand new model call all the
+     * same -- new Run, new audit row, another slot of quota (the caller rate-limits before it) --
+     * because "ask again" is not "send the same request": there is no idempotency key here.
+     *
+     * <p>The memory window already ends on that question, exactly as it would right after {@link
+     * #prepare} appended it, so the model sees the same turn. Refused (409) when the newest message
+     * is not an unanswered customer question: there would be nothing to retry, and re-asking an
+     * already-answered turn is a different operation wearing this one's name.
+     */
+    public TurnContext prepareRetry(Long customerId, Long conversationId) {
+        if (conversationId == null) {
+            throw new BusinessException(
+                    ErrorCode.VALIDATION_FAILED, "a retry needs an existing conversation");
+        }
+        Conversation conversation = conversationService.getOwned(customerId, conversationId);
+        Message last =
+                conversationService
+                        .lastMessage(conversationId)
+                        .orElseThrow(
+                                () ->
+                                        new BusinessException(
+                                                ErrorCode.CONFLICT,
+                                                "nothing to retry: the conversation has no question"));
+        if (last.role() != Role.CUSTOMER) {
+            throw new BusinessException(
+                    ErrorCode.CONFLICT, "nothing to retry: the last turn already has a reply");
+        }
+        List<ChatMessage> memory = conversationService.memory(conversationId, memoryWindow);
+        return new TurnContext(conversation, memory);
+    }
+
+    /**
      * The part that happens after: classify the tool calls, execute the readonly ones, turn the
      * mutating ones into confirmable cards, persist the turn, and log the model call.
      *

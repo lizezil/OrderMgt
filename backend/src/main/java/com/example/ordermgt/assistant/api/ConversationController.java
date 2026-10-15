@@ -89,12 +89,20 @@ public class ConversationController {
                         .toList());
     }
 
-    /** Full history, with each message's card resolved to its current state. */
+    /**
+     * One segment of history, with each message's card resolved to its current state. Defaults to
+     * the newest segment (US-2.7); {@code beforeId} is the id cursor the client passes to scroll
+     * back through a long thread, and {@code limit} is clamped rather than trusted.
+     */
     @GetMapping("/{conversationId}/messages")
     public ApiResponse<List<MessageResponse>> history(
-            @CurrentCustomer Long customerId, @PathVariable Long conversationId) {
+            @CurrentCustomer Long customerId,
+            @PathVariable Long conversationId,
+            @RequestParam(name = "beforeId", required = false) Long beforeId,
+            @RequestParam(name = "limit", required = false) Integer limit) {
+        int size = limit == null ? ConversationService.DEFAULT_HISTORY_LIMIT : limit;
         return ApiResponse.ok(
-                conversationService.history(customerId, conversationId).stream()
+                conversationService.history(customerId, conversationId, beforeId, size).stream()
                         .map(mapper::toResponse)
                         .toList());
     }
@@ -278,18 +286,28 @@ public class ConversationController {
      * assistant.run.queue-depth} others, and a {@code queued} frame tells the caller which line
      * item it got so it can be deleted. Past that depth the answer is 429 {@code QUEUE_FULL},
      * before any frame.
+     *
+     * <p>{@code retry=true} re-asks the conversation's last, unanswered question without appending
+     * a second copy of it (US-2.6): the words are already in the transcript, and a duplicate would
+     * read to the model as "the customer did not understand, so they asked again". It is still a
+     * new model call -- new Run, new audit row, another slot of quota -- so it is not the
+     * idempotent endpoint's business; that one is for replaying one request, this one is for saying
+     * it again.
      */
     @GetMapping(value = "/{conversationId}/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter stream(
             @CurrentCustomer Long customerId,
             @PathVariable Long conversationId,
-            @RequestParam String message) {
+            @RequestParam String message,
+            @RequestParam(name = "retry", defaultValue = "false") boolean retry) {
         // Ownership before admission: a stranger's request must not be able to tell a busy
         // conversation from a quiet one, nor take a slot in its line. 403/404 arrives as JSON,
         // before the response is committed to SSE.
         conversationService.getOwned(customerId, conversationId);
         // Rate limit before the SSE promise: past the customer's quota this answers a plain JSON
         // 429 with Retry-After -- never an error frame on a stream the client already accepted.
+        // A retry spends a slot like any other turn: it is a fresh model call, not a replay
+        // (US-2.6).
         rateLimiter.admit(customerId);
 
         SseEmitter emitter = new SseEmitter(AiCallPolicy.STREAM_TIMEOUT_MS);
@@ -309,7 +327,7 @@ public class ConversationController {
                         // told about, since a silent turn is otherwise indistinguishable from a
                         // turn still waiting for the whole time before its first token.
                         deliver(emitter, clientGone, "started", "{}");
-                        streamTurn(emitter, clientGone, customerId, conversationId, message);
+                        streamTurn(emitter, clientGone, customerId, conversationId, message, retry);
                     }
 
                     @Override
@@ -393,14 +411,17 @@ public class ConversationController {
             AtomicBoolean clientGone,
             Long customerId,
             Long conversationId,
-            String message) {
+            String message,
+            boolean retry) {
         // The live run's handle, opened the moment the Run row exists (inside executeTurn) and
         // closed when this turn ends. It carries the cancellation signal a stop trips and the text
         // a reattach replays, and it exists only for as long as the turn does.
         AtomicReference<RunRegistry.Handle> handle = new AtomicReference<>();
         try {
             AssistantService.TurnContext context =
-                    assistantService.prepare(customerId, conversationId, message);
+                    retry
+                            ? assistantService.prepareRetry(customerId, conversationId)
+                            : assistantService.prepare(customerId, conversationId, message);
 
             AssistantResult result =
                     assistantService.executeTurn(

@@ -2,7 +2,9 @@ package com.example.ordermgt.order.application;
 
 import com.example.ordermgt.catalog.domain.CatalogItem;
 import com.example.ordermgt.catalog.domain.CatalogRepository;
+import com.example.ordermgt.order.domain.Money;
 import com.example.ordermgt.order.domain.Order;
+import com.example.ordermgt.order.domain.OrderFilter;
 import com.example.ordermgt.order.domain.OrderLine;
 import com.example.ordermgt.order.domain.OrderNumber;
 import com.example.ordermgt.order.domain.OrderRepository;
@@ -35,12 +37,25 @@ public class OrderService {
 
     @Transactional(readOnly = true)
     public PageResult<Order> listByCustomer(Long customerId, long page, long size) {
+        return listByCustomer(customerId, OrderFilter.NONE, page, size);
+    }
+
+    @Transactional(readOnly = true)
+    public PageResult<Order> listByCustomer(
+            Long customerId, OrderFilter filter, long page, long size) {
         long safePage = Math.min(Math.max(page, Paging.FIRST_PAGE), Paging.MAX_PAGE);
         long safeSize = size <= 0 || size > Paging.MAX_SIZE ? Paging.DEFAULT_SIZE : size;
         List<Order> items =
-                orderRepository.findByCustomer(customerId, (safePage - 1) * safeSize, safeSize);
-        long total = orderRepository.countByCustomer(customerId);
+                orderRepository.findByCustomer(
+                        customerId, filter, (safePage - 1) * safeSize, safeSize);
+        long total = orderRepository.countByCustomer(customerId, filter);
         return PageResult.of(items, total, safePage, safeSize);
+    }
+
+    /** 命中项**全体**的合计金额（US-4.5）：与这一页列出几张无关，由服务端算，模型不参与加总。 */
+    @Transactional(readOnly = true)
+    public Money totalAmountByCustomer(Long customerId, OrderFilter filter) {
+        return orderRepository.sumAmountsByCustomer(customerId, filter);
     }
 
     public Order getByNumber(Long customerId, String orderNumber) {

@@ -214,7 +214,11 @@ class RunPersistenceTest {
         assertThat(runs.get(0).getEndedAt()).isNotNull();
 
         List<MessageView> history =
-                conversationService.history(customer, context.conversation().getId());
+                conversationService.history(
+                        customer,
+                        context.conversation().getId(),
+                        null,
+                        ConversationService.DEFAULT_HISTORY_LIMIT);
         MessageView last = history.get(history.size() - 1);
         assertThat(last.message().role()).isEqualTo(Role.ASSISTANT);
         assertThat(last.message().content()).isEqualTo("我先说半句，");

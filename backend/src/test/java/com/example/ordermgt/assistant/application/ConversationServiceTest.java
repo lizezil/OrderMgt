@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -276,7 +277,7 @@ class ConversationServiceTest {
         Instant now = Instant.now();
         when(conversationRepository.findById(CONVERSATION))
                 .thenReturn(Optional.of(conversation(OWNER)));
-        when(conversationRepository.findAllMessages(CONVERSATION))
+        when(conversationRepository.findMessagesBefore(CONVERSATION, null, 30))
                 .thenReturn(
                         List.of(
                                 Message.customer(CONVERSATION, "help me order", now),
@@ -285,13 +286,53 @@ class ConversationServiceTest {
         when(pendingActionRepository.findByIdIn(List.of(9L)))
                 .thenReturn(List.of(pendingAction(PendingActionStatus.CONFIRMED)));
 
-        List<MessageView> history = service.history(OWNER, CONVERSATION);
+        List<MessageView> history = service.history(OWNER, CONVERSATION, null, 30);
 
         assertThat(history).hasSize(2);
         assertThat(history.get(0).action()).isNull();
         assertThat(history.get(1).action()).isNotNull();
         assertThat(history.get(1).action().status()).isEqualTo("CONFIRMED");
         assertThat(history.get(1).action().token()).isEqualTo("tok");
+    }
+
+    /** 分段读取按 id 游标走：客户带上眼前最旧那条的 id，服务端就把它之前的一段还回来（US-2.7）。 */
+    @Test
+    void aHistorySegmentIsReadFromTheIdCursorTheCustomerHolds() {
+        Instant now = Instant.now();
+        when(conversationRepository.findById(CONVERSATION))
+                .thenReturn(Optional.of(conversation(OWNER)));
+        when(conversationRepository.findMessagesBefore(CONVERSATION, 40L, 30))
+                .thenReturn(List.of(Message.customer(CONVERSATION, "older", now)));
+
+        List<MessageView> segment = service.history(OWNER, CONVERSATION, 40L, 30);
+
+        assertThat(segment).extracting(view -> view.message().content()).containsExactly("older");
+        verify(conversationRepository).findMessagesBefore(CONVERSATION, 40L, 30);
+    }
+
+    /** 分段大小不可信：0、负数或超出上限的 limit 都退回默认段长，绝不照单全收。 */
+    @Test
+    void anOutOfRangeSegmentSizeFallsBackToTheDefault() {
+        when(conversationRepository.findById(CONVERSATION))
+                .thenReturn(Optional.of(conversation(OWNER)));
+        when(conversationRepository.findMessagesBefore(CONVERSATION, null, 30))
+                .thenReturn(List.of());
+
+        service.history(OWNER, CONVERSATION, null, 0);
+        service.history(OWNER, CONVERSATION, null, 5000);
+
+        verify(conversationRepository, times(2)).findMessagesBefore(CONVERSATION, null, 30);
+    }
+
+    /** 重试要先找得到那条没被回答的提问：最新一条就是它。 */
+    @Test
+    void theLastMessageIsTheRetryQuestion() {
+        Instant now = Instant.now();
+        Message question = Message.customer(CONVERSATION, "帮我下单", now);
+        when(conversationRepository.findLastMessage(CONVERSATION))
+                .thenReturn(Optional.of(question));
+
+        assertThat(service.lastMessage(CONVERSATION)).contains(question);
     }
 
     private static Conversation conversation(Long customerId) {

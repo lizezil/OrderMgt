@@ -2,7 +2,9 @@ package com.example.ordermgt.assistant.infrastructure.ai.tools;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -13,7 +15,9 @@ import com.example.ordermgt.assistant.domain.ToolSpec;
 import com.example.ordermgt.catalog.domain.CatalogRepository;
 import com.example.ordermgt.order.application.LineCommand;
 import com.example.ordermgt.order.application.OrderService;
+import com.example.ordermgt.order.domain.Money;
 import com.example.ordermgt.order.domain.Order;
+import com.example.ordermgt.order.domain.OrderFilter;
 import com.example.ordermgt.order.domain.OrderLine;
 import com.example.ordermgt.order.domain.OrderNumber;
 import com.example.ordermgt.order.domain.OrderStatus;
@@ -139,8 +143,7 @@ class OrderToolSpecsTest {
 
     @Test
     void queryMyOrdersReturnsOnlyCurrentCustomerOrderSummaries() {
-        when(orderService.listByCustomer(CUSTOMER, 1, 20))
-                .thenReturn(PageResult.of(List.of(order(OrderStatus.CREATED)), 1, 1, 20));
+        stubOrders(List.of(order(OrderStatus.CREATED)), 1, "19.90");
 
         ToolResult result = execute("queryMyOrders", "{}");
 
@@ -150,17 +153,16 @@ class OrderToolSpecsTest {
 
     @Test
     void queryMyOrdersHonoursALimitAndStillReportsTheWholeTotal() {
-        when(orderService.listByCustomer(CUSTOMER, 1, 1))
-                .thenReturn(PageResult.of(List.of(order(OrderStatus.CREATED)), 3, 1, 1));
+        stubOrders(List.of(order(OrderStatus.CREATED)), 3, "59.70");
 
         ToolResult result = execute("queryMyOrders", "{\"limit\":1}");
 
         // 顾客问"最近一次下单"时，模型要能只取一张——这是它此前唯一办不到的事。
-        verify(orderService).listByCustomer(CUSTOMER, 1, 1);
-        // limit 只裁列出的张数，"一共几张"仍是全库的 total。
+        verify(orderService).listByCustomer(eq(CUSTOMER), any(), eq(Paging.FIRST_PAGE), eq(1L));
+        // limit 只裁列出的张数；"一共几张"与"合计多少"都是全库的，不随这一页缩水。
         assertThat(result.payloadJson()).startsWith("{\"total\":3,\"returned\":1,");
         assertThat(report("queryMyOrders", result))
-                .startsWith("你名下共 3 张订单，以下只列出最近 1 张，最近一张是 `ORD-1`：");
+                .startsWith("你名下共 3 张订单，合计 ¥59.70；这里列出最近 1 张，还有 2 张未列出，" + "最近一张是 `ORD-1`：");
     }
 
     @Test
@@ -170,6 +172,105 @@ class OrderToolSpecsTest {
                 .contains("\"limit\"")
                 .contains("\"minimum\":1")
                 .contains("\"maximum\":" + Paging.MAX_SIZE);
+    }
+
+    /** US-4.5：状态与时间区间作为收窄条件交给服务端，并且**只**在这位客户的订单里筛。 */
+    @Test
+    void queryMyOrdersPassesStatusAndDateRangeDownAsFilters() {
+        stubOrders(List.of(), 0, "0.00");
+        ArgumentCaptor<OrderFilter> filter = ArgumentCaptor.forClass(OrderFilter.class);
+
+        execute(
+                "queryMyOrders",
+                "{\"status\":\"CANCELLED\",\"from\":\"2026-09-01\",\"to\":\"2026-09-30\"}");
+
+        verify(orderService)
+                .listByCustomer(eq(CUSTOMER), filter.capture(), eq(Paging.FIRST_PAGE), eq(20L));
+        assertThat(filter.getValue().status()).isEqualTo(OrderStatus.CANCELLED);
+        // 两端都按顾客本地的自然日：起于 9 月 1 日零点，止于 9 月 30 日那一天的次日零点。
+        assertThat(filter.getValue().fromInclusive())
+                .isEqualTo(Instant.parse("2026-08-31T16:00:00Z"));
+        assertThat(filter.getValue().toExclusive())
+                .isEqualTo(Instant.parse("2026-09-30T16:00:00Z"));
+        // 汇总问的是同一组条件：数字与清单必须说的是同一批订单。
+        verify(orderService).totalAmountByCustomer(eq(CUSTOMER), eq(filter.getValue()));
+    }
+
+    @Test
+    void queryMyOrdersWithoutConditionsNarrowsNothing() {
+        stubOrders(List.of(), 0, "0.00");
+        ArgumentCaptor<OrderFilter> filter = ArgumentCaptor.forClass(OrderFilter.class);
+
+        execute("queryMyOrders", "{}");
+
+        verify(orderService).listByCustomer(eq(CUSTOMER), filter.capture(), anyLong(), anyLong());
+        assertThat(filter.getValue().isEmpty()).isTrue();
+    }
+
+    /** 非法状态不钳制：钳成 CREATED 会把顾客问的东西悄悄换掉，而模型永远不知道自己被改了。 */
+    @Test
+    void queryMyOrdersRejectsAnUnknownStatusInsteadOfClampingIt() {
+        assertThatThrownBy(() -> execute("queryMyOrders", "{\"status\":\"SHIPPED\"}"))
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).errorCode())
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+    }
+
+    @Test
+    void queryMyOrdersRejectsAnUnreadableDate() {
+        assertThatThrownBy(() -> execute("queryMyOrders", "{\"from\":\"last monday\"}"))
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).errorCode())
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+    }
+
+    @Test
+    void queryMyOrdersRejectsARangeThatEndsBeforeItStarts() {
+        assertThatThrownBy(
+                        () ->
+                                execute(
+                                        "queryMyOrders",
+                                        "{\"from\":\"2026-09-30\",\"to\":\"2026-09-01\"}"))
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).errorCode())
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+    }
+
+    /** 收窄后的引导句说清两件事：这是按什么筛的，以及还有多少张没列出来（US-4.5）。 */
+    @Test
+    void aNarrowedListNamesItsConditionsAndStillOffersAWayOut() {
+        stubOrders(
+                List.of(
+                        order("ORD-7", OrderStatus.CANCELLED),
+                        order("ORD-6", OrderStatus.CANCELLED)),
+                5,
+                "99.50");
+
+        String rendered =
+                report("queryMyOrders", execute("queryMyOrders", "{\"status\":\"CANCELLED\"}"));
+
+        assertThat(rendered)
+                .startsWith("你名下状态为已取消的共 5 张订单，合计 ¥99.50；这里列出最近 2 张，" + "还有 3 张未列出，最近一张是 `ORD-7`：");
+        assertThat(rendered).contains("`ORD-7` · 2026-10-15 14:41 · 已取消 · ¥19.90");
+    }
+
+    @Test
+    void aNarrowedListWithNoHitsSaysSoInTheCustomersTerms() {
+        stubOrders(List.of(), 0, "0.00");
+
+        assertThat(report("queryMyOrders", execute("queryMyOrders", "{\"status\":\"COMPLETED\"}")))
+                .isEqualTo("你名下没有状态为已完成的订单。");
+    }
+
+    @Test
+    void queryMyOrdersOffersTheNarrowingKnobsToTheModelInTheSchema() {
+        assertThat(specs.get("queryMyOrders").inputSchemaJson())
+                .contains("\"status\"")
+                .contains("\"CREATED\"")
+                .contains("\"COMPLETED\"")
+                .contains("\"CANCELLED\"")
+                .contains("\"from\"")
+                .contains("\"to\"");
     }
 
     @Test
@@ -251,29 +352,28 @@ class OrderToolSpecsTest {
 
     @Test
     void anEmptyOrderListSaysSoInsteadOfShowingAnEmptyArray() {
-        when(orderService.listByCustomer(CUSTOMER, 1, 20))
-                .thenReturn(PageResult.of(List.of(), 0, 1, 20));
+        stubOrders(List.of(), 0, "0.00");
 
         ToolResult result = execute("queryMyOrders", "{}");
 
         assertThat(report("queryMyOrders", result)).isEqualTo("你名下还没有订单。");
         // 空列表也带着 total：机器那一份任何时候都说得出"一共几张"。
-        assertThat(result.payloadJson()).isEqualTo("{\"total\":0,\"returned\":0,\"orders\":[]}");
+        assertThat(result.payloadJson())
+                .isEqualTo("{\"total\":0,\"returned\":0,\"totalAmount\":0.00,\"orders\":[]}");
     }
 
     @Test
     void theOrderListIsNarratedWithChineseStatusAndDollarAmounts() {
-        when(orderService.listByCustomer(CUSTOMER, 1, 20))
-                .thenReturn(PageResult.of(List.of(order(OrderStatus.CREATED)), 1, 1, 20));
+        stubOrders(List.of(order(OrderStatus.CREATED)), 1, "19.90");
 
         String rendered = report("queryMyOrders", execute("queryMyOrders", "{}"));
 
         // 报告是负载的纯投影：字段名换成人话，机器标识（订单号、sku）留在行内代码里。
-        // 引导句点出最近一张，块首那行报出下单时间——顾客问"最近一次"时不必自己数顺序。
+        // 引导句点出最近一张与合计，块首那行报出下单时间——顾客问"最近一次"时不必自己数顺序。
         assertThat(rendered)
                 .isEqualTo(
                         """
-                        你名下有 1 张订单，最近一张是 `ORD-1`：
+                        你名下共 1 张订单，合计 ¥19.90，最近一张是 `ORD-1`：
 
                         `ORD-1` · 2026-10-15 14:41 · 已创建 · ¥19.90
                         - `WIDGET-01` Widget × 1 = ¥19.90""");
@@ -281,20 +381,17 @@ class OrderToolSpecsTest {
 
     @Test
     void everyStatusHasACustomerFacingLabel() {
-        when(orderService.listByCustomer(CUSTOMER, 1, 20))
-                .thenReturn(
-                        PageResult.of(
-                                List.of(
-                                        order("ORD-1", OrderStatus.CREATED),
-                                        order("ORD-2", OrderStatus.COMPLETED),
-                                        order("ORD-3", OrderStatus.CANCELLED)),
-                                3,
-                                1,
-                                20));
+        stubOrders(
+                List.of(
+                        order("ORD-1", OrderStatus.CREATED),
+                        order("ORD-2", OrderStatus.COMPLETED),
+                        order("ORD-3", OrderStatus.CANCELLED)),
+                3,
+                "59.70");
 
         String rendered = report("queryMyOrders", execute("queryMyOrders", "{}"));
 
-        assertThat(rendered).contains("你名下有 3 张订单，最近一张是 `ORD-1`：");
+        assertThat(rendered).contains("你名下共 3 张订单，合计 ¥59.70，最近一张是 `ORD-1`：");
         assertThat(rendered).contains("`ORD-1` · 2026-10-15 14:41 · 已创建 · ¥19.90");
         assertThat(rendered).contains("`ORD-2` · 2026-10-15 14:41 · 已完成 · ¥19.90");
         assertThat(rendered).contains("`ORD-3` · 2026-10-15 14:41 · 已取消 · ¥19.90");
@@ -303,21 +400,18 @@ class OrderToolSpecsTest {
     @Test
     void aFullPageSaysItIsOnlyAPageNotTheWholeHistory() {
         int page = (int) Paging.DEFAULT_SIZE;
-        when(orderService.listByCustomer(CUSTOMER, 1, page))
-                .thenReturn(
-                        PageResult.of(
-                                IntStream.range(0, page)
-                                        .mapToObj(
-                                                index -> order("ORD-" + index, OrderStatus.CREATED))
-                                        .toList(),
-                                137,
-                                1,
-                                page));
+        stubOrders(
+                IntStream.range(0, page)
+                        .mapToObj(index -> order("ORD-" + index, OrderStatus.CREATED))
+                        .toList(),
+                137,
+                "2726.30");
 
         String rendered = report("queryMyOrders", execute("queryMyOrders", "{}"));
 
-        // 一页不是全部历史：这句话此前靠在末尾补一行，现在它在引导句里就把"共 137、列了 20"说清。
-        assertThat(rendered).startsWith("你名下共 137 张订单，以下只列出最近 20 张，最近一张是 `ORD-0`：");
+        // 一页不是全部历史：这句话在引导句里就把"共 137、列了 20、还有 117 张"说清。
+        assertThat(rendered)
+                .startsWith("你名下共 137 张订单，合计 ¥2726.30；这里列出最近 20 张，还有 117 张未列出，" + "最近一张是 `ORD-0`：");
         assertThat(rendered).doesNotContain("你名下有 20 张订单");
     }
 
@@ -343,13 +437,20 @@ class OrderToolSpecsTest {
                 report(
                         "getOrderByNumber",
                         execute("getOrderByNumber", "{\"orderNumber\":\"ORD-1\"}"));
-        when(orderService.listByCustomer(CUSTOMER, 1, 20))
-                .thenReturn(PageResult.of(List.of(order(OrderStatus.CREATED)), 1, 1, 20));
+        stubOrders(List.of(order(OrderStatus.CREATED)), 1, "19.90");
         String firstBlockOfList =
                 report("queryMyOrders", execute("queryMyOrders", "{}")).split("\n\n")[1];
 
         // 同一张单在两条路上必须是同一个块（US-1.3：顾客不必换一种读法）。
         assertThat(firstBlockOfList).isEqualTo(single);
+    }
+
+    /** 助手那一次只读查询：一页订单，加上命中**全体**的合计（US-4.5 的汇总由服务端算，模型不参与加总）。 一页的条数不参与合计——分页缩水不该让汇总跟着缩水。 */
+    private void stubOrders(List<Order> listed, long hits, String totalAmount) {
+        when(orderService.listByCustomer(eq(CUSTOMER), any(), eq(Paging.FIRST_PAGE), anyLong()))
+                .thenReturn(PageResult.of(listed, hits, 1, Math.max(listed.size(), 1)));
+        when(orderService.totalAmountByCustomer(eq(CUSTOMER), any()))
+                .thenReturn(Money.of(new BigDecimal(totalAmount)));
     }
 
     @Test

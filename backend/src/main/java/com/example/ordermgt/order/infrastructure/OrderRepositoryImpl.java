@@ -1,14 +1,19 @@
 package com.example.ordermgt.order.infrastructure;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.example.ordermgt.order.domain.Money;
 import com.example.ordermgt.order.domain.Order;
+import com.example.ordermgt.order.domain.OrderFilter;
 import com.example.ordermgt.order.domain.OrderLine;
 import com.example.ordermgt.order.domain.OrderNumber;
 import com.example.ordermgt.order.domain.OrderRepository;
 import com.example.ordermgt.shared.api.ErrorCode;
 import com.example.ordermgt.shared.error.BusinessException;
+import java.math.BigDecimal;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Repository;
@@ -68,22 +73,60 @@ public class OrderRepositoryImpl implements OrderRepository {
     }
 
     @Override
-    public List<Order> findByCustomer(Long customerId, long offset, long limit) {
+    public List<Order> findByCustomer(
+            Long customerId, OrderFilter filter, long offset, long limit) {
         long safeSize = limit > 0 ? limit : 20;
         long current = (offset / safeSize) + 1;
         Page<OrderPO> page =
                 orderMapper.selectPage(
                         new Page<>(current, safeSize),
-                        Wrappers.<OrderPO>lambdaQuery()
-                                .eq(OrderPO::getCustomerId, customerId)
-                                .orderByDesc(OrderPO::getCreatedAt));
+                        filterOf(customerId, filter).orderByDesc(OrderPO::getCreatedAt));
         return page.getRecords().stream().map(this::toDomain).toList();
     }
 
     @Override
-    public long countByCustomer(Long customerId) {
-        return orderMapper.selectCount(
-                Wrappers.<OrderPO>lambdaQuery().eq(OrderPO::getCustomerId, customerId));
+    public long countByCustomer(Long customerId, OrderFilter filter) {
+        return orderMapper.selectCount(filterOf(customerId, filter));
+    }
+
+    @Override
+    public Money sumAmountsByCustomer(Long customerId, OrderFilter filter) {
+        List<Long> hitIds =
+                orderMapper.selectList(filterOf(customerId, filter).select(OrderPO::getId)).stream()
+                        .map(OrderPO::getId)
+                        .toList();
+        if (hitIds.isEmpty()) {
+            return Money.ZERO;
+        }
+        // 合计从明细快照现算，和列表里逐行显示的那些数字同源（US-4.2）：读 orders.total_amount 更省事，
+        // 但那是一列写进去就没人再读的数据，汇总挂在它身上等于把一句话建在一份没人核对过的账上。
+        BigDecimal total =
+                lineMapper
+                        .selectList(
+                                Wrappers.<OrderLinePO>lambdaQuery()
+                                        .in(OrderLinePO::getOrderId, hitIds)
+                                        .select(OrderLinePO::getLineAmount))
+                        .stream()
+                        .map(OrderLinePO::getLineAmount)
+                        .filter(Objects::nonNull)
+                        .reduce(BigDecimal.ZERO, BigDecimal::add);
+        return Money.of(total);
+    }
+
+    /** 客户 id 与收窄条件合成一个查询：身份不是条件，它每次都在。 */
+    private static LambdaQueryWrapper<OrderPO> filterOf(Long customerId, OrderFilter filter) {
+        LambdaQueryWrapper<OrderPO> query =
+                Wrappers.<OrderPO>lambdaQuery().eq(OrderPO::getCustomerId, customerId);
+        if (filter.status() != null) {
+            query.eq(OrderPO::getStatus, filter.status().name());
+        }
+        if (filter.fromInclusive() != null) {
+            query.ge(OrderPO::getCreatedAt, filter.fromInclusive());
+        }
+        if (filter.toExclusive() != null) {
+            query.lt(OrderPO::getCreatedAt, filter.toExclusive());
+        }
+        return query;
     }
 
     private Order toDomain(OrderPO po) {

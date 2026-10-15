@@ -20,6 +20,14 @@ public interface ConversationRepository {
     /** The last {@code limit} messages in chronological order (oldest first). */
     List<Message> findRecentMessages(Long conversationId, int limit);
 
-    /** Full history in chronological order, for the frontend to backfill. */
-    List<Message> findAllMessages(Long conversationId);
+    /**
+     * One segment of history: up to {@code limit} messages strictly older than {@code beforeId} --
+     * the newest {@code limit} when {@code beforeId} is null -- in chronological order (US-2.7).
+     * The cursor is an id, never an offset, so a message arriving mid-thread cannot shift the
+     * window and make a page repeat or skip a line.
+     */
+    List<Message> findMessagesBefore(Long conversationId, Long beforeId, int limit);
+
+    /** The conversation's newest message, or empty when it has none (the retry path's question). */
+    Optional<Message> findLastMessage(Long conversationId);
 }

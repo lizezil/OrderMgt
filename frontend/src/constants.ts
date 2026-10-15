@@ -19,6 +19,14 @@ export const TOAST_DURATION_MS = 5000
 /** First id handed to a message that is not persisted yet; negative so it never collides. */
 export const LOCAL_MESSAGE_ID_START = -1
 
+/**
+ * How much of a conversation's history one read brings back (US-2.7). Mirrors the backend's
+ * `ConversationService.DEFAULT_HISTORY_LIMIT`, which is the size the server uses when the client
+ * sends none -- and the screen infers "there may be more above" from a full page, so the two
+ * numbers have to agree.
+ */
+export const HISTORY_PAGE_SIZE = 30
+
 /** Stream-failure reconciler: pause between history reads, and how many reads it makes. */
 export const RECONCILE_DELAY_MS = 1500
 export const RECONCILE_ATTEMPTS = 3

@@ -3,6 +3,7 @@ package com.example.ordermgt.assistant.application;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -39,12 +40,14 @@ import com.example.ordermgt.assistant.infrastructure.ai.prompt.AiPrompts;
 import com.example.ordermgt.assistant.infrastructure.ai.tools.OrderToolDefinitions;
 import com.example.ordermgt.catalog.domain.CatalogRepository;
 import com.example.ordermgt.order.application.OrderService;
+import com.example.ordermgt.order.domain.Money;
 import com.example.ordermgt.shared.api.ErrorCode;
 import com.example.ordermgt.shared.api.PageResult;
 import com.example.ordermgt.shared.error.BusinessException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -146,8 +149,9 @@ class AssistantServiceTest {
 
     @Test
     void readonlyToolsExecuteOnTheSpotAndCarryResultsIntoTheReply() {
-        when(orderService.listByCustomer(CUSTOMER, 1, 20))
+        when(orderService.listByCustomer(eq(CUSTOMER), any(), eq(1L), anyLong()))
                 .thenReturn(PageResult.of(List.of(), 0, 1, 20));
+        when(orderService.totalAmountByCustomer(eq(CUSTOMER), any())).thenReturn(Money.ZERO);
         when(aiInvocationRepository.save(any()))
                 .thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -165,19 +169,22 @@ class AssistantServiceTest {
                         tool -> {
                             assertThat(tool.name()).isEqualTo("queryMyOrders");
                             assertThat(tool.resultJson())
-                                    .isEqualTo("{\"total\":0,\"returned\":0,\"orders\":[]}");
+                                    .isEqualTo(
+                                            "{\"total\":0,\"returned\":0,\"totalAmount\":0.00,"
+                                                    + "\"orders\":[]}");
                         });
         // 顾客读到的是报告，不是负载：那一行 [工具名] {JSON} 从正文里消失了（ADR-0015）。
         assertThat(result.reply()).contains("Let me look up your own orders.", "你名下还没有订单。");
         assertThat(result.reply()).doesNotContain("[queryMyOrders]", "{\"total\"");
-        verify(orderService).listByCustomer(CUSTOMER, 1, 20);
+        verify(orderService).listByCustomer(eq(CUSTOMER), any(), eq(1L), eq(20L));
         verify(pendingActionRepository, never()).save(any());
     }
 
     @Test
     void aReadonlyTurnWithNoModelProseStillAnswersTheCustomer() {
-        when(orderService.listByCustomer(CUSTOMER, 1, 20))
+        when(orderService.listByCustomer(eq(CUSTOMER), any(), eq(1L), anyLong()))
                 .thenReturn(PageResult.of(List.of(), 0, 1, 20));
+        when(orderService.totalAmountByCustomer(eq(CUSTOMER), any())).thenReturn(Money.ZERO);
         when(aiInvocationRepository.save(any()))
                 .thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -200,8 +207,9 @@ class AssistantServiceTest {
     @Test
     void illegalReadonlyArgumentsAreFedBackToTheModelAndReAskedOnce() {
         givenANewConversation();
-        when(orderService.listByCustomer(CUSTOMER, 1, 1))
+        when(orderService.listByCustomer(eq(CUSTOMER), any(), eq(1L), eq(1L)))
                 .thenReturn(PageResult.of(List.of(), 0, 1, 1));
+        when(orderService.totalAmountByCustomer(eq(CUSTOMER), any())).thenReturn(Money.ZERO);
         when(aiAssistantPort.respond(eq(CUSTOMER), any(), anyList()))
                 .thenReturn(limitTurn("", "{\"limit\":5000}"), limitTurn("", "{\"limit\":1}"));
         when(aiInvocationRepository.save(any()))
@@ -237,8 +245,9 @@ class AssistantServiceTest {
     @Test
     void aModelThatAlreadySpokeIsRepairedInsteadOfReAsked() {
         givenANewConversation();
-        when(orderService.listByCustomer(CUSTOMER, 1, 20))
+        when(orderService.listByCustomer(eq(CUSTOMER), any(), eq(1L), anyLong()))
                 .thenReturn(PageResult.of(List.of(), 0, 1, 20));
+        when(orderService.totalAmountByCustomer(eq(CUSTOMER), any())).thenReturn(Money.ZERO);
         when(aiAssistantPort.respond(eq(CUSTOMER), any(), anyList()))
                 .thenReturn(limitTurn("我看看你最近的一单。", "{\"limit\":5000}"));
         when(aiInvocationRepository.save(any()))
@@ -261,8 +270,9 @@ class AssistantServiceTest {
     @Test
     void theReAskIsBoundedAndTheSecondRefusalIsRepairedNotRetried() {
         givenANewConversation();
-        when(orderService.listByCustomer(CUSTOMER, 1, 20))
+        when(orderService.listByCustomer(eq(CUSTOMER), any(), eq(1L), anyLong()))
                 .thenReturn(PageResult.of(List.of(), 0, 1, 20));
+        when(orderService.totalAmountByCustomer(eq(CUSTOMER), any())).thenReturn(Money.ZERO);
         when(aiAssistantPort.respond(eq(CUSTOMER), any(), anyList()))
                 .thenReturn(
                         limitTurn("", "{\"limit\":5000}"), limitTurn("", "{\"limit\":\"three\"}"));
@@ -299,7 +309,7 @@ class AssistantServiceTest {
         assertThat(result.reply()).isEqualTo(AiPrompts.OFF_SCRIPT_REPLY);
         assertThat(result.executed()).isEmpty();
         assertThat(result.actions()).isEmpty();
-        verify(orderService, never()).listByCustomer(any(), anyLong(), anyLong());
+        verify(orderService, never()).listByCustomer(any(), any(), anyLong(), anyLong());
         verify(pendingActionRepository, never()).save(any());
         verify(conversationService)
                 .appendAssistantMessage(CONVERSATION, AiPrompts.OFF_SCRIPT_REPLY);
@@ -717,6 +727,74 @@ class AssistantServiceTest {
         assertThat(memories.getAllValues().get(1))
                 .extracting(ChatMessage::content)
                 .containsExactly("second thread");
+    }
+
+    /** 重试复用那条提问（US-2.6）：不再 append 一句，记忆窗口就停在它上面，模型看到的是同一轮。 */
+    @Test
+    void aRetryReRunsTheLastQuestionWithoutAppendingIt() {
+        givenAnUnansweredQuestion();
+
+        AssistantService.TurnContext retry = service.prepareRetry(CUSTOMER, CONVERSATION);
+
+        assertThat(retry.conversation().getId()).isEqualTo(CONVERSATION);
+        assertThat(retry.memory()).extracting(ChatMessage::content).containsExactly("查询最近一次下单");
+        verify(conversationService, never()).appendCustomerMessage(any(), any(), any());
+    }
+
+    /** 一句提问都没有：没什么可重试的，拒绝而不是凭空跑一轮。 */
+    @Test
+    void aRetryWithNoQuestionIsRefused() {
+        when(conversationService.getOwned(CUSTOMER, CONVERSATION)).thenReturn(conversation());
+        when(conversationService.lastMessage(CONVERSATION)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.prepareRetry(CUSTOMER, CONVERSATION))
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).errorCode())
+                .isEqualTo(ErrorCode.CONFLICT);
+        verify(conversationService, never()).memory(any(), anyInt());
+    }
+
+    /** 上一轮已经有回复了：再问一遍是另一种操作，拒绝，不把已回答的一轮重发。 */
+    @Test
+    void aRetryAfterAReplyIsRefused() {
+        when(conversationService.getOwned(CUSTOMER, CONVERSATION)).thenReturn(conversation());
+        when(conversationService.lastMessage(CONVERSATION))
+                .thenReturn(
+                        Optional.of(Message.assistant(CONVERSATION, "你有 3 张订单。", Instant.now())));
+
+        assertThatThrownBy(() -> service.prepareRetry(CUSTOMER, CONVERSATION))
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).errorCode())
+                .isEqualTo(ErrorCode.CONFLICT);
+    }
+
+    /** 重试仍计为新的一次模型调用（US-2.6）：新 Run、新审计行，与上一次各自一行。 */
+    @Test
+    void aRetryIsRecordedAsAFreshModelCall() {
+        givenAnUnansweredQuestion();
+        when(aiInvocationRepository.save(any()))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+        ArgumentCaptor<Run> runs = ArgumentCaptor.forClass(Run.class);
+
+        AssistantService.TurnContext retry = service.prepareRetry(CUSTOMER, CONVERSATION);
+        service.executeTurn(
+                retry,
+                memory -> new AssistantTurn("你名下还没有订单。", List.of(), AiUsage.EMPTY, "qwen-max", 5));
+
+        verify(runRepository, times(2)).save(runs.capture());
+        assertThat(runs.getAllValues().get(0).status()).isEqualTo(RunStatus.RUNNING);
+        assertThat(runs.getAllValues().get(1).status()).isEqualTo(RunStatus.COMPLETED);
+        verify(aiInvocationRepository).save(any(AiInvocation.class));
+        verify(conversationService, never()).appendCustomerMessage(any(), any(), any());
+    }
+
+    /** 那段"有问无答"的会话：最新一条就是客户没被回答的提问。 */
+    private void givenAnUnansweredQuestion() {
+        when(conversationService.getOwned(CUSTOMER, CONVERSATION)).thenReturn(conversation());
+        when(conversationService.lastMessage(CONVERSATION))
+                .thenReturn(Optional.of(Message.customer(CONVERSATION, "查询最近一次下单", Instant.now())));
+        when(conversationService.memory(CONVERSATION, MEMORY_WINDOW))
+                .thenReturn(List.of(new ChatMessage(Role.CUSTOMER, "查询最近一次下单")));
     }
 
     private static AssistantService.TurnContext context() {

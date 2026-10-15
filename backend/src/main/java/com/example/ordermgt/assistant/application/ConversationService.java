@@ -16,6 +16,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
@@ -186,11 +187,19 @@ public class ConversationService {
                 .toList();
     }
 
-    /** Full history, with each message's card (if it had one) resolved to its current state. */
+    /**
+     * One segment of history, with each message's card (if it had one) resolved to its current
+     * state. {@code beforeId} is the id cursor for scrolling back through a long thread -- null
+     * means "the newest segment" (US-2.7) -- and it is an id, not an offset, so a message that
+     * arrives while the customer is reading cannot shift the window under them.
+     */
     @Transactional(readOnly = true)
-    public List<MessageView> history(Long customerId, Long conversationId) {
+    public List<MessageView> history(
+            Long customerId, Long conversationId, Long beforeId, int limit) {
         getOwned(customerId, conversationId);
-        List<Message> messages = conversationRepository.findAllMessages(conversationId);
+        List<Message> messages =
+                conversationRepository.findMessagesBefore(
+                        conversationId, beforeId, clampLimit(limit));
 
         List<Long> actionIds =
                 messages.stream()
@@ -209,6 +218,28 @@ public class ConversationService {
         return messages.stream()
                 .map(message -> new MessageView(message, cards.get(message.pendingActionId())))
                 .toList();
+    }
+
+    /**
+     * How many messages one history segment carries when the caller does not say (US-2.7). The
+     * segment is the newest one by default, so opening a three-month-old thread shows what the
+     * customer most wants to see instead of replaying every line ever written.
+     */
+    public static final int DEFAULT_HISTORY_LIMIT = 30;
+
+    /** A bigger ask than this is clamped back to the default, never trusted. */
+    public static final int MAX_HISTORY_LIMIT = 100;
+
+    private static int clampLimit(int limit) {
+        return limit < 1 || limit > MAX_HISTORY_LIMIT ? DEFAULT_HISTORY_LIMIT : limit;
+    }
+
+    /**
+     * The conversation's newest message, or empty when it has none -- the retry path's question.
+     */
+    @Transactional(readOnly = true)
+    public Optional<Message> lastMessage(Long conversationId) {
+        return conversationRepository.findLastMessage(conversationId);
     }
 
     /**

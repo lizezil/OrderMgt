@@ -8,6 +8,7 @@ import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpSession;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
+import java.time.Instant;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -49,6 +50,8 @@ public class AuthController {
             // The filter chain reads this same repository, so the session (and every later
             // request) sees the identity that was just established.
             securityContextRepository.saveContext(context, httpRequest, httpResponse);
+            // 记下这一段的起点：绝对上限（SessionLifetimeFilter）从这一刻算起，不随每次请求续命。
+            httpRequest.getSession().setAttribute(SessionLifetimeFilter.STARTED_AT, Instant.now());
             return ApiResponse.ok(Map.of("customerId", request.customerId()));
         } catch (AuthenticationException ex) {
             // Unknown customer and wrong PIN share one message: the endpoint must not confirm

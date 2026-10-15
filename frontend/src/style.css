@@ -490,6 +490,14 @@ textarea {
   text-align: center;
 }
 
+/* A long thread opens on its newest segment: what is above it is one click away (US-2.7). Centred
+   and quiet -- a way back, not a call to action. */
+.older {
+  display: flex;
+  justify-content: center;
+  margin: 0 0 20px;
+}
+
 /* ---------- the conversation ---------- */
 
 /* Who is speaking is a position before it is a word: the customer sits on the right in ink, the

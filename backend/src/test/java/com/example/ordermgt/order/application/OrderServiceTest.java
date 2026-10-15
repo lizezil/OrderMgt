@@ -11,7 +11,9 @@ import static org.mockito.Mockito.when;
 
 import com.example.ordermgt.catalog.domain.CatalogItem;
 import com.example.ordermgt.catalog.domain.CatalogRepository;
+import com.example.ordermgt.order.domain.Money;
 import com.example.ordermgt.order.domain.Order;
+import com.example.ordermgt.order.domain.OrderFilter;
 import com.example.ordermgt.order.domain.OrderLine;
 import com.example.ordermgt.order.domain.OrderNumber;
 import com.example.ordermgt.order.domain.OrderRepository;
@@ -135,30 +137,33 @@ class OrderServiceTest {
 
     @Test
     void listOnlyQueriesTheCurrentCustomersOrders() {
-        when(orderRepository.findByCustomer(eq(7L), anyLong(), anyLong())).thenReturn(List.of());
-        when(orderRepository.countByCustomer(7L)).thenReturn(0L);
+        when(orderRepository.findByCustomer(eq(7L), any(), anyLong(), anyLong()))
+                .thenReturn(List.of());
+        when(orderRepository.countByCustomer(eq(7L), any())).thenReturn(0L);
 
         service.listByCustomer(7L, 3, 50);
 
-        verify(orderRepository).findByCustomer(7L, 100L, 50L);
+        verify(orderRepository).findByCustomer(7L, OrderFilter.NONE, 100L, 50L);
     }
 
     @Test
     void invalidPagingParamsAreClampedToSafeValues() {
-        when(orderRepository.findByCustomer(eq(7L), anyLong(), anyLong())).thenReturn(List.of());
-        when(orderRepository.countByCustomer(7L)).thenReturn(0L);
+        when(orderRepository.findByCustomer(eq(7L), any(), anyLong(), anyLong()))
+                .thenReturn(List.of());
+        when(orderRepository.countByCustomer(eq(7L), any())).thenReturn(0L);
 
         PageResult<Order> result = service.listByCustomer(7L, 0, 500);
 
-        verify(orderRepository).findByCustomer(7L, 0L, 20L);
+        verify(orderRepository).findByCustomer(7L, OrderFilter.NONE, 0L, 20L);
         assertThat(result.page()).isEqualTo(1);
         assertThat(result.size()).isEqualTo(20);
     }
 
     @Test
     void anOverflowingPageIsClampedInsteadOfServingTheFirstPageUnderABogusNumber() {
-        when(orderRepository.findByCustomer(eq(7L), anyLong(), anyLong())).thenReturn(List.of());
-        when(orderRepository.countByCustomer(7L)).thenReturn(0L);
+        when(orderRepository.findByCustomer(eq(7L), any(), anyLong(), anyLong()))
+                .thenReturn(List.of());
+        when(orderRepository.countByCustomer(eq(7L), any())).thenReturn(0L);
 
         PageResult<Order> result = service.listByCustomer(7L, Long.MAX_VALUE, 20);
 
@@ -167,8 +172,31 @@ class OrderServiceTest {
         // never terminate. The page must be capped where the offset cannot overflow.
         verify(orderRepository)
                 .findByCustomer(
-                        eq(7L), org.mockito.ArgumentMatchers.longThat(o -> o >= 0), eq(20L));
+                        eq(7L),
+                        eq(OrderFilter.NONE),
+                        org.mockito.ArgumentMatchers.longThat(o -> o >= 0),
+                        eq(20L));
         assertThat(result.page()).isLessThanOrEqualTo(10_000_000L);
+    }
+
+    /** US-4.5：收窄条件一路交到仓储层，客户 id 之外没有任何东西能换到别人的订单。 */
+    @Test
+    void narrowingConditionsReachTheRepositoryAlongsideTheCustomer() {
+        OrderFilter filter =
+                new OrderFilter(
+                        OrderStatus.CANCELLED,
+                        Instant.parse("2026-09-01T00:00:00Z"),
+                        Instant.parse("2026-10-01T00:00:00Z"));
+        when(orderRepository.findByCustomer(eq(7L), any(), anyLong(), anyLong()))
+                .thenReturn(List.of());
+        when(orderRepository.countByCustomer(eq(7L), any())).thenReturn(0L);
+        when(orderRepository.sumAmountsByCustomer(eq(7L), any())).thenReturn(Money.ZERO);
+
+        service.listByCustomer(7L, filter, 1, 20);
+        service.totalAmountByCustomer(7L, filter);
+
+        verify(orderRepository).findByCustomer(7L, filter, 0L, 20L);
+        verify(orderRepository).sumAmountsByCustomer(7L, filter);
     }
 
     @Test

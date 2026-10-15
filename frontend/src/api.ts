@@ -163,15 +163,23 @@ export interface ChatStreamHandlers {
  * will never run. An `error` event fails the promise; a `dropped` one rejects with {@link
  * QUEUE_DROPPED}, and a `cancelled` one with {@link RUN_CANCELLED} -- both decisions rather than
  * failures, handled without a toast.
+ *
+ * <p>{@code retry} asks the server to re-run the conversation's last unanswered question instead of
+ * appending the message a second time (US-2.6): the words are already in the transcript, and a
+ * duplicate reads to the model as "the customer did not understand". {@code message} still has to
+ * travel -- the endpoint carries it in the query string -- but on a retry it is the same question
+ * the server finds by itself.
  */
 export async function chatStream(
   message: string,
   conversationId: number,
   handlers: ChatStreamHandlers,
   signal?: AbortSignal,
+  retry = false,
 ): Promise<ChatResponse> {
   const response = await fetch(
-    `/api/assistant/conversations/${conversationId}/stream?message=${encodeURIComponent(message)}`,
+    `/api/assistant/conversations/${conversationId}/stream?message=${encodeURIComponent(message)}` +
+      (retry ? '&retry=true' : ''),
     {
       headers: { Accept: 'text/event-stream' },
       credentials: 'same-origin',
@@ -410,8 +418,19 @@ export const api = {
       method: 'POST',
     }),
 
-  history: (conversationId: number) =>
-    request<Message[]>(`/api/assistant/conversations/${conversationId}/messages`),
+  /**
+   * One segment of a conversation's history, newest segment first (US-2.7). `beforeId` is the id
+   * cursor for scrolling back -- the oldest message the caller already holds -- and it is an id, not
+   * an offset, so a message that lands while the customer is reading cannot shift the window under
+   * them. The server clamps and defaults the page size; the caller compares what it got against the
+   * history page size in `constants` to know whether anything older can still exist.
+   */
+  history: (conversationId: number, beforeId?: number) =>
+    request<Message[]>(
+      `/api/assistant/conversations/${conversationId}/messages${
+        beforeId === undefined ? '' : `?beforeId=${beforeId}`
+      }`,
+    ),
 
   /** One call covers both "continue this thread" and "start a new one". */
   chat: (message: string, conversationId: number | null) =>

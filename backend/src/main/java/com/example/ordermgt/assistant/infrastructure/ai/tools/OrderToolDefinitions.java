@@ -12,6 +12,7 @@ import com.example.ordermgt.order.application.LineCommand;
 import com.example.ordermgt.order.application.OrderService;
 import com.example.ordermgt.order.domain.Money;
 import com.example.ordermgt.order.domain.Order;
+import com.example.ordermgt.order.domain.OrderFilter;
 import com.example.ordermgt.order.domain.OrderNumber;
 import com.example.ordermgt.order.domain.OrderStatus;
 import com.example.ordermgt.shared.api.ErrorCode;
@@ -21,7 +22,9 @@ import com.example.ordermgt.shared.error.BusinessException;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
@@ -75,18 +78,22 @@ public class OrderToolDefinitions {
         return List.of(
                 ToolSpec.readonly(
                         "queryMyOrders",
-                        "List the current customer's own orders (excluding other customers).",
+                        "List the current customer's own orders (excluding other customers). "
+                                + "Optional filters narrow the list; the summary always covers every "
+                                + "matching order, not just the ones listed.",
                         """
-                        {"type":"object","properties":{"limit":{"type":"integer","description":"How many of the most recent orders to list, 1-%d. Use 1 when the customer asks for their latest single order. Defaults to %d.","minimum":1,"maximum":%d}}}"""
+                        {"type":"object","properties":{"limit":{"type":"integer","description":"How many of the matching orders to list, 1-%d. Applied after the filters. Use 1 when the customer asks for their latest single order. Defaults to %d.","minimum":1,"maximum":%d},"status":{"type":"string","enum":["CREATED","COMPLETED","CANCELLED"],"description":"Only orders in this status. Omit for every status."},"from":{"type":"string","description":"Only orders placed on or after this date, YYYY-MM-DD."},"to":{"type":"string","description":"Only orders placed on or before this date, YYYY-MM-DD. Both ends are inclusive."}}}"""
                                 .formatted(
                                         Paging.DEFAULT_SIZE, Paging.DEFAULT_SIZE, Paging.MAX_SIZE),
                         ordersReport,
                         (customerId, args) -> {
-                            // total 必须跟着负载走：没有它，一页会被渲染成"你名下有 20 张订单"，
-                            // 而那是假话——顾客有 137 张。
+                            // 先按条件收窄、再取 N 张；汇总算的是**全部命中**，不是这一页——顾客问
+                            // "上个月一共多少钱"，那个数不能随 limit 变（US-4.5）。
+                            OrderFilter filter = readFilter(objectMapper, args);
                             PageResult<Order> page =
                                     orderService.listByCustomer(
                                             customerId,
+                                            filter,
                                             Paging.FIRST_PAGE,
                                             readLimit(objectMapper, args));
                             List<Map<String, Object>> rows =
@@ -96,6 +103,15 @@ public class OrderToolDefinitions {
                             Map<String, Object> envelope = new LinkedHashMap<>();
                             envelope.put("total", page.total());
                             envelope.put("returned", rows.size());
+                            envelope.put(
+                                    "totalAmount",
+                                    orderService
+                                            .totalAmountByCustomer(customerId, filter)
+                                            .amount());
+                            String scope = filterPhrase(filter);
+                            if (!scope.isEmpty()) {
+                                envelope.put("filteredBy", scope);
+                            }
                             envelope.put("orders", rows);
                             return ToolResult.of(write(objectMapper, envelope));
                         }),
@@ -327,18 +343,26 @@ public class OrderToolDefinitions {
     private static String renderOrderList(ObjectMapper mapper, String payloadJson) {
         JsonNode payload = payload(mapper, payloadJson);
         JsonNode orders = payload.path("orders");
+        String scope = payload.path("filteredBy").asText("");
         if (!orders.isArray() || orders.isEmpty()) {
-            return "你名下还没有订单。";
+            return scope.isEmpty() ? "你名下还没有订单。" : "你名下没有" + scope + "的订单。";
         }
         long total = payload.path("total").asLong(orders.size());
         StringBuilder sb = new StringBuilder();
-        sb.append(
-                        total > orders.size()
-                                ? "你名下共 " + total + " 张订单，以下只列出最近 " + orders.size() + " 张"
-                                : "你名下有 " + orders.size() + " 张订单")
-                .append("，最近一张是 `")
-                .append(orders.get(0).path("orderNo").asText(""))
-                .append("`：");
+        sb.append(scope.isEmpty() ? "你名下" : "你名下" + scope + "的")
+                .append("共 ")
+                .append(total)
+                .append(" 张订单，合计 ")
+                .append(money(payload.path("totalAmount")));
+        if (total > orders.size()) {
+            // 超过一页要给一条出路（US-4.5）：说得出还有多少张没列出，而不是把顾客堵在"最近 K 张"里。
+            sb.append("；这里列出最近 ")
+                    .append(orders.size())
+                    .append(" 张，还有 ")
+                    .append(total - orders.size())
+                    .append(" 张未列出");
+        }
+        sb.append("，最近一张是 `").append(orders.get(0).path("orderNo").asText("")).append("`：");
         for (JsonNode order : orders) {
             sb.append("\n\n").append(orderBlock(order));
         }
@@ -458,6 +482,74 @@ public class OrderToolDefinitions {
                     "limit must be an integer between 1 and " + Paging.MAX_SIZE);
         }
         return limit.longValue();
+    }
+
+    /**
+     * 收窄条件。模型可以无视 schema 与枚举，所以非法状态、写不通的日期、{@code to} 早于 {@code from} 都报 {@code
+     * VALIDATION_FAILED}（US-1.9 那套：拒绝并回喂重问），而不是钳成一个顾客没问过的答案。
+     */
+    private static OrderFilter readFilter(ObjectMapper mapper, String args) {
+        JsonNode root = root(mapper, args);
+        OrderStatus status = readStatus(root.path("status"));
+        Instant from = readDay(root.path("from"), "from", false);
+        Instant to = readDay(root.path("to"), "to", true);
+        if (from != null && to != null && !from.isBefore(to)) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "from must not be after to");
+        }
+        return new OrderFilter(status, from, to);
+    }
+
+    private static OrderStatus readStatus(JsonNode status) {
+        String raw = status.asText("");
+        if (raw.isBlank()) {
+            return null;
+        }
+        try {
+            return OrderStatus.valueOf(raw);
+        } catch (IllegalArgumentException ex) {
+            throw new BusinessException(
+                    ErrorCode.VALIDATION_FAILED, "unsupported order status: " + raw);
+        }
+    }
+
+    /**
+     * 一天翻成一个瞬时：{@code from} 取当天零点（闭），{@code to} 取**次日**零点（开）——"上个月下单的" 里的日期是顾客本地日历上的一天，不是 24
+     * 小时里的某个点。时区与订单号同一个 {@link OrderNumber#ZONE}， 否则顾客报的日期会和订单号上的日期差八小时。
+     */
+    private static Instant readDay(JsonNode day, String field, boolean exclusiveEnd) {
+        String raw = day.asText("");
+        if (raw.isBlank()) {
+            return null;
+        }
+        try {
+            LocalDate date = LocalDate.parse(raw);
+            return (exclusiveEnd ? date.plusDays(1) : date)
+                    .atStartOfDay(OrderNumber.ZONE)
+                    .toInstant();
+        } catch (DateTimeParseException ex) {
+            throw new BusinessException(
+                    ErrorCode.VALIDATION_FAILED, field + " must be a date like 2026-10-15");
+        }
+    }
+
+    /** 收窄条件讲给顾客听的样子；没有条件就是一段空的，引导句里不留一个空括号。 */
+    private static String filterPhrase(OrderFilter filter) {
+        List<String> parts = new ArrayList<>();
+        if (filter.status() != null) {
+            parts.add("状态为" + statusLabel(filter.status().name()));
+        }
+        if (filter.fromInclusive() != null) {
+            parts.add(dayText(filter.fromInclusive()) + " 起");
+        }
+        if (filter.toExclusive() != null) {
+            // 右端是开区间，说的那一天要退回来：顾客说的"到 9 月 30 日"存的次日零点。
+            parts.add(dayText(filter.toExclusive().minus(Duration.ofDays(1))) + " 止");
+        }
+        return String.join("、", parts);
+    }
+
+    private static String dayText(Instant instant) {
+        return LocalDate.ofInstant(instant, OrderNumber.ZONE).toString();
     }
 
     private static String requireText(ObjectMapper mapper, String args, String field) {

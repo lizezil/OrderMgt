@@ -3,7 +3,7 @@ import { nextTick } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { api, ApiError, QUEUE_DROPPED, RUN_CANCELLED } from '../api'
 import type { RunStreamHandlers, SessionStreamHandlers } from '../api'
-import { RECONCILE_DELAY_MS } from '../constants'
+import { HISTORY_PAGE_SIZE, RECONCILE_DELAY_MS } from '../constants'
 import type {
   ActionCard,
   ChatResponse,
@@ -295,9 +295,10 @@ describe('有问无答的回合', () => {
     expect(wrapper.get('.retry').text()).toContain('没有收到回复')
   })
 
-  it('重试把那句话作为全新的一轮重发', async () => {
+  it('重试复用的是那条提问：不新增一条，服务端按 retry 重跑它', async () => {
     listConversationsMock.mockResolvedValue([conversation(7, '下单')])
-    historyMock.mockResolvedValue([unanswered()])
+    // 每次都是新数组：mock 复用同一实例的话，组件把这句提问推进线程就会污染"服务端历史"。
+    historyMock.mockImplementation(async () => [unanswered()])
     chatStreamMock.mockResolvedValue(reply())
 
     const wrapper = await mountView()
@@ -309,7 +310,35 @@ describe('有问无答的回合', () => {
       7,
       expect.objectContaining({ onToken: expect.any(Function) }),
       expect.any(AbortSignal),
+      true,
     )
+    // 提问在历史里已经有一条：线上不会再冒出第二条一模一样的。
+    expect(wrapper.findAll('article.customer')).toHaveLength(1)
+    expect(wrapper.text()).toContain('好的')
+  })
+
+  it('重试失败后再重试：提问仍只有一条，草稿也不被塞回输入框', async () => {
+    listConversationsMock.mockResolvedValue([conversation(7, '下单')])
+    historyMock.mockImplementation(async () => [unanswered()])
+    chatStreamMock.mockRejectedValue(new Error('连接中断'))
+
+    const wrapper = await mountView()
+    await wrapper.get('.retry button').trigger('click')
+    await flushPromises()
+
+    // 那句提问一直在服务端，失败不该把它从线程里抹掉，也不该把它的字还给输入框。
+    expect(wrapper.emitted('error')?.[0]).toEqual(['连接中断'])
+    expect(wrapper.findAll('article.customer')).toHaveLength(1)
+    expect(wrapper.get('textarea').element.value).toBe('')
+
+    await wrapper.get('.retry button').trigger('click')
+    await flushPromises()
+
+    expect(chatStreamMock).toHaveBeenCalledTimes(2)
+    expect(wrapper.findAll('article.customer')).toHaveLength(1)
+    expect(wrapper.findAll('article.customer .said').map((line) => line.text())).toEqual([
+      '帮我下单 1 个 GIZMO-03',
+    ])
   })
 
   it('回合还在跑（RUNNING）时不给重试：回复也许只是迟到，重发会多开一个 Run', async () => {
@@ -357,6 +386,7 @@ describe('流式回复', () => {
       7,
       expect.objectContaining({ onToken: expect.any(Function) }),
       expect.any(AbortSignal),
+      false,
     )
 
     emitDelta('我准备好')
@@ -645,6 +675,146 @@ describe('断流对账', () => {
   })
 })
 
+describe('长会话往上翻', () => {
+  /** A run of messages with consecutive ids: `id` doubles as the label, so order is readable. */
+  function thread(from: number, count: number): Message[] {
+    return Array.from({ length: count }, (_, index): Message => ({
+      id: from + index,
+      role: (from + index) % 2 === 1 ? 'CUSTOMER' : 'ASSISTANT',
+      content: `第 ${from + index} 条`,
+      createdAt: '',
+      action: null,
+    }))
+  }
+
+  it('满一页就在顶上给「载入更早」：服务端可能还有更早的', async () => {
+    listConversationsMock.mockResolvedValue([conversation(7, '长会话')])
+    historyMock.mockImplementation(async () => thread(31, HISTORY_PAGE_SIZE))
+
+    const wrapper = await mountView()
+
+    expect(wrapper.get('.older button').text()).toBe('载入更早')
+    // 打开的仍是最近一段，而不是第一条：屏幕上第一条正是这一段的头。
+    expect(wrapper.findAll('article .said')[0]!.text()).toBe('第 31 条')
+  })
+
+  it('不足一页就不给：到头了，没有什么可往回翻的', async () => {
+    listConversationsMock.mockResolvedValue([conversation(7, '短会话')])
+    historyMock.mockImplementation(async () => thread(1, 3))
+
+    const wrapper = await mountView()
+
+    expect(wrapper.find('.older').exists()).toBe(false)
+  })
+
+  it('点「载入更早」：拿屏幕上最旧那条的 id 当游标，把上一段接在顶上', async () => {
+    listConversationsMock.mockResolvedValue([conversation(7, '长会话')])
+    historyMock
+      .mockImplementationOnce(async () => thread(31, HISTORY_PAGE_SIZE)) // 打开：最近一段
+      .mockImplementationOnce(async () => thread(1, 2)) // 往上翻：到头了
+
+    const wrapper = await mountView()
+    await wrapper.get('.older button').trigger('click')
+    await flushPromises()
+
+    // 游标是 id，不是偏移：一端来了新消息也不会让这一段错位。
+    expect(historyMock).toHaveBeenLastCalledWith(7, 31)
+    const said = wrapper.findAll('article .said').map((node) => node.text())
+    expect(said).toHaveLength(HISTORY_PAGE_SIZE + 2)
+    expect(said.slice(0, 3)).toEqual(['第 1 条', '第 2 条', '第 31 条'])
+    // 这一页不满，说明再往上没有了。
+    expect(wrapper.find('.older').exists()).toBe(false)
+  })
+
+  it('翻上去之后再发一句、流断了对账：翻出来的那几段不会被打回原形', async () => {
+    const mine: Message = {
+      id: 61,
+      role: 'CUSTOMER',
+      content: '再问一句',
+      createdAt: '',
+      action: null,
+    }
+    const answered: Message = {
+      id: 62,
+      role: 'ASSISTANT',
+      content: '答完了',
+      createdAt: '',
+      action: null,
+    }
+    listConversationsMock.mockResolvedValue([conversation(7, '长会话')])
+    historyMock
+      .mockImplementationOnce(async () => thread(31, HISTORY_PAGE_SIZE)) // 打开：最近一段
+      .mockImplementationOnce(async () => thread(1, HISTORY_PAGE_SIZE)) // 往上翻：再满一页
+      .mockImplementationOnce(async () => [...thread(31, HISTORY_PAGE_SIZE), mine, answered]) // 对账
+    chatStreamMock.mockRejectedValue(new Error('连接中断'))
+
+    const wrapper = await mountView()
+    await wrapper.get('.older button').trigger('click')
+    await flushPromises()
+
+    await wrapper.get('textarea').setValue('再问一句')
+    await sendButton(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(historyMock).toHaveBeenCalledTimes(3)
+    // 对账换掉的是*最新一段*，翻上来的那 30 条在它前面、不在它里面 —— 得留着。
+    const said = wrapper.findAll('article .said').map((node) => node.text())
+    expect(said).toHaveLength(HISTORY_PAGE_SIZE * 2 + 2)
+    expect(said.slice(0, 2)).toEqual(['第 1 条', '第 2 条'])
+    expect(said[HISTORY_PAGE_SIZE]).toBe('第 31 条')
+    expect(said[HISTORY_PAGE_SIZE + 1]).toBe('第 32 条')
+    expect(wrapper.emitted('error')).toBeUndefined()
+    // 更早的那一段还在屏幕上，所以「载入更早」照旧。
+    expect(wrapper.find('.older').exists()).toBe(true)
+  })
+})
+
+describe('会话失效不该毁掉写了一半的话', () => {
+  beforeEach(() => {
+    sessionStorage.clear()
+    listConversationsMock.mockResolvedValue([])
+  })
+
+  it('被踢回登录页再回来：输入框里那句话还在', async () => {
+    const before = mount(AssistantView, { props: { customer: '1001' } })
+    await flushPromises()
+    await before.get('textarea').setValue('帮我下单 2 个 GADGET-02，地址照旧')
+    before.unmount() // 401 把这一页换成了登录页
+
+    const after = mount(AssistantView, { props: { customer: '1001' } })
+    await flushPromises()
+
+    expect(after.get('textarea').element.value).toBe('帮我下单 2 个 GADGET-02，地址照旧')
+  })
+
+  it('换个人登录：看到的是自己的空白框，不是上一个人半句话', async () => {
+    const before = mount(AssistantView, { props: { customer: '1001' } })
+    await flushPromises()
+    await before.get('textarea').setValue('帮我下单 2 个 GADGET-02')
+    before.unmount()
+
+    const after = mount(AssistantView, { props: { customer: '2002' } })
+    await flushPromises()
+
+    expect(after.get('textarea').element.value).toBe('')
+  })
+
+  it('发出去的那句话不再是草稿：回来时输入框是空的', async () => {
+    chatStreamMock.mockResolvedValue(reply())
+    const before = mount(AssistantView, { props: { customer: '1001' } })
+    await flushPromises()
+    await before.get('textarea').setValue('我有哪些订单？')
+    await sendButton(before).trigger('click')
+    await flushPromises()
+    before.unmount()
+
+    const after = mount(AssistantView, { props: { customer: '1001' } })
+    await flushPromises()
+
+    expect(after.get('textarea').element.value).toBe('')
+  })
+})
+
 describe('输入框归属的会话，由正在切换的那一步决定', () => {
   it('新对话还在创建时就回车：这一句属于新会话，不落进刚离开的那条', async () => {
     listConversationsMock.mockResolvedValue([conversation(1, '第一条')])
@@ -672,6 +842,7 @@ describe('输入框归属的会话，由正在切换的那一步决定', () => {
       2,
       expect.objectContaining({ onToken: expect.any(Function) }),
       expect.any(AbortSignal),
+      false,
     )
   })
 
@@ -696,6 +867,7 @@ describe('输入框归属的会话，由正在切换的那一步决定', () => {
       3,
       expect.objectContaining({ onToken: expect.any(Function) }),
       expect.any(AbortSignal),
+      false,
     )
     // 而不是绕过加载、自作主张新建一段（startConversation 默认给的是 7）。
     expect(startConversationMock).not.toHaveBeenCalled()

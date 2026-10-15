@@ -78,14 +78,29 @@ public class ConversationRepositoryImpl implements ConversationRepository {
     }
 
     @Override
-    public List<Message> findAllMessages(Long conversationId) {
-        return messageMapper
-                .selectList(
+    public List<Message> findMessagesBefore(Long conversationId, Long beforeId, int limit) {
+        int safeLimit = Math.max(limit, 1);
+        List<MessagePO> newestFirst =
+                messageMapper.selectList(
                         Wrappers.<MessagePO>lambdaQuery()
                                 .eq(MessagePO::getConversationId, conversationId)
-                                .orderByAsc(MessagePO::getId))
-                .stream()
-                .map(persistenceMapper::toDomain)
-                .toList();
+                                .lt(beforeId != null, MessagePO::getId, beforeId)
+                                .orderByDesc(MessagePO::getId)
+                                .last("LIMIT " + safeLimit));
+        List<Message> ordered =
+                new ArrayList<>(newestFirst.stream().map(persistenceMapper::toDomain).toList());
+        Collections.reverse(ordered);
+        return ordered;
+    }
+
+    @Override
+    public Optional<Message> findLastMessage(Long conversationId) {
+        return Optional.ofNullable(
+                        messageMapper.selectOne(
+                                Wrappers.<MessagePO>lambdaQuery()
+                                        .eq(MessagePO::getConversationId, conversationId)
+                                        .orderByDesc(MessagePO::getId)
+                                        .last("LIMIT 1")))
+                .map(persistenceMapper::toDomain);
     }
 }

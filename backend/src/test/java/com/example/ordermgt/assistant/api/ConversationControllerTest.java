@@ -134,7 +134,8 @@ class ConversationControllerTest {
                         });
         doThrow(new IOException("Broken pipe")).when(emitter).send(any(SseEventBuilder.class));
 
-        controller.streamTurn(emitter, new AtomicBoolean(false), CUSTOMER, CONVERSATION, QUESTION);
+        controller.streamTurn(
+                emitter, new AtomicBoolean(false), CUSTOMER, CONVERSATION, QUESTION, false);
 
         verify(emitter, times(1)).send(any(SseEventBuilder.class)); // 断线后不再尝试投递
         verify(assistantService).executeTurn(eq(context), any(), any()); // 回合照样走完
@@ -164,7 +165,8 @@ class ConversationControllerTest {
                             return result;
                         });
 
-        controller.streamTurn(emitter, new AtomicBoolean(true), CUSTOMER, CONVERSATION, QUESTION);
+        controller.streamTurn(
+                emitter, new AtomicBoolean(true), CUSTOMER, CONVERSATION, QUESTION, false);
 
         verify(emitter, never()).send(any(SseEventBuilder.class));
         verify(assistantService).executeTurn(eq(context), any(), any());
@@ -179,7 +181,8 @@ class ConversationControllerTest {
         RuntimeException boom = new BusinessException(ErrorCode.UPSTREAM_AI_ERROR, "上游模型超时");
         when(assistantService.executeTurn(eq(context), any(), any())).thenThrow(boom);
 
-        controller.streamTurn(emitter, new AtomicBoolean(false), CUSTOMER, CONVERSATION, QUESTION);
+        controller.streamTurn(
+                emitter, new AtomicBoolean(false), CUSTOMER, CONVERSATION, QUESTION, false);
 
         ArgumentCaptor<SseEventBuilder> events = ArgumentCaptor.forClass(SseEventBuilder.class);
         verify(emitter).send(events.capture());
@@ -195,7 +198,8 @@ class ConversationControllerTest {
         when(assistantService.executeTurn(eq(context), any(), any()))
                 .thenThrow(new IllegalStateException("Data too long for column 'response_json'"));
 
-        controller.streamTurn(emitter, new AtomicBoolean(false), CUSTOMER, CONVERSATION, QUESTION);
+        controller.streamTurn(
+                emitter, new AtomicBoolean(false), CUSTOMER, CONVERSATION, QUESTION, false);
 
         ArgumentCaptor<SseEventBuilder> events = ArgumentCaptor.forClass(SseEventBuilder.class);
         verify(emitter).send(events.capture());
@@ -203,6 +207,20 @@ class ConversationControllerTest {
         assertThat(wire).contains("event:error");
         assertThat(wire).doesNotContain("response_json").doesNotContain("Data too long");
         verify(emitter).complete();
+    }
+
+    /** 重试走的是复用那条提问的入口（US-2.6）：不再 append 一句重复的客户发言，但仍是全新的一轮。 */
+    @Test
+    void aRetryReusesTheQuestionInsteadOfAppendingIt() {
+        when(assistantService.prepareRetry(CUSTOMER, CONVERSATION)).thenReturn(context);
+        when(assistantService.executeTurn(eq(context), any(), any())).thenReturn(result);
+
+        controller.streamTurn(
+                emitter, new AtomicBoolean(false), CUSTOMER, CONVERSATION, QUESTION, true);
+
+        verify(assistantService).prepareRetry(CUSTOMER, CONVERSATION);
+        verify(assistantService, never()).prepare(any(), any(), any());
+        verify(assistantService).executeTurn(eq(context), any(), any());
     }
 
     /** 把一个事件还原成线上字节，断言的才是客户端会收到的东西。 */

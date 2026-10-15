@@ -6,6 +6,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import java.time.Duration;
+import java.time.Instant;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -102,6 +104,28 @@ class SecurityContractTest {
                 .andExpect(jsonPath("$.code").value("OK"));
 
         mvc.perform(get("/api/auth/me").session(session)).andExpect(status().isUnauthorized());
+    }
+
+    /** 登录就把起点写进会话，绝对上限才有得可算。 */
+    @Test
+    void loginStampsTheSessionStart() throws Exception {
+        MockHttpSession session = login("1001", "1111");
+
+        assertThat(session.getAttribute(SessionLifetimeFilter.STARTED_AT))
+                .isInstanceOf(Instant.class);
+    }
+
+    /** 会话过了绝对上限就是陌生人：容器只看空闲，不看总时长，所以一个一直在用、但已经跨过 12 小时的会话 必须在这里被掐掉——身份还在上下文里，但下一次请求就是 401。 */
+    @Test
+    void aSessionPastItsAbsoluteLifetimeIs401EvenWhileActive() throws Exception {
+        MockHttpSession session = login("1001", "1111");
+        // 假装这段会话是 13 小时前开的：重新登录过、每个请求都没超过空闲上限，但总时长已经到点。
+        session.setAttribute(
+                SessionLifetimeFilter.STARTED_AT, Instant.now().minus(Duration.ofHours(13)));
+
+        mvc.perform(get("/api/auth/me").session(session))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("UNAUTHORIZED"));
     }
 
     @Test

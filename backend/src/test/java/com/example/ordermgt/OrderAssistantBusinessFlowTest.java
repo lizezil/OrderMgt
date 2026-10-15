@@ -252,11 +252,19 @@ class OrderAssistantBusinessFlowTest {
                 .satisfies(
                         tool ->
                                 assertThat(tool.resultJson())
-                                        .isEqualTo("{\"total\":0,\"returned\":0,\"orders\":[]}"));
+                                        .isEqualTo(
+                                                "{\"total\":0,\"returned\":0,\"totalAmount\":0.00,"
+                                                        + "\"orders\":[]}"));
 
         // 记忆属于会话，也属于客户：别人的会话既读不到也写不进。
         Long aliceConversation = aliceAnswer.conversationId();
-        assertThatThrownBy(() -> conversationService.history(bob, aliceConversation))
+        assertThatThrownBy(
+                        () ->
+                                conversationService.history(
+                                        bob,
+                                        aliceConversation,
+                                        null,
+                                        ConversationService.DEFAULT_HISTORY_LIMIT))
                 .isInstanceOf(BusinessException.class)
                 .extracting(e -> ((BusinessException) e).errorCode())
                 .isEqualTo(ErrorCode.FORBIDDEN);
@@ -483,7 +491,11 @@ class OrderAssistantBusinessFlowTest {
         actionConfirmationService.confirm(customer, proposal.actions().get(0).token());
 
         List<MessageView> history =
-                conversationService.history(customer, proposal.conversationId());
+                conversationService.history(
+                        customer,
+                        proposal.conversationId(),
+                        null,
+                        ConversationService.DEFAULT_HISTORY_LIMIT);
         List<MessageView> withCards =
                 history.stream().filter(view -> view.action() != null).toList();
 
@@ -695,7 +707,8 @@ class OrderAssistantBusinessFlowTest {
         // 下单时间必须在场：否则顾客只能读订单号里嵌的那串数字才知道它有多近。
         assertThat(answer.reply()).containsPattern("\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}");
         // 点名了最近一张，其余订单也照常列出——顾客问的可能是列表，不能因为一句话就把历史藏起来。
-        assertThat(answer.reply()).contains("你名下有 2 张订单");
+        // 引导句现在带汇总（US-4.5）：命中几张、合计多少都由服务端算，缺了「合计」这一句就等于没答。
+        assertThat(answer.reply()).contains("你名下共 2 张订单").contains("合计");
     }
 
     /**

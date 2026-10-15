@@ -12,7 +12,7 @@ import { expect, test, type Page } from '@playwright/test'
  * Stories whose acceptance lives in the API layer rather than
  * in pixels (US-5.2 replay, US-6.2 foreign token) are asserted via requests and logged.
  *
- * Three of the newer stories need a word on how they are (or are not) walked here:
+ * Some of the newer stories need a word on how they are (or are not) walked here:
  * - US-1.11 has no step at all: a model that goes off-script cannot be summoned from a browser,
  *   so its deterministic wrapping is pinned in backend tests; faking one here would be theatre.
  * - US-1.13's referent questions need the real model -- the grounding block is what lets it
@@ -21,6 +21,13 @@ import { expect, test, type Page } from '@playwright/test'
  * - US-1.12 waits for no sweeper: it runs the sweeper's own UPDATE by hand through docker exec
  *   (the TTL is 15 minutes; a walk should not sit through it). The statement writes exactly what
  *   the sweeper writes when a deadline passes, and touches nothing else on the card.
+ * - US-2.7's 「载入更早」 only exists past a full page (30) of history. Building that honestly is
+ *   15+ model turns -- three rate-limit windows and minutes of sitting -- for one button, and
+ *   seeding the rows would be inventing a conversation the browser never had. The step is left
+ *   out; the paging is pinned in ConversationServiceTest and AssistantView.spec.ts.
+ * - US-2.6 (retry reuses the question) and US-6.4 (the session's 12-hour absolute lifetime) are
+ *   pinned by tests for the same reason: a retry needs a stream that actually failed, and no walk
+ *   can sit out twelve hours. Neither has a state a screenshot could add to.
  */
 const OUT_DIR = path.resolve(
   fileURLToPath(new URL('.', import.meta.url)),
@@ -201,14 +208,30 @@ test.describe('用户故事走查（Docker 容器，offline 桩）', () => {
     // （见 docs/用户故事.md 的 US-1.11），这份走查不替它伪造一场走样。
 
     // ---------- US-1.13 多张待确认卡片并存：「刚才那个」/「第二张」指得准 ----------
-    // 按故事自己的脚本：先提议三张、一张都不确认，再问指代。
-    await ask(page, '帮我下单 2 个 GADGET-02')
-    await expect(slip(page).locator('.slip-state')).toHaveText('待授权')
-    await ask(page, '帮我下单 1 个 DOODAD-04')
-    await expect(slip(page).locator('.slip-state')).toHaveText('待授权')
-    await ask(page, '帮我下单 3 个 WIDGET-01')
-    await expect(slip(page).locator('.slip-state')).toHaveText('待授权')
-    await expect(slip(page)).toContainText('WIDGET-01')
+    // 按故事自己的脚本：先提议三张、一张都不确认，再问指代。真实模型偶尔把提议**说出来**却不调
+    // 工具（台账里那一轮有字、没有 createOrder），于是这一步会停在一张不存在的卡片上：同义再问
+    // 一次，但只容忍一次——每客户每分钟只有 6 条额度，重问不能把后面的指代问答挤到 429 上。
+    // 这个缺口（说得像做了、服务端不会发现）记在附录 C。
+    const proposals = [
+      { message: '帮我下单 2 个 GADGET-02', sku: 'GADGET-02' },
+      { message: '帮我下单 1 个 DOODAD-04', sku: 'DOODAD-04' },
+      { message: '帮我下单 3 个 WIDGET-01', sku: 'WIDGET-01' },
+    ]
+    let nudges = 0
+    for (const { message, sku } of proposals) {
+      const before = await page.locator('figure.slip').count()
+      await ask(page, message)
+      if ((await page.locator('figure.slip').count()) === before && nudges === 0) {
+        nudges++
+        await ask(page, message)
+      }
+      await expect(page.locator('figure.slip')).toHaveCount(before + 1)
+      await expect(slip(page).locator('.slip-state')).toHaveText('待授权')
+      await expect(slip(page)).toContainText(sku)
+    }
+
+    // 这一分钟已经被退款与三张提议（至多再算一次重问）用完，指代问答等下一个窗口。
+    await page.waitForTimeout(65_000)
 
     await ask(page, '刚才那个是什么')
     const referent = (await assistantTurn(page).innerText()).replace(/\s+/g, ' ')
@@ -265,6 +288,23 @@ test.describe('用户故事走查（Docker 容器，offline 桩）', () => {
       .evaluate((el) => el.scrollIntoView({ block: 'start' }))
     await snap(page, 'US-1.12-重新发起后_新卡待授权旧卡保持已过期.png')
     await page.setViewportSize({ width: 1440, height: 960 })
+
+    // ---------- US-4.5 按条件查我的订单，并给我一个汇总 ----------
+    // 这一问和上面两次指代共用一个窗口（三条，够用），所以这里不再另等一分钟。
+    await ask(page, '我取消掉的订单有几张，一共多少钱')
+    const summary = (await assistantTurn(page).innerText()).replace(/\s+/g, ' ')
+    // 汇总这一半两个 profile 都成立：引导句是服务端渲染的，命中几张、合计多少由服务端算（US-1.2 的
+    // 同一个 ToolReport），模型加不加得出来都不影响这句话。
+    expect(summary, 'US-4.5: 引导句给出汇总').toContain('合计')
+    expect(summary, 'US-4.5: 汇总说的是这位客户名下的单').toContain('你名下')
+    if (summary.includes('状态为')) {
+      // 真实模型把 status 传下来了，收窄条件就出现在引导句里——这条是 US-4.5 与 US-1.2 的分界。
+      expect(summary, 'US-4.5: 收窄条件讲给顾客听').toContain('状态为已取消')
+    } else {
+      // 离线桩不读提示词、只会传一个空的 queryMyOrders，收窄这一半它演示不了（和 US-1.13 同一处境）。
+      console.log(`[story] US-4.5: 这一轮没有收窄条件（离线桩或不传 status），跳过收窄断言`)
+    }
+    await snap(page, 'US-4.5-按条件查订单_带汇总.png')
 
     // ---------- US-4.1 / US-4.2 订单列表与详情 ----------
     await tab(page, '订单')

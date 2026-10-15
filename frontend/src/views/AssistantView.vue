@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { api, ApiError, QUEUE_DROPPED, RUN_CANCELLED } from '../api'
 import {
+  HISTORY_PAGE_SIZE,
   LOCAL_MESSAGE_ID_START,
   MAX_QUEUE_DEPTH,
   RECONCILE_ATTEMPTS,
   RECONCILE_DELAY_MS,
 } from '../constants'
+import { stashDraft, takeDraft } from '../draft'
 import { errorMessage } from '../errors'
 import { renderMarkdown } from '../markdown'
 import { useSessionStore } from '../store'
@@ -16,6 +18,11 @@ import ActionCardPanel from '../components/ActionCardPanel.vue'
 import ConversationRow from '../components/ConversationRow.vue'
 
 const emit = defineEmits<{ (e: 'error', message: string): void }>()
+
+/** Who is signed in. Only the draft stash needs it (US-6.4): it is the key the composer's text is
+ *  filed under, so a session lost to expiry cannot hand this customer's half-written sentence to
+ *  the next one. */
+const props = defineProps<{ customer?: string }>()
 
 /**
  * The sidebar's conversation state lives in the shared store, not here: the status stream keeps it
@@ -28,6 +35,15 @@ const archived = store.archived
 /** Whether the archived group at the bottom of the rail is expanded. */
 const showArchived = ref(false)
 const messages = ref<Message[]>([])
+/**
+ * Whether the server still holds messages older than the top of the thread (US-2.7). A full page
+ * back is the only evidence this screen has -- there is no total count on the wire -- so a thread
+ * whose length is an exact multiple of the page size shows 「载入更早」 once more and gets an empty
+ * page. Harmless: the click is cheap, and the button then disappears for good.
+ */
+const hasOlder = ref(false)
+/** Whether a 「载入更早」 read is in flight; the button shows it and refuses a second one. */
+const loadingOlder = ref(false)
 
 /**
  * The sends still waiting in line, by message id. A conversation runs one turn at a time
@@ -46,6 +62,16 @@ const visibleMessages = computed(() => messages.value.filter((message) => !waiti
 const activeId = store.activeId
 const listLoaded = store.listLoaded
 const draft = ref('')
+
+/**
+ * The composer's text survives the screen being torn down (US-6.4): an expired session swaps this
+ * view out for the login page, and a tab switch unmounts it too, but neither is a reason to lose a
+ * sentence the customer was still writing. Filed under the signed-in customer, so it can never
+ * resurface in front of somebody else.
+ */
+watch(draft, (text) => {
+  if (props.customer) stashDraft(props.customer, text)
+})
 const loading = ref(false)
 const usage = ref<{ prompt: number; completion: number; latencyMs: number } | null>(null)
 const scroller = ref<HTMLElement | null>(null)
@@ -183,13 +209,17 @@ const retryIndex = computed(() => {
 /**
  * Resends an unanswered question as a brand new turn: the interrupted Run is history, and the only
  * honest fix is another one -- a half-delivered reply is never resumed (ADR-0009). Going through
- * `send` keeps the retry on exactly the same path as any other send: the optimistic bubble, the
+ * `dispatch` keeps the retry on exactly the same path as any other send: the optimistic bubble, the
  * reconcile when the stream dies, the server-truth reconciliation.
+ *
+ * <p>What it does *not* do is say the question again (US-2.6). The words are already in the
+ * transcript, so the server is asked to re-run that same message rather than to accept a second
+ * copy of it -- a duplicate would read to the model as "the customer did not understand, so they
+ * asked again", and the thread would show the same question twice for one answer.
  */
 function retry(message: Message): void {
   if (sending.value) return
-  draft.value = message.content ?? ''
-  void send()
+  void dispatch(message)
 }
 
 /** Whether a failed send was one the customer deleted from the line, rather than a real error. */
@@ -269,12 +299,63 @@ async function open(conversation: Conversation): Promise<void> {
   // thread must not repaint the screen the newer click is showing.
   if (ticket !== openTicket) return
   messages.value = history
+  hasOlder.value = history.length === HISTORY_PAGE_SIZE
   await scrollToEnd()
   // Coming back to a conversation whose turn is still running: reattach and keep watching it, so
   // the customer sees the reply being written rather than an empty thread (ADR-0014).
   if (conversation.state === 'RUNNING' && conversation.runId) {
     watchRun(conversation.id, conversation.runId)
   }
+}
+
+/**
+ * Fetches the segment just above what the thread already holds (US-2.7). The cursor is the oldest
+ * message on screen -- an id, so a message landing mid-read cannot make the next page repeat or skip
+ * a line -- and the fetched page is prepended, which is also why the scroll position has to be
+ * carried over by hand: the browser keeps `scrollTop`, and without the correction the thread would
+ * jump by exactly the height that appeared above the viewport.
+ */
+async function loadOlder(): Promise<void> {
+  const conversationId = activeId.value
+  const beforeId = messages.value.find((message) => message.id > 0)?.id
+  if (conversationId === null || beforeId === undefined || loadingOlder.value) return
+  const element = scroller.value
+  const heightBefore = element?.scrollHeight ?? 0
+  const topBefore = element?.scrollTop ?? 0
+  loadingOlder.value = true
+  try {
+    const older = await api.history(conversationId, beforeId)
+    if (activeId.value !== conversationId) return
+    messages.value = [...older, ...messages.value]
+    hasOlder.value = older.length === HISTORY_PAGE_SIZE
+    await nextTick()
+    if (element) element.scrollTop = topBefore + (element.scrollHeight - heightBefore)
+  } catch (error) {
+    fail(error)
+  } finally {
+    loadingOlder.value = false
+  }
+}
+
+/**
+ * Replaces the thread with a freshly fetched segment. What comes back is always the *newest* page,
+ * while the screen may have several older ones loaded above it: those are kept, because they sit
+ * directly below the fetched page and re-reading one turn must not throw away history the customer
+ * scrolled back to. Only when the two do not meet -- more than a page of new messages arrived and
+ * the screen's segment is entirely older -- is the thread replaced outright: stitching two
+ * non-adjacent segments would leave a hole in the middle.
+ */
+function applyNewestSegment(history: Message[]): void {
+  const oldestFetched = history.length ? history[0]!.id : null
+  const held = messages.value
+  const older = oldestFetched === null ? [] : held.filter((m) => m.id > 0 && m.id < oldestFetched)
+  const contiguous = oldestFetched === null || held.some((m) => m.id > 0 && m.id >= oldestFetched)
+  if (older.length && contiguous) {
+    messages.value = [...older, ...history]
+    return
+  }
+  messages.value = history
+  hasOlder.value = history.length === HISTORY_PAGE_SIZE
 }
 
 /**
@@ -371,6 +452,7 @@ async function newConversation(): Promise<void> {
   try {
     await track(createConversation())
     messages.value = []
+    hasOlder.value = false
     usage.value = null
   } catch (error) {
     fail(error)
@@ -468,7 +550,7 @@ async function reconcile(
     // Checking after the await: opening another conversation while we waited must not have this
     // one's history written over its messages.
     if (activeId.value !== conversationId) return 'unknown'
-    messages.value = history
+    applyNewestSegment(history)
     const index = lastCustomerIndex(history, text, knownIds)
     if (index < 0) {
       // The message is committed before the model runs, but a disconnect can arrive while that
@@ -506,12 +588,29 @@ onUnmounted(() => {
  * the assistant is still answering is a normal thing to do, not a mistake to swallow.
  */
 async function send(): Promise<void> {
-  const text = draft.value.trim()
+  await dispatch(null)
+}
+
+/**
+ * Runs one turn. Two ways in, one path afterwards:
+ *
+ * - a normal send carries words from the composer and puts them into the thread right away;
+ * - a retry carries a message the thread already holds (`reused`, US-2.6), so the question must not
+ *   be added twice -- not on screen, and not on the server, which is told to re-run that same
+ *   message rather than to accept a copy of it.
+ *
+ * Everything downstream is identical: the streaming placeholder, the queue frames, the settle, the
+ * reconcile and the cleanup. That is the point of the parameter -- a retry is an ordinary turn that
+ * happens to reuse its question.
+ */
+async function dispatch(reused: Message | null): Promise<void> {
+  const text = reused ? (reused.content ?? '') : draft.value.trim()
   if (!text) return
 
   // The composer empties and goes busy before any await: a second Enter inside the switch's race
-  // window then reads an empty draft instead of firing the same words twice.
-  draft.value = ''
+  // window then reads an empty draft instead of firing the same words twice. A retry writes nothing
+  // back to the composer -- whatever the customer has half-typed there is their own words.
+  if (!reused) draft.value = ''
   inFlight.value++
 
   // The message belongs to the conversation the in-flight switch settles on, never to the one
@@ -525,17 +624,22 @@ async function send(): Promise<void> {
   // A busy conversation puts this send in line, and a send in line belongs to the queue strip, not
   // to the thread (see `waiting`) -- so it is marked here, before it would show for a moment.
   const inLine = willWait(activeId.value)
-  messages.value.push({
-    id: localId--,
-    role: 'CUSTOMER',
-    content: text,
-    createdAt: new Date().toISOString(),
-    action: null,
-  })
-  // The array holds the object we pushed, but the template renders Vue's reactive proxy of it;
-  // only mutating *that* reference repaints, and it is the identity the cleanup below matches.
-  const sent = messages.value[messages.value.length - 1]!
-  if (inLine) waiting.add(sent.id)
+  let sent: Message
+  if (reused) {
+    sent = reused
+  } else {
+    messages.value.push({
+      id: localId--,
+      role: 'CUSTOMER',
+      content: text,
+      createdAt: new Date().toISOString(),
+      action: null,
+    })
+    // The array holds the object we pushed, but the template renders Vue's reactive proxy of it;
+    // only mutating *that* reference repaints, and it is the identity the cleanup below matches.
+    sent = messages.value[messages.value.length - 1]!
+    if (inLine) waiting.add(sent.id)
+  }
   let placeholder: Message | null = null
   // Hoisted so the catch can reconcile the conversation this message went to, even if the customer
   // opened another one while the stream was dying.
@@ -611,6 +715,7 @@ async function send(): Promise<void> {
         },
       },
       controller.signal,
+      reused !== null,
     )
 
     if (myItemId !== null) store.forgetQueued(target, myItemId)
@@ -648,13 +753,31 @@ async function send(): Promise<void> {
     messages.value = messages.value.filter((message) => message !== placeholder)
     if (isQueueDropped(error)) {
       // The customer deleted it from the line, so nothing was ever asked. Retract the bubble and
-      // keep the draft cleared -- cancelling a queued send is not a reason to rewrite it.
-      messages.value = messages.value.filter((message) => message !== sent)
+      // keep the draft cleared -- cancelling a queued send is not a reason to rewrite it. A reused
+      // question stays: it was in the thread before this retry, and the server still holds it.
+      if (!reused) messages.value = messages.value.filter((message) => message !== sent)
       return
     }
     // Leaving this screen aborted the stream on purpose: a decision like the stop button's, not a
     // failure to reconcile or report. The server finishes and persists the turn regardless.
     if (unmounted) return
+    if (reused) {
+      // A retry re-runs a question that already lives in the history: a dead stream must neither
+      // strike it off the thread nor hand its words back to the composer. Delivery is best-effort
+      // and the turn is not (ADR-0009), so the reply may well have landed after we stopped
+      // listening -- read the history so the screen shows what the server actually has.
+      if (conversationId !== null) {
+        try {
+          const truth = await api.history(conversationId)
+          if (activeId.value === conversationId) applyNewestSegment(truth)
+        } catch {
+          // Not even history is reachable; the question on screen came from the server, so leaving
+          // it there is the more honest picture.
+        }
+      }
+      fail(error)
+      return
+    }
     const outcome =
       conversationId === null ? 'not-sent' : await reconcile(conversationId, text, knownIds)
     if (outcome === 'not-sent') {
@@ -713,13 +836,16 @@ async function refreshFromServer(): Promise<void> {
   if (conversationId === null) return
   try {
     const history = await api.history(conversationId)
-    if (activeId.value === conversationId) messages.value = history
+    if (activeId.value === conversationId) applyNewestSegment(history)
   } catch (error) {
     fail(error)
   }
 }
 
 onMounted(async () => {
+  // Before anything else: if this customer was sent back to the login page mid-sentence, the
+  // sentence is waiting in the composer (US-6.4).
+  draft.value = takeDraft(props.customer)
   try {
     // Subscribe first, then read: the stream's snapshot and this REST read both fill the store, so
     // a conversation created after the read still arrives as a `state` increment.
@@ -789,6 +915,15 @@ onMounted(async () => {
   <section class="sheet">
     <div ref="scroller" class="sheet-scroll">
       <div class="measure">
+        <!-- The thread is read newest-first, so anything older is behind this one click (US-2.7).
+             It is not a pager: there is no page number and no end -- the button simply stops
+             appearing once a read comes back short. -->
+        <div v-if="hasOlder" class="older">
+          <button class="btn quiet" :disabled="loadingOlder" @click="loadOlder">
+            {{ loadingOlder ? '载入中…' : '载入更早' }}
+          </button>
+        </div>
+
         <p v-if="!messages.length && !loading" class="blank">
           点「新对话」开始，或直接说一句：<br />
           <span class="data">帮我下单 2 个 GADGET-02</span>
