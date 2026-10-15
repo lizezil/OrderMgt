@@ -1,7 +1,8 @@
 import { defineConfig, devices } from '@playwright/test'
 
 /**
- * A story-by-story walkthrough against the *running Docker container* (mysql,offline image).
+ * A story-by-story walkthrough against the *running Docker container* (the compose stack: MySQL +
+ * app; this suite never starts anything itself).
  *
  * Unlike playwright.config.ts there is no webServer here: this suite drives whatever is already
  * answering on APP_PORT (default 8081), because the point is to demo the shipped container itself.
@@ -15,7 +16,9 @@ export default defineConfig({
   workers: 1,
   retries: 0,
   reporter: [['list']],
-  timeout: 90_000,
+  // The walk respects the product's own send limiter, so it pauses ~65s mid-run; with live model
+  // turns on top, the whole walk needs minutes, not the 90s it needed when it was 17 quick steps.
+  timeout: 240_000,
   expect: { timeout: 20_000 },
   use: {
     ...devices['Desktop Chrome'],
