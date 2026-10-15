@@ -17,6 +17,15 @@ public final class OfflinePrompts {
      */
     public static final String MODEL = "offline-mock";
 
+    /**
+     * Keyword: 退款 / refund, 发票 / invoice, 地址 / address -- a real order system's asks that this
+     * assistant has no capability for. Says so plainly and lists what it can actually do, mirroring
+     * what the real model is told to answer (US-1.10). Deliberately has no "（离线模式）" prefix: this is
+     * the honest answer an online assistant gives too, unlike {@link #UNKNOWN_REQUEST}.
+     */
+    public static final String OUT_OF_CAPABILITY =
+            "退款、改地址、开发票这些事我做不了，这里没有这些能力。" + "我能帮你查订单、查单张订单、提议下单、提议取消或修改订单状态，以及回答商品和单价。";
+
     /** Keyword: "cancel". */
     public static String cancelProposal(String orderNumber) {
         return "好的，我准备把订单 " + orderNumber + " 取消，请确认。";

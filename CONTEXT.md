@@ -1,6 +1,6 @@
 # Order Assistant
 
-客户通过对话让 AI 助手查询自己的订单，并在**确认后**创建或变更订单的上下文。
+客户通过对话让 AI 助手查询自己的订单，**并在确认后**才创建订单或流转它的状态的上下文。
 
 ## Language
 
@@ -29,7 +29,7 @@ Order 的生命周期状态：CREATED / COMPLETED / CANCELLED。
 _Avoid_: State
 
 **CatalogItem**:
-可下单的商品条目，是**价格的唯一来源**。
+可下单的商品条目，是**价格的唯一来源**——价格只在**创建订单那一刻**由它解析，随后作为快照留在 OrderLine 上；目录之后改价不影响已存在的订单。
 _Avoid_: Product, SKU, Goods
 
 ### 助手

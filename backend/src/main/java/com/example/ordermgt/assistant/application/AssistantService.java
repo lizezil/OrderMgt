@@ -22,6 +22,7 @@ import com.example.ordermgt.assistant.domain.ToolArgumentsRejectedException;
 import com.example.ordermgt.assistant.domain.ToolRegistry;
 import com.example.ordermgt.assistant.domain.ToolResult;
 import com.example.ordermgt.assistant.domain.ToolSpec;
+import com.example.ordermgt.assistant.infrastructure.ai.prompt.AiPrompts;
 import com.example.ordermgt.shared.api.ErrorCode;
 import com.example.ordermgt.shared.error.BusinessException;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -275,6 +276,17 @@ public class AssistantService {
         Conversation conversation = context.conversation();
         Long customerId = conversation.getCustomerId();
 
+        // 模型走样（US-1.11）：白名单外的工具名，或既没有工具调用、也没有一个字。两种都由服务端
+        // 确定性收场。拒绝执行不变：整轮算走样——先扫描再动手，同轮里合法的调用也不跑。
+        for (ProposedToolCall call : turn.toolCalls()) {
+            if (toolRegistry.find(call.name()).isEmpty()) {
+                return offScript(context, turn, call.name());
+            }
+        }
+        if (turn.toolCalls().isEmpty() && turn.text().isBlank()) {
+            return offScript(context, turn, null);
+        }
+
         List<ExecutedTool> executed = new ArrayList<>();
         List<PendingAction> pendingActions = new ArrayList<>();
         boolean repaired = false;
@@ -283,11 +295,12 @@ public class AssistantService {
             ToolSpec spec =
                     toolRegistry
                             .find(call.name())
+                            // 走样的轮早已在上面的扫描里掉头；查不到是我们自己的 bug，不是输入问题。
                             .orElseThrow(
                                     () ->
                                             new BusinessException(
-                                                    ErrorCode.UPSTREAM_AI_ERROR,
-                                                    "model called an unregistered tool: "
+                                                    ErrorCode.INTERNAL_ERROR,
+                                                    "unregistered tool survived the off-script scan: "
                                                             + call.name()));
             if (spec.mutating()) {
                 pendingActions.add(propose(customerId, conversation.getId(), spec, call));
@@ -350,8 +363,41 @@ public class AssistantService {
     }
 
     /**
+     * 模型走样时的收场（US-1.11）：顾客读到的必须是一句话，而不是一个错误码或沉默。模型写过的话 保留在前（流式那边已经流出去了，不回撤），后面接 {@link
+     * AiPrompts#OFF_SCRIPT_REPLY}；一个 字都没写就只落那一句。拒绝执行不变：这里不碰任何 handler，也不提议任何卡片。
+     *
+     * <p>"模型走样"与"上游故障"在审计里各说各的：走样记一行 ERROR、原因写明是哪一种，而故障照旧 抛 {@link AiUpstreamException} 以 502
+     * 收场。Run 不在失败通道上——顾客拿到了能读的回复， 这一轮就是收尾了的。
+     */
+    private AssistantResult offScript(
+            TurnContext context, AssistantTurn turn, String unregisteredTool) {
+        Conversation conversation = context.conversation();
+        String reason =
+                unregisteredTool != null
+                        ? "model called an unregistered tool: " + unregisteredTool
+                        : "model returned neither text nor a tool call";
+        String reply =
+                turn.text().isBlank()
+                        ? AiPrompts.OFF_SCRIPT_REPLY
+                        : turn.text().trim() + "\n\n" + AiPrompts.OFF_SCRIPT_REPLY;
+        conversationService.appendAssistantMessage(conversation.getId(), reply);
+        // 这次调用记 ERROR 而不是 OK：它已经发生、也计了费，却没有一个字被采用。
+        recordFailure(context, turn, new BusinessException(ErrorCode.UPSTREAM_AI_ERROR, reason));
+        return new AssistantResult(
+                conversation.getId(),
+                reply,
+                List.of(),
+                List.of(),
+                turn.usage(),
+                turn.model(),
+                turn.latencyMs());
+    }
+
+    /**
      * Records a model call that did not produce a usable result. Called from the blocking path's
-     * catches and from the streaming endpoint, so a failed call is auditable on both transports.
+     * catches, from the streaming endpoint, and from the off-script close-out (the model answered
+     * but nothing in its turn could be used), so a failed or unusable call is auditable on both
+     * transports.
      *
      * <p>{@code turn} is null when the call itself failed; when the model did answer but the turn
      * could not be completed, the row keeps the turn's model, latency and token spend -- the call

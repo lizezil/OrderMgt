@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
@@ -34,6 +35,7 @@ import com.example.ordermgt.assistant.domain.RunInterruptedException;
 import com.example.ordermgt.assistant.domain.RunRepository;
 import com.example.ordermgt.assistant.domain.RunStatus;
 import com.example.ordermgt.assistant.domain.ToolRegistry;
+import com.example.ordermgt.assistant.infrastructure.ai.prompt.AiPrompts;
 import com.example.ordermgt.assistant.infrastructure.ai.tools.OrderToolDefinitions;
 import com.example.ordermgt.catalog.domain.CatalogRepository;
 import com.example.ordermgt.order.application.OrderService;
@@ -275,19 +277,79 @@ class AssistantServiceTest {
                 .isEqualTo(AssistantService.SAFE_DEFAULT_NOTE + "\n\n你名下还没有订单。");
     }
 
+    /**
+     * US-1.11：白名单外的工具名不再让整轮以 502 收场——顾客读到确定性兜底话术；拒绝执行不变：整轮算走样， 同轮里合法的那一个也不跑。审计留下一行
+     * ERROR，"模型走样"的事实可查（US-7.1），而"上游故障"照旧 走 502，两者在审计里分得开。
+     */
     @Test
-    void proposingUnregisteredToolRejectsTheWholeTurn() {
+    void anUnregisteredToolIsClosedOutWithAFallbackInsteadOfFailingTheTurn() {
+        when(aiInvocationRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         AssistantTurn turn =
-                AssistantTurn.of(
+                new AssistantTurn(
                         "",
-                        List.of(new ProposedToolCall("dropDatabase", "{}", true)),
-                        AiUsage.EMPTY);
+                        List.of(
+                                new ProposedToolCall("queryMyOrders", "{}", false),
+                                new ProposedToolCall("dropDatabase", "{}", true)),
+                        new AiUsage(11, 22),
+                        "qwen-max",
+                        4242);
 
-        assertThatThrownBy(() -> service.complete(context(), turn))
-                .isInstanceOf(BusinessException.class)
-                .extracting(e -> ((BusinessException) e).errorCode())
-                .isEqualTo(ErrorCode.UPSTREAM_AI_ERROR);
+        AssistantResult result = service.complete(context(), turn);
+
+        assertThat(result.reply()).isEqualTo(AiPrompts.OFF_SCRIPT_REPLY);
+        assertThat(result.executed()).isEmpty();
+        assertThat(result.actions()).isEmpty();
+        verify(orderService, never()).listByCustomer(any(), anyLong(), anyLong());
         verify(pendingActionRepository, never()).save(any());
+        verify(conversationService)
+                .appendAssistantMessage(CONVERSATION, AiPrompts.OFF_SCRIPT_REPLY);
+        ArgumentCaptor<AiInvocation> audits = ArgumentCaptor.forClass(AiInvocation.class);
+        verify(aiInvocationRepository).save(audits.capture());
+        assertThat(audits.getValue().outcome()).isEqualTo(AiInvocationOutcome.ERROR);
+        assertThat(audits.getValue().error()).contains("dropDatabase");
+        assertThat(audits.getValue().model()).isEqualTo("qwen-max");
+        assertThat(audits.getValue().latencyMs()).isEqualTo(4242);
+    }
+
+    /** US-1.11 的另一种走样：既没有工具调用、也没有一个字——以前这一轮不落任何回复，顾客读到沉默； 现在服务端替它说那句兜底。 */
+    @Test
+    void aTurnWithNeitherTextNorToolCallStillAnswersTheCustomer() {
+        when(aiInvocationRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        AssistantResult result =
+                service.complete(context(), AssistantTurn.of("", List.of(), new AiUsage(3, 0)));
+
+        assertThat(result.reply()).isEqualTo(AiPrompts.OFF_SCRIPT_REPLY);
+        verify(conversationService)
+                .appendAssistantMessage(CONVERSATION, AiPrompts.OFF_SCRIPT_REPLY);
+        ArgumentCaptor<AiInvocation> audits = ArgumentCaptor.forClass(AiInvocation.class);
+        verify(aiInvocationRepository).save(audits.capture());
+        assertThat(audits.getValue().outcome()).isEqualTo(AiInvocationOutcome.ERROR);
+        assertThat(audits.getValue().error()).contains("neither text nor a tool call");
+    }
+
+    /**
+     * US-1.11 的流式一面：模型流了半截话然后走了样。已经在路上的字不回撤，兜底句接在后面；这一轮不是失败 ——Run 收 COMPLETED，流式那头是一个正常的 done 帧，而不是
+     * error 帧（两条传输共用 complete 这个落点）。
+     */
+    @Test
+    void anOffScriptTurnAfterHalfASentenceKeepsTheTextAndClosesTheRunCompleted() {
+        AssistantTurn answered =
+                new AssistantTurn(
+                        "让我帮你处理一下。",
+                        List.of(new ProposedToolCall("dropDatabase", "{}", true)),
+                        new AiUsage(11, 22),
+                        "qwen-max",
+                        4242);
+        ArgumentCaptor<Run> runs = ArgumentCaptor.forClass(Run.class);
+
+        AssistantResult result = service.executeTurn(context(), memory -> answered);
+
+        String halfPlusFallback = "让我帮你处理一下。" + "\n\n" + AiPrompts.OFF_SCRIPT_REPLY;
+        assertThat(result.reply()).isEqualTo(halfPlusFallback);
+        verify(conversationService).appendAssistantMessage(CONVERSATION, halfPlusFallback);
+        verify(runRepository, times(2)).save(runs.capture());
+        assertThat(runs.getAllValues().get(1).status()).isEqualTo(RunStatus.COMPLETED);
     }
 
     @Test
@@ -476,24 +538,29 @@ class AssistantServiceTest {
         verify(aiInvocationRepository).save(any());
     }
 
-    /** 模型答了但回合收不了尾（白名单外工具）：Run 一样收 FAILED，原因落在行上。 */
+    /** 模型答了但回合收不了尾（只读查询撞上业务失败，不是走样）：Run 一样收 FAILED，原因落在行上。 */
     @Test
     void aCompletionFailureStillClosesTheRunFailed() {
+        BusinessException notFound =
+                new BusinessException(ErrorCode.NOT_FOUND, "order not found: ORD404");
+        when(orderService.getByNumber(eq(CUSTOMER), eq("ORD404"))).thenThrow(notFound);
         AssistantTurn answered =
                 new AssistantTurn(
-                        "",
-                        List.of(new ProposedToolCall("dropDatabase", "{}", true)),
+                        "让我查一下这一单。",
+                        List.of(
+                                new ProposedToolCall(
+                                        "getOrderByNumber", "{\"orderNumber\":\"ORD404\"}", false)),
                         new AiUsage(11, 22),
                         "qwen-max",
                         4242);
         ArgumentCaptor<Run> runs = ArgumentCaptor.forClass(Run.class);
 
         assertThatThrownBy(() -> service.executeTurn(context(), memory -> answered))
-                .isInstanceOf(BusinessException.class);
+                .isSameAs(notFound);
 
         verify(runRepository, times(2)).save(runs.capture());
         assertThat(runs.getAllValues().get(1).status()).isEqualTo(RunStatus.FAILED);
-        assertThat(runs.getAllValues().get(1).error()).contains("dropDatabase");
+        assertThat(runs.getAllValues().get(1).error()).contains("ORD404");
     }
 
     /** 失败没有 message 时，Run 也要有一个理由——退回异常自己的名字，绝不留空。 */
@@ -573,11 +640,15 @@ class AssistantServiceTest {
         when(conversationService.appendCustomerMessage(eq(CUSTOMER), eq(CONVERSATION), anyString()))
                 .thenReturn(Message.customer(CONVERSATION, "hello", Instant.now()));
         when(conversationService.memory(CONVERSATION, MEMORY_WINDOW)).thenReturn(List.of());
-        // 模型点了一个白名单外的工具：complete() 会拒绝，但这次调用已经发生、也计了费
+        // 只读查询撞上业务失败（订单不存在）：complete() 收不了尾，但这次调用已经发生、也计了费
+        when(orderService.getByNumber(eq(CUSTOMER), eq("ORD404")))
+                .thenThrow(new BusinessException(ErrorCode.NOT_FOUND, "order not found: ORD404"));
         AssistantTurn answered =
                 new AssistantTurn(
-                        "",
-                        List.of(new ProposedToolCall("deleteEverything", "{}", true)),
+                        "让我查一下这一单。",
+                        List.of(
+                                new ProposedToolCall(
+                                        "getOrderByNumber", "{\"orderNumber\":\"ORD404\"}", false)),
                         new AiUsage(11, 22),
                         "qwen-max",
                         4242);
@@ -594,7 +665,7 @@ class AssistantServiceTest {
         assertThat(row.model()).isEqualTo("qwen-max");
         assertThat(row.latencyMs()).isEqualTo(4242);
         assertThat(row.promptTokens()).isEqualTo(11);
-        assertThat(row.error()).contains("deleteEverything");
+        assertThat(row.error()).contains("ORD404");
     }
 
     @Test

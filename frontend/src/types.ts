@@ -107,3 +107,13 @@ export interface ActionResolution {
   resultJson: string | null
   replayed: boolean
 }
+
+/**
+ * The answer to reinitiating an expired card (US-1.12): the same proposal, re-minted -- a fresh
+ * card with a new token and a full TTL. The old card is untouched; the new one is already appended
+ * to the conversation's history server-side, so the thread re-read is what shows it.
+ */
+export interface ReinitiatedAction {
+  card: ActionCard
+  conversationId: number
+}

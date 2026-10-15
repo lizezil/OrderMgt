@@ -21,12 +21,14 @@ import com.example.ordermgt.assistant.api.AssistantController;
 import com.example.ordermgt.assistant.api.ChatSender;
 import com.example.ordermgt.assistant.api.ConversationController;
 import com.example.ordermgt.assistant.api.ConversationEventPublisher;
+import com.example.ordermgt.assistant.application.ActionCard;
 import com.example.ordermgt.assistant.application.ActionConfirmationService;
 import com.example.ordermgt.assistant.application.AssistantResult;
 import com.example.ordermgt.assistant.application.AssistantService;
 import com.example.ordermgt.assistant.application.ConversationRunQueue;
 import com.example.ordermgt.assistant.application.ConversationService;
 import com.example.ordermgt.assistant.application.CustomerRateLimiter;
+import com.example.ordermgt.assistant.application.ReinitiatedAction;
 import com.example.ordermgt.assistant.application.RunRegistry;
 import com.example.ordermgt.assistant.application.RunService;
 import com.example.ordermgt.assistant.domain.AiAssistantPort;
@@ -404,6 +406,47 @@ class ApiContractTest {
                                 .with(TestAuth.authenticatedAs(CUSTOMER)))
                 .andExpect(status().isGone())
                 .andExpect(jsonPath("$.code").value("ACTION_EXPIRED"));
+    }
+
+    @Test
+    void reinitiatingAnExpiredCardReturnsTheFreshCard() throws Exception {
+        ActionCard freshCard =
+                new ActionCard(
+                        "new-token",
+                        "createOrder",
+                        "Place Order",
+                        "Place order: GIZMO-03 × 3",
+                        "{\"lines\":[{\"sku\":\"GIZMO-03\",\"quantity\":3}]}",
+                        List.of(),
+                        "/api/assistant/actions/new-token/confirm",
+                        "/api/assistant/actions/new-token/reject",
+                        Instant.now().plusSeconds(900),
+                        "PENDING");
+        when(actionConfirmationService.reinitiate(CUSTOMER, "old"))
+                .thenReturn(new ReinitiatedAction(freshCard, 7L));
+
+        mvc.perform(
+                        post("/api/assistant/actions/old/reinitiate")
+                                .with(TestAuth.authenticatedAs(CUSTOMER)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value("OK"))
+                .andExpect(jsonPath("$.data.card.token").value("new-token"))
+                .andExpect(jsonPath("$.data.card.toolName").value("createOrder"))
+                .andExpect(jsonPath("$.data.card.status").value("PENDING"))
+                .andExpect(jsonPath("$.data.conversationId").value(7));
+    }
+
+    @Test
+    void reinitiatingALiveOrResolvedCardReturnsConflict() throws Exception {
+        doThrow(new BusinessException(ErrorCode.CONFLICT))
+                .when(actionConfirmationService)
+                .reinitiate(CUSTOMER, "live");
+
+        mvc.perform(
+                        post("/api/assistant/actions/live/reinitiate")
+                                .with(TestAuth.authenticatedAs(CUSTOMER)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("CONFLICT"));
     }
 
     @Test

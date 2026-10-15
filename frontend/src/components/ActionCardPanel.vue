@@ -11,6 +11,8 @@ const emit = defineEmits<{
   (e: 'error', message: string): void
   /** The server already moved this card (410 expired / 409 resolved elsewhere): re-read it. */
   (e: 'stale'): void
+  /** A fresh card for the same proposal now sits in history (US-1.12): re-read the thread. */
+  (e: 'reinitiated'): void
 }>()
 
 const busy = defineModel<boolean>('busy', { default: false })
@@ -19,6 +21,7 @@ const busy = defineModel<boolean>('busy', { default: false })
 const justResolved = ref(false)
 
 const isPending = computed(() => props.card.status === 'PENDING')
+const isExpired = computed(() => props.card.status === 'EXPIRED')
 const executed = computed(() => props.card.status === 'CONFIRMED')
 const refused = computed(() => props.card.status === 'REJECTED' || props.card.status === 'EXPIRED')
 
@@ -98,6 +101,28 @@ async function resolve(kind: 'confirm' | 'reject'): Promise<void> {
     busy.value = false
   }
 }
+
+/**
+ * Re-mints an expired card (US-1.12): the server re-proposes the same tool and arguments as a
+ * brand-new card and appends it to history, so the thread re-read is what brings it on screen.
+ * A 409 says the local "已过期" is out of date -- the card is live or resolved elsewhere -- which
+ * is the same re-read, told apart from a real failure.
+ */
+async function reinitiate(): Promise<void> {
+  busy.value = true
+  try {
+    await api.reinitiate(props.card.token)
+    emit('reinitiated')
+  } catch (error) {
+    if (error instanceof ApiError && (error.status === 409 || error.status === 410)) {
+      emit('stale')
+      return
+    }
+    emit('error', errorMessage(error, '重新发起失败'))
+  } finally {
+    busy.value = false
+  }
+}
 </script>
 
 <template>
@@ -118,6 +143,13 @@ async function resolve(kind: 'confirm' | 'reject'): Promise<void> {
       <template v-if="isPending">
         <button class="btn authority" :disabled="busy" @click="resolve('confirm')">授权执行</button>
         <button class="btn quiet" :disabled="busy" @click="resolve('reject')">拒绝</button>
+      </template>
+      <!-- An expired card is the one dead state with a way forward: re-mint the same proposal
+           (US-1.12). A rejected card deliberately gets no such door -- refusing was the customer's
+           own word, and re-proposing is theirs to say again. -->
+      <template v-else-if="isExpired">
+        <button class="btn" :disabled="busy" @click="reinitiate">重新发起</button>
+        <span class="label">未执行</span>
       </template>
       <!-- One line where the buttons were, worded for the state it is in: an executed card says
            the door is shut now (no second execution), a refused one says nothing ever went

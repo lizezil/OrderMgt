@@ -40,6 +40,7 @@ vi.mock('../api', async () => {
       stopRun: vi.fn(),
       confirm: vi.fn(),
       reject: vi.fn(),
+      reinitiate: vi.fn(),
     },
   }
 })
@@ -1329,6 +1330,49 @@ describe('快速操作的守卫', () => {
 
     expect(historyMock).toHaveBeenCalledTimes(2)
     expect(wrapper.get('.slip-state').text()).toBe('已过期')
+    expect(wrapper.emitted('error')).toBeUndefined()
+  })
+
+  it('过期卡上点「重新发起」：重读会话，新卡片以一条新的卡片消息上场', async () => {
+    const dead = { ...pendingCard(), status: 'EXPIRED' as const }
+    const question: Message = {
+      id: 1,
+      role: 'CUSTOMER',
+      content: '帮我下单',
+      createdAt: '',
+      action: null,
+    }
+    const deadLine: Message = {
+      id: 2,
+      role: 'ASSISTANT',
+      content: dead.summary,
+      createdAt: '',
+      action: dead,
+    }
+    const fresh = { ...pendingCard(), token: 'tok-2' }
+    const freshLine: Message = {
+      id: 3,
+      role: 'ASSISTANT',
+      content: fresh.summary,
+      createdAt: '',
+      action: fresh,
+    }
+    listConversationsMock.mockResolvedValue([conversation(7, '下单')])
+    historyMock
+      .mockResolvedValueOnce([question, deadLine])
+      .mockResolvedValueOnce([question, deadLine, freshLine])
+    vi.mocked(api.reinitiate).mockResolvedValue({ card: fresh, conversationId: 7 })
+
+    const wrapper = await mountView()
+    await wrapper.get('.slip button').trigger('click')
+    await flushPromises()
+
+    expect(vi.mocked(api.reinitiate)).toHaveBeenCalledWith('tok-1')
+    expect(historyMock).toHaveBeenCalledTimes(2)
+    expect(wrapper.findAll('.slip-state').map((state) => state.text())).toEqual([
+      '已过期',
+      '待授权',
+    ])
     expect(wrapper.emitted('error')).toBeUndefined()
   })
 

@@ -95,6 +95,18 @@ public class MockAiAdapter implements AiAssistantPort {
      * The Chinese words are picked to stay disjoint -- 「订单」 is a lookup, 「下单」 is an order.
      */
     private AssistantTurn turn(String message) {
+        // 能力边界（US-1.10）：退款、改地址、开发票这类请求这里根本没有对应能力，如实说做不了。
+        // 这一支必须排在最前面：「帮我退款订单 ORD…」里带着「订单」两个字，落到列表支就会答非所问；
+        // 真实模型那边由 SYSTEM 提示词的同一句话负责，这里只是把同一份事实做成桩的台词。
+        if (message.contains("退款")
+                || message.contains("refund")
+                || message.contains("发票")
+                || message.contains("invoice")
+                || message.contains("地址")
+                || message.contains("address")) {
+            return AssistantTurn.of(OfflinePrompts.OUT_OF_CAPABILITY, List.of(), AiUsage.EMPTY);
+        }
+
         if (message.contains("cancel") || message.contains("取消")) {
             Matcher orderNumber = ORDER_NUMBER.matcher(message);
             if (orderNumber.find()) {

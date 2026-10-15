@@ -126,8 +126,10 @@ public class ConversationService {
      * Hides a conversation from the default list (ADR-0013). Only a quiescent conversation may be
      * archived: a Run in flight or a live confirmation card makes it non-quiescent and the request
      * a 409. Archiving is about visibility, not termination -- stopping a Run is its own action
-     * (ADR-0012) -- and this rule makes "can a card in an archived conversation still be
-     * confirmed?" moot: there is never a live card in one.
+     * (ADR-0012) -- and this rule answers "can a card in an archived conversation still be
+     * confirmed?" at the moment of archiving: a live card is never buried. Reinitiation (US-1.12)
+     * may later re-mint a card into an archived thread -- the customer acting in an open thread --
+     * and confirming it there is fine: the archive is visibility, never a freeze.
      */
     @Transactional
     public Conversation archive(Long customerId, Long conversationId) {

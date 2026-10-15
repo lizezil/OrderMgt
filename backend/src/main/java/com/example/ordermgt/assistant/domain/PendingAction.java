@@ -129,6 +129,15 @@ public class PendingAction {
         return expiresAt != null && !now.isBefore(expiresAt);
     }
 
+    /**
+     * 真的死了没有：EXPIRED（清扫器翻过牌），或 PENDING 但读取时已过 deadline（口径同 US-5.3——清扫器 没跑也不把死卡当活的）。这是
+     * US-1.12「重新发起」唯一的准入条件：只有死卡换得到新卡片。
+     */
+    public boolean isDeadAt(Instant now) {
+        return status == PendingActionStatus.EXPIRED
+                || (status == PendingActionStatus.PENDING && isExpiredAt(now));
+    }
+
     /** Outcome of {@link #adjudicate}: what a resolution attempt may do right now. */
     public enum Verdict {
         /** The action is live and this resolution may be applied. */

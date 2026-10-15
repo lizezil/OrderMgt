@@ -5,7 +5,7 @@ import { api, ApiError } from '../api'
 import type { ActionCard } from '../types'
 import ActionCardPanel from './ActionCardPanel.vue'
 
-// The card only ever talks to these two endpoints; everything else it renders is props. The real
+// The card only ever talks to these three endpoints; everything else it renders is props. The real
 // ApiError travels through so `instanceof` in the panel still holds -- a 410/409 is told apart by
 // the error's code and status, not by its text.
 vi.mock('../api', async () => {
@@ -13,12 +13,13 @@ vi.mock('../api', async () => {
   return {
     ApiError: actual.ApiError,
     ACTION_EXPIRED: actual.ACTION_EXPIRED,
-    api: { confirm: vi.fn(), reject: vi.fn() },
+    api: { confirm: vi.fn(), reject: vi.fn(), reinitiate: vi.fn() },
   }
 })
 
 const confirmMock = vi.mocked(api.confirm)
 const rejectMock = vi.mocked(api.reject)
+const reinitiateMock = vi.mocked(api.reinitiate)
 
 function card(overrides: Partial<ActionCard> = {}): ActionCard {
   return {
@@ -177,13 +178,12 @@ describe('授权就是那扇门', () => {
 })
 
 describe('历史里回填的卡片', () => {
-  const cases = [
+  const settled = [
     { status: 'CONFIRMED', label: '已执行', sign: '不会再执行' },
     { status: 'REJECTED', label: '已拒绝', sign: '未执行' },
-    { status: 'EXPIRED', label: '已过期', sign: '未执行' },
   ] as const
 
-  it.each(cases)('$status 只读呈现为「$label」，不留任何按钮', ({ status, label, sign }) => {
+  it.each(settled)('$status 只读呈现为「$label」，不留任何按钮', ({ status, label, sign }) => {
     const wrapper = mount(ActionCardPanel, { props: { card: card({ status }) } })
 
     expect(wrapper.get('.slip-state').text()).toBe(label)
@@ -192,5 +192,55 @@ describe('历史里回填的卡片', () => {
     expect(wrapper.text()).toContain(sign)
     // Only a card resolved in this session gets the stamp animation.
     expect(wrapper.get('.stamp').classes()).not.toContain('land')
+  })
+
+  it('EXPIRED 是唯一留了出路的死态：一颗「重新发起」，别无其他', () => {
+    const wrapper = mount(ActionCardPanel, { props: { card: card({ status: 'EXPIRED' }) } })
+
+    expect(wrapper.get('.slip-state').text()).toBe('已过期')
+    expect(wrapper.get('.stamp').text()).toBe('已过期')
+    expect(wrapper.findAll('button').map((button) => button.text())).toEqual(['重新发起'])
+    expect(wrapper.text()).toContain('未执行')
+    expect(wrapper.get('.stamp').classes()).not.toContain('land')
+  })
+})
+
+describe('重新发起过期的卡片', () => {
+  const expired = () => card({ status: 'EXPIRED' })
+
+  it('点一下就请服务端把同一个提议重新摆出来，随后视图重读会话', async () => {
+    reinitiateMock.mockResolvedValue({ card: { ...card(), token: 'tok-2' }, conversationId: 7 })
+    const wrapper = mount(ActionCardPanel, { props: { card: expired() } })
+
+    await wrapper.get('button').trigger('click')
+    await flushPromises()
+
+    expect(reinitiateMock).toHaveBeenCalledWith('tok-1')
+    expect(wrapper.emitted('reinitiated')).toHaveLength(1)
+    expect(wrapper.emitted('error')).toBeUndefined()
+    // 本地这张仍旧是「已过期」：新卡片由服务端写进历史，视图重读后才上场。
+    expect(wrapper.get('.slip-state').text()).toBe('已过期')
+  })
+
+  it('409（本地这张其实还活着或已在别处终结）请求重读，不当失败报', async () => {
+    reinitiateMock.mockRejectedValue(new ApiError('CONFLICT', '这张确认单还活着', 409))
+    const wrapper = mount(ActionCardPanel, { props: { card: expired() } })
+
+    await wrapper.get('button').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.emitted('stale')).toHaveLength(1)
+    expect(wrapper.emitted('error')).toBeUndefined()
+  })
+
+  it('服务端真的出错时如实报错，按钮留着可以再点', async () => {
+    reinitiateMock.mockRejectedValue(new Error('身份已失效'))
+    const wrapper = mount(ActionCardPanel, { props: { card: expired() } })
+
+    await wrapper.get('button').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.emitted('error')?.[0]).toEqual(['身份已失效'])
+    expect(wrapper.findAll('button')).toHaveLength(1)
   })
 })

@@ -1,5 +1,6 @@
 package com.example.ordermgt.assistant.application;
 
+import com.example.ordermgt.assistant.domain.Message;
 import com.example.ordermgt.assistant.domain.PendingAction;
 import com.example.ordermgt.assistant.domain.PendingActionRepository;
 import com.example.ordermgt.assistant.domain.PendingActionStatus;
@@ -8,9 +9,11 @@ import com.example.ordermgt.assistant.domain.ToolResult;
 import com.example.ordermgt.assistant.domain.ToolSpec;
 import com.example.ordermgt.shared.api.ErrorCode;
 import com.example.ordermgt.shared.error.BusinessException;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Locale;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -22,8 +25,12 @@ import org.springframework.transaction.annotation.Transactional;
  * the lock, and by the time it reads the row the status is already CONFIRMED, so it replays instead
  * of executing. Expiry is checked on the same read.
  *
- * <p>This method IS transactional, unlike the AI call path: the work here is a fast, database-only
- * mutation (create/cancel an order) plus the state change, and those must commit together.
+ * <p>It also owns reinitiation (US-1.12): turning an expired card back into a fresh proposal runs
+ * no tool either -- it mints a new card from the stored one and leaves everything else alone.
+ *
+ * <p>These methods ARE transactional, unlike the AI call path: the work here is a fast,
+ * database-only mutation (create/cancel an order) plus the state change, and those must commit
+ * together.
  */
 @RequiredArgsConstructor
 @Service
@@ -31,6 +38,12 @@ public class ActionConfirmationService {
 
     private final PendingActionRepository pendingActionRepository;
     private final ToolRegistry toolRegistry;
+    private final ConversationService conversationService;
+    private final ActionCardFactory actionCardFactory;
+
+    /** Configured in minutes (the shape it arrives in); {@link #actionTtl()} is how it is used. */
+    @Value("${assistant.action.ttl-minutes:15}")
+    private final long actionTtlMinutes;
 
     @Transactional
     public ActionResolution confirm(Long customerId, String token) {
@@ -94,6 +107,45 @@ public class ActionConfirmationService {
                 null,
                 false,
                 action.getConversationId());
+    }
+
+    /**
+     * 重新发起（US-1.12）：把过期卡片背后的**同一个提议**重新摆出来——不重问模型、不改参数，用卡片 存下的工具名与参数造一张全新的 PendingAction（新 token、新
+     * TTL 从头起算），并像一次新提议那样 进历史。它不执行任何变更：能跑到变更 handler 的仍然只有确认入口。
+     *
+     * <p>只有真的过期（EXPIRED，或清扫器没跑、读取时已过 deadline 的 PENDING——口径同 US-5.3）换得到 新卡片。仍活着或已终结的卡片都是
+     * CONFLICT：拒绝是客户的意思表示，重来该由客户重新开口，而不是 换张卡片再来一次。原卡片保持 EXPIRED，旧 token 依旧 ACTION_EXPIRED。
+     */
+    @Transactional
+    public ReinitiatedAction reinitiate(Long customerId, String token) {
+        PendingAction action = lockOwned(customerId, token);
+        if (!action.isDeadAt(Instant.now())) {
+            throw new BusinessException(
+                    ErrorCode.CONFLICT,
+                    "a "
+                            + action.getStatus().name().toLowerCase(Locale.ROOT)
+                            + " pending action cannot be reinitiated");
+        }
+
+        PendingAction renewed =
+                pendingActionRepository.save(
+                        PendingAction.propose(
+                                customerId,
+                                action.getConversationId(),
+                                action.getToolName(),
+                                action.getArgumentsJson(),
+                                action.getSummary(),
+                                actionTtl()));
+        ActionCard card = actionCardFactory.card(renewed);
+        Message cardMessage =
+                conversationService.appendAssistantMessage(
+                        action.getConversationId(), card.summary(), renewed.getId());
+        conversationService.linkActionToMessage(renewed, cardMessage.id());
+        return new ReinitiatedAction(card, action.getConversationId());
+    }
+
+    private Duration actionTtl() {
+        return Duration.ofMinutes(actionTtlMinutes);
     }
 
     private static BusinessException expired() {

@@ -2,6 +2,7 @@ package com.example.ordermgt.assistant.api;
 
 import com.example.ordermgt.assistant.application.ActionConfirmationService;
 import com.example.ordermgt.assistant.application.ActionResolution;
+import com.example.ordermgt.assistant.application.ReinitiatedAction;
 import com.example.ordermgt.security.CurrentCustomer;
 import com.example.ordermgt.shared.api.ApiResponse;
 import lombok.RequiredArgsConstructor;
@@ -18,7 +19,8 @@ import org.springframework.web.bind.annotation.RestController;
  *
  * <p>Resolving a card moves its conversation out of WAITING_APPROVAL, so each endpoint pushes the
  * conversation's new state to the customer's status stream (ADR-0014): the sidebar badge on every
- * open tab updates without a refresh.
+ * open tab updates without a refresh. Reinitiating pushes the same way -- the conversation has a
+ * live card waiting again.
  */
 @RequiredArgsConstructor
 @RestController
@@ -40,6 +42,19 @@ public class ActionController {
             @CurrentCustomer Long customerId, @PathVariable String token) {
         return ApiResponse.ok(
                 publish(customerId, actionConfirmationService.reject(customerId, token)));
+    }
+
+    /**
+     * Mints a fresh card from an expired one (US-1.12): same proposal, new token, new TTL -- and no
+     * execution. Reuses the same ownership check as confirm/reject, so a stranger's token reads as
+     * absent here too.
+     */
+    @PostMapping("/{token}/reinitiate")
+    public ApiResponse<ReinitiatedAction> reinitiate(
+            @CurrentCustomer Long customerId, @PathVariable String token) {
+        ReinitiatedAction reinitiated = actionConfirmationService.reinitiate(customerId, token);
+        events.stateChanged(customerId, reinitiated.conversationId());
+        return ApiResponse.ok(reinitiated);
     }
 
     private ActionResolution publish(Long customerId, ActionResolution resolution) {

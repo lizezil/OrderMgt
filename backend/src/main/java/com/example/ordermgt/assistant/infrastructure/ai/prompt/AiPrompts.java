@@ -1,20 +1,36 @@
 package com.example.ordermgt.assistant.infrastructure.ai.prompt;
 
 /**
- * Every piece of prose the assistant sends to the model lives here, so the wording can be found and
- * changed without hunting through the adapters.
+ * Every piece of assistant prose that must be found and changed in one place lives here: what the
+ * service sends to the model, and the fixed sentences it says on the model's own behalf when the
+ * turn goes off script (US-1.11).
  *
  * <p>Only the text lives here: the class that owns the data still assembles it into these templates
- * (the live catalog rows and the last confirmed order by {@code AssistantGroundingProvider}), so a
- * prompt stays a single edit without dragging the data it is filled with along with it.
+ * (the live catalog rows, the last confirmed order and the awaiting proposals by {@code
+ * AssistantGroundingProvider}), so a prompt stays a single edit without dragging the data it is
+ * filled with along with it.
  */
 public final class AiPrompts {
 
-    /** The standing system prompt, prepended to every model call. */
+    /**
+     * The standing system prompt, prepended to every model call.
+     *
+     * <p>The capabilities paragraph is the prose copy of the tool whitelist (附录 B of docs/用户故事.md):
+     * the model may claim nothing beyond it, and an honest "here no" beats an invented process.
+     * Adding a tool means extending that sentence too (US-1.10).
+     */
     public static final String SYSTEM =
             """
             You are an order management assistant. You may call tools to query or change
             a customer's orders.
+
+            Your capabilities, in full: list the customer's orders, look one order up by
+            its number, propose to place an order, propose to cancel or change an order's
+            status, and answer questions about the items and their unit prices. Anything
+            else -- refunds, address changes, invoices and the like -- this assistant
+            cannot do: say plainly that you cannot do it here. Never invent a process and
+            never pretend something was done; when the request is unclear, ask instead of
+            guessing.
             Rules:
             - Use only the provided tools; do not invent tools or arguments.
             - Mutating tools (create / cancel / change status) are only "proposals"; the
@@ -57,6 +73,28 @@ public final class AiPrompts {
 
     /** That order's number, then what was confirmed. */
     public static final String LAST_CONFIRMED_ORDER_ROW = "- %s (%s)\n";
+
+    /**
+     * Header before the proposals of this conversation still awaiting the customer's confirmation
+     * (US-1.13). Injected so "that one I just proposed" and "the second one" have determinate
+     * referents while a card is still pending -- the same job {@link #LAST_CONFIRMED_ORDER_HEADER}
+     * does after one is confirmed. Rows keep the order they were made in, the way the thread reads;
+     * the section is absent, never empty-headed, when nothing is waiting.
+     */
+    public static final String AWAITING_CONFIRMATION_HEADER =
+            "Proposals of this conversation still awaiting the customer's confirmation, in the order they were made:";
+
+    /**
+     * One waiting proposal: the tool it would run, then the card's own summary. Never its token.
+     */
+    public static final String AWAITING_CONFIRMATION_ROW = "- %s: %s\n";
+
+    /**
+     * 模型走样时服务端替它说的那句（US-1.11）：承认这次帮不上，并指出它真正能做的事。与只读结果的 渲染、{@code
+     * AssistantService.SAFE_DEFAULT_NOTE} 同一条路子——保证由确定性代码给，不靠模型自觉。
+     */
+    public static final String OFF_SCRIPT_REPLY =
+            "这次我没能帮上忙，请再试一次。我能做的是：查订单、查单张订单、提议下单、提议取消或修改订单状态，以及回答商品和单价。";
 
     private AiPrompts() {}
 }

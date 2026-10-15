@@ -394,6 +394,59 @@ class OrderAssistantBusinessFlowTest {
         assertThat(orderService.listByCustomer(customer, 1, 20).total()).isZero();
     }
 
+    /**
+     * 同一会话里躺着几张待确认卡片时，「刚才那个」也要有确定答案（US-1.13）。卡片自己那句话只在 PENDING 期间是"活的"，所以它必须进本会话的 grounding
+     * 事实——按提议顺序、连同工具名、不含量表的 token； 清扫器没跑、读取时已过 deadline 的死卡不进（口径同 US-5.3），别人的会话与客户更读不到。
+     */
+    @Test
+    void awaitingProposalsAreHandedToTheModelWhileTheyAreStillLive() {
+        long customer = newCustomer();
+        Conversation conversation = conversationService.start(customer);
+        PendingAction first =
+                pendingActionRepository.save(
+                        PendingAction.propose(
+                                customer,
+                                conversation.getId(),
+                                "createOrder",
+                                "{\"lines\":[{\"sku\":\"GIZMO-03\",\"quantity\":3}]}",
+                                "Create order: GIZMO-03 × 3",
+                                Duration.ofMinutes(15)));
+        PendingAction second =
+                pendingActionRepository.save(
+                        PendingAction.propose(
+                                customer,
+                                conversation.getId(),
+                                "cancelOrder",
+                                "{\"orderNumber\":\"ORD2026101421214197C492\"}",
+                                "Cancel order ORD2026101421214197C492",
+                                Duration.ofMinutes(15)));
+        pendingActionRepository.save(
+                PendingAction.propose(
+                        customer,
+                        conversation.getId(),
+                        "createOrder",
+                        "{\"lines\":[]}",
+                        "已过期的提议",
+                        Duration.ofMinutes(-1)));
+
+        String facts = groundingProvider.facts(customer, conversation.getId());
+
+        assertThat(facts).contains(AiPrompts.AWAITING_CONFIRMATION_HEADER);
+        assertThat(facts).contains("createOrder").contains(first.getSummary());
+        assertThat(facts).contains("cancelOrder").contains(second.getSummary());
+        assertThat(facts).doesNotContain("已过期的提议");
+        // 提议顺序保持：和线程读起来一致，「第二张」才数得对。
+        assertThat(facts.indexOf(first.getSummary()))
+                .isLessThan(facts.indexOf(second.getSummary()));
+        // token 是客户侧凭证，不是模型需要的事实。
+        assertThat(facts).doesNotContain(first.getToken()).doesNotContain(second.getToken());
+        // 按会话与客户收窄：新会话没有这段，别人的客户读不到这些卡片。
+        assertThat(groundingProvider.facts(customer, conversationService.start(customer).getId()))
+                .doesNotContain(AiPrompts.AWAITING_CONFIRMATION_HEADER);
+        assertThat(groundingProvider.facts(newCustomer(), conversation.getId()))
+                .doesNotContain("Create order: GIZMO-03 × 3");
+    }
+
     @Test
     void confirmingACardWithInvalidArgumentsIsRejectedWithoutSideEffects() {
         long customer = newCustomer();
@@ -455,14 +508,20 @@ class OrderAssistantBusinessFlowTest {
         assertThat(orderService.listByCustomer(bob, 1, 20).total()).isEqualTo(1);
     }
 
+    /**
+     * US-1.11：模型点了一个白名单外的工具。以前整轮 502，顾客只收到一个错误码；现在服务端垫一句确定性
+     * 兜底，顾客读到一句能读的话——但拒绝执行一个字节都没松：没有卡片、没有执行，整轮里合法的那个调用 也不跑，审计里留着一行 ERROR 说明模型走样了。
+     */
     @Test
-    void unregisteredToolProposalRejectsWholeTurnAndPersistsNoCard() throws Exception {
+    void anUnregisteredToolProposalIsClosedOutInProseAndPersistsNoCard() throws Exception {
         long customer = newCustomer();
         ScriptedAiConfiguration.program(
                 memory ->
                         AssistantTurn.of(
                                 "",
-                                List.of(new ProposedToolCall("deleteEverything", "{}", true)),
+                                List.of(
+                                        new ProposedToolCall("queryMyOrders", "{}", false),
+                                        new ProposedToolCall("deleteEverything", "{}", true)),
                                 AiUsage.EMPTY));
 
         mockMvc.perform(
@@ -470,10 +529,19 @@ class OrderAssistantBusinessFlowTest {
                                 .with(user(String.valueOf(customer)))
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .content("{\"message\":\"drop the database and run away\"}"))
-                .andExpect(status().isBadGateway())
-                .andExpect(jsonPath("$.code").value("UPSTREAM_AI_ERROR"));
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.reply").value(AiPrompts.OFF_SCRIPT_REPLY))
+                .andExpect(jsonPath("$.data.executed").isEmpty())
+                .andExpect(jsonPath("$.data.actions").isEmpty());
 
         assertThat(orderService.listByCustomer(customer, 1, 20).total()).isZero();
+        List<AiInvocationPO> rows =
+                aiInvocationMapper.selectList(
+                        Wrappers.<AiInvocationPO>lambdaQuery()
+                                .eq(AiInvocationPO::getCustomerId, customer));
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0).getOutcome()).isEqualTo("ERROR");
+        assertThat(rows.get(0).getError()).contains("deleteEverything");
     }
 
     @Test

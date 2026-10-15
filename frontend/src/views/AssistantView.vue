@@ -705,7 +705,8 @@ function onResolved(message: Message, card: ActionCard): void {
 /**
  * A 409/410 on resolve means the server moved this card without us (it expired, or another tab
  * resolved it): the honest fix is to re-read the thread so the slip stamps the server's state,
- * not to keep offering a button the server will refuse forever.
+ * not to keep offering a button the server will refuse forever. A successful reinitiation (US-1.12)
+ * lands here too: the server appended the fresh card to history, and re-reading is how it appears.
  */
 async function refreshFromServer(): Promise<void> {
   const conversationId = activeId.value
@@ -825,6 +826,7 @@ onMounted(async () => {
             :card="message.action"
             @resolved="(card) => onResolved(message, card)"
             @stale="refreshFromServer"
+            @reinitiated="refreshFromServer"
             @error="fail"
           />
         </article>

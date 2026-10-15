@@ -6,12 +6,15 @@ import com.example.ordermgt.assistant.domain.PendingActionRepository;
 import com.example.ordermgt.assistant.infrastructure.ai.prompt.AiPrompts;
 import com.example.ordermgt.catalog.domain.CatalogItem;
 import com.example.ordermgt.catalog.domain.CatalogRepository;
+import java.time.Instant;
+import java.util.List;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 /**
- * The facts the assistant is handed before every model call: the live catalog, and the order this
- * conversation most recently placed.
+ * The facts the assistant is handed before every model call: the live catalog, the order this
+ * conversation most recently placed, and the proposals of this conversation still awaiting the
+ * customer's answer.
  *
  * <p>The catalog half is what stops the model inventing skus ("Widget" instead of "WIDGET-01"), and
  * its list is capped twice -- by row count and by characters -- because an unbounded catalog would
@@ -23,6 +26,9 @@ import org.springframework.stereotype.Component;
  * customer just confirmed. That order number exists in the service (on the confirmed action) but
  * not in the transcript -- the card shows the outcome and no message records it -- so without this
  * line the model can only list everything and hope the newest entry is the one being asked about.
+ * The waiting-proposal list closes the same gap one step earlier (US-1.13): "就办刚才那个" said while
+ * cards are still pending needs a determinate newest proposal, and the card's own summary is the
+ * only record of what it says.
  */
 @Component
 public class AssistantGroundingProvider implements GroundingProvider {
@@ -49,6 +55,7 @@ public class AssistantGroundingProvider implements GroundingProvider {
         pendingActionRepository
                 .findLatestConfirmed(customerId, conversationId)
                 .ifPresent(action -> appendLastConfirmed(sb, action));
+        appendAwaitingConfirmation(sb, customerId, conversationId);
         return sb.toString();
     }
 
@@ -61,6 +68,30 @@ public class AssistantGroundingProvider implements GroundingProvider {
                                 AiPrompts.LAST_CONFIRMED_ORDER_ROW,
                                 action.getResultRef(),
                                 action.getSummary()));
+    }
+
+    /**
+     * The proposals of this conversation still waiting for an answer (US-1.13), in the order they
+     * were made, so "that one I just proposed" and "the second one" have determinate referents.
+     * Each row is the tool name plus the card's own stored summary -- no token (a customer-side
+     * credential is not a fact the model needs) -- and the section is absent when nothing waits,
+     * never an empty-headed one.
+     */
+    private void appendAwaitingConfirmation(
+            StringBuilder sb, Long customerId, Long conversationId) {
+        List<PendingAction> awaiting =
+                pendingActionRepository.findLivePending(customerId, conversationId, Instant.now());
+        if (awaiting.isEmpty()) {
+            return;
+        }
+        sb.append(AiPrompts.AWAITING_CONFIRMATION_HEADER).append('\n');
+        for (PendingAction action : awaiting) {
+            sb.append(
+                    String.format(
+                            AiPrompts.AWAITING_CONFIRMATION_ROW,
+                            action.getToolName(),
+                            action.getSummary()));
+        }
     }
 
     private String catalog() {

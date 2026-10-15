@@ -21,8 +21,8 @@ import org.junit.jupiter.api.Test;
 /**
  * Business rule: 模型不得臆造事实——服务端把提示词里需要的事实准备好（ADR-0006、ADR-0015）。
  *
- * <p>这里断言的是 facts() 的输出这一公开契约：它含哪些事实，是模型能否"说对"的根据。两类事实同一条契约——在售目录（sku 与单价），
- * 和本会话最近一次已确认的订单（那个订单号从未进入 transcript，没有这条路模型就无从知道顾客说的是哪一单）。
+ * <p>这里断言的是 facts() 的输出这一公开契约：它含哪些事实，是模型能否"说对"的根据。三类事实同一条契约——在售目录（sku 与单价）、 本会话最近一次已确认的订单（那个订单号从未进入
+ * transcript，没有这条路模型就无从知道顾客说的是哪一单）， 以及本会话还没确认的提议清单（卡片自己的话，只在 PENDING 期间"活着"，US-1.13）。
  */
 class AssistantGroundingProviderTest {
 
@@ -126,6 +126,57 @@ class AssistantGroundingProviderTest {
                 .doesNotContain("ORD");
     }
 
+    /** 「就办刚才那个」在卡片还没确认时也要有确定答案：清单按提议顺序，工具名 + 卡片自己那句话，绝不带 token。 */
+    @Test
+    void liveProposalsAreHandedOverWithTheirToolAndOwnWords() {
+        PendingAction first = proposed("createOrder", "Create order: GIZMO-03 × 3");
+        PendingAction second = proposed("cancelOrder", "Cancel order ORD2026101421214197C492");
+
+        String facts =
+                provider(
+                                catalog(item(1L, "WIDGET-01", "Widget", "19.90")),
+                                pendingActions(Optional.empty(), first, second))
+                        .facts(CUSTOMER, CONVERSATION);
+
+        assertThat(facts).contains(AiPrompts.AWAITING_CONFIRMATION_HEADER);
+        assertThat(facts).contains("createOrder").contains(first.getSummary());
+        assertThat(facts).contains("cancelOrder").contains(second.getSummary());
+        // 提案顺序保持：清单读起来和线程一致，「第二张」才数得对。
+        assertThat(facts.indexOf(first.getSummary()))
+                .isLessThan(facts.indexOf(second.getSummary()));
+        // 客户侧凭证不是模型需要的事实。
+        assertThat(facts).doesNotContain(first.getToken()).doesNotContain(second.getToken());
+    }
+
+    /** 没有待确认卡片的会话，这一段不出现——空标题同样是话，模型会照着它答不存在的卡片。 */
+    @Test
+    void aConversationWithNothingAwaitingSaysNothingAboutProposals() {
+        String facts =
+                provider(catalog(item(1L, "WIDGET-01", "Widget", "19.90")), noConfirmedAction())
+                        .facts(CUSTOMER, CONVERSATION);
+
+        assertThat(facts).doesNotContain(AiPrompts.AWAITING_CONFIRMATION_HEADER);
+    }
+
+    /** 两段并存、互不覆盖：「刚刚这个订单」解析到已确认的那一单，「刚才那个提议」解析到待确认清单的最后一张。 */
+    @Test
+    void theConfirmedOrderAndTheAwaitingProposalsCoexist() {
+        PendingAction confirmed = confirmedAction("ORD2026101421214197C492");
+        PendingAction awaiting = proposed("createOrder", "Create order: GIZMO-03 × 1");
+
+        String facts =
+                provider(
+                                catalog(item(1L, "WIDGET-01", "Widget", "19.90")),
+                                pendingActions(Optional.of(confirmed), awaiting))
+                        .facts(CUSTOMER, CONVERSATION);
+
+        assertThat(facts)
+                .contains(AiPrompts.LAST_CONFIRMED_ORDER_HEADER)
+                .contains(confirmed.getResultRef())
+                .contains(AiPrompts.AWAITING_CONFIRMATION_HEADER)
+                .contains(awaiting.getSummary());
+    }
+
     /** 200 rows / 12 000 chars, the same knobs production gets from application.yml. */
     private static AssistantGroundingProvider provider(
             CatalogRepository catalog, PendingActionRepository pendingActions) {
@@ -146,16 +197,23 @@ class AssistantGroundingProviderTest {
         return new CatalogItem(id, sku, name, new BigDecimal(price), true);
     }
 
-    /** A repository whose only conversation has a confirmed action behind it. */
-    private static PendingActionRepository pendingActions(Optional<PendingAction> latest) {
+    /** A repository whose conversation may have a confirmed action and proposals still waiting. */
+    private static PendingActionRepository pendingActions(
+            Optional<PendingAction> latest, PendingAction... awaiting) {
         PendingActionRepository repository = mock(PendingActionRepository.class);
         when(repository.findLatestConfirmed(any(), any())).thenReturn(latest);
+        when(repository.findLivePending(any(), any(), any())).thenReturn(List.of(awaiting));
         return repository;
     }
 
     /** A conversation that has confirmed nothing: the last-order fact simply is not there. */
     private static PendingActionRepository noConfirmedAction() {
         return pendingActions(Optional.empty());
+    }
+
+    private static PendingAction proposed(String toolName, String summary) {
+        return PendingAction.propose(
+                CUSTOMER, CONVERSATION, toolName, "{}", summary, Duration.ofMinutes(15));
     }
 
     private static PendingAction confirmedAction(String orderNumber) {

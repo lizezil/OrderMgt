@@ -88,6 +88,26 @@ public class PendingActionRepositoryImpl implements PendingActionRepository {
     }
 
     @Override
+    public List<PendingAction> findLivePending(Long customerId, Long conversationId, Instant now) {
+        if (customerId == null || conversationId == null) {
+            return List.of();
+        }
+        // Oldest first: the list is read as the thread reads, so "the second one" means the second
+        // proposal, not the second-most-recent row.
+        return mapper
+                .selectList(
+                        Wrappers.<PendingActionPO>lambdaQuery()
+                                .eq(PendingActionPO::getCustomerId, customerId)
+                                .eq(PendingActionPO::getConversationId, conversationId)
+                                .eq(PendingActionPO::getStatus, PendingActionStatus.PENDING.name())
+                                .gt(PendingActionPO::getExpiresAt, now)
+                                .orderByAsc(PendingActionPO::getId))
+                .stream()
+                .map(persistenceMapper::toDomain)
+                .toList();
+    }
+
+    @Override
     public Set<Long> livePendingConversationIds(Collection<Long> conversationIds, Instant now) {
         if (conversationIds == null || conversationIds.isEmpty()) {
             return Set.of();

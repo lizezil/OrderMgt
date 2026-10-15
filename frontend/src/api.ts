@@ -7,6 +7,7 @@ import type {
   Order,
   PageResult,
   QueuedTurn,
+  ReinitiatedAction,
 } from './types'
 import { CLIENT_STREAM_TIMEOUT_MS, DEFAULT_PAGE_SIZE, FIRST_PAGE } from './constants'
 
@@ -448,6 +449,14 @@ export const api = {
 
   reject: (token: string) =>
     request<ActionResolution>(`/api/assistant/actions/${token}/reject`, { method: 'POST' }),
+
+  /**
+   * Re-mints an expired card as a fresh proposal (US-1.12): the same tool and arguments, a new
+   * token and a full TTL, no model call. The server refuses anything but a dead card with 409, and
+   * the new card arrives in history like a fresh proposal.
+   */
+  reinitiate: (token: string) =>
+    request<ReinitiatedAction>(`/api/assistant/actions/${token}/reinitiate`, { method: 'POST' }),
 
   listOrders: (page = FIRST_PAGE, size = DEFAULT_PAGE_SIZE) =>
     request<PageResult<Order>>(`/api/orders?page=${page}&size=${size}`),
