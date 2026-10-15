@@ -119,7 +119,11 @@ async function resolve(kind: 'confirm' | 'reject'): Promise<void> {
         <button class="btn authority" :disabled="busy" @click="resolve('confirm')">授权执行</button>
         <button class="btn quiet" :disabled="busy" @click="resolve('reject')">拒绝</button>
       </template>
-      <span v-else class="label">未再执行</span>
+      <!-- One line where the buttons were, worded for the state it is in: an executed card says
+           the door is shut now (no second execution), a refused one says nothing ever went
+           through. "未再执行" over both read as a contradiction on a card stamped 已执行. -->
+      <span v-else-if="executed" class="label">不会再执行</span>
+      <span v-else class="label">未执行</span>
       <span class="rule" />
       <span class="clock data">{{ expiryLabel }}</span>
     </div>

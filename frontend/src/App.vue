@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { ensureCsrf, logout as apiLogout, me, onUnauthorized } from './api'
+import { useSessionStore } from './store'
 import { useToast } from './toast'
 import AssistantView from './views/AssistantView.vue'
 import CatalogView from './views/CatalogView.vue'
@@ -29,6 +30,11 @@ onMounted(async () => {
 })
 
 const viewerKey = computed(() => customer.value ?? '')
+
+// The session store is a module singleton, and the conversation list, the open conversation and
+// the queue inside it all belong to *this* customer. Signing out -- or signing in as somebody
+// else -- must wipe it, or the next AssistantView mounts over the previous identity's rail.
+watch(customer, () => useSessionStore().reset())
 
 function signedIn(id: string): void {
   customer.value = id

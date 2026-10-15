@@ -41,7 +41,10 @@ const waiting = reactive(new Set<number>())
 /** The thread as rendered. A waiting send is only in the queue strip; ordering and identity stay
  *  with `messages`, so a reply still settles into the place its question occupies. */
 const visibleMessages = computed(() => messages.value.filter((message) => !waiting.has(message.id)))
-const activeId = ref<number | null>(null)
+/** The open conversation lives in the store: this screen is destroyed by every tab switch, and
+ *  a component-local id would lose the customer's place (see store.ts). */
+const activeId = store.activeId
+const listLoaded = store.listLoaded
 const draft = ref('')
 const loading = ref(false)
 const usage = ref<{ prompt: number; completion: number; latencyMs: number } | null>(null)
@@ -721,7 +724,16 @@ onMounted(async () => {
     // a conversation created after the read still arrives as a `state` increment.
     store.connect()
     await track(store.refresh())
-    if (conversations.value.length) {
+    // Back to where the customer was reading, if the screen merely remounted (a tab switch);
+    // only a genuinely fresh screen falls back to the newest conversation.
+    const remembered =
+      activeId.value !== null
+        ? (conversations.value.find((c) => c.id === activeId.value) ??
+          archived.value.find((c) => c.id === activeId.value))
+        : undefined
+    if (remembered) {
+      await open(remembered)
+    } else if (conversations.value.length) {
       await open(conversations.value[0])
     }
   } catch (error) {
@@ -736,7 +748,10 @@ onMounted(async () => {
       <button class="btn authority" @click="newConversation">＋ 新对话</button>
     </div>
     <ol class="docket">
-      <li v-if="!conversations.length && !archived.length" class="docket-empty">
+      <!-- The first list is still in flight: say "loading", not "no conversations" (the same
+           guard OrdersView applies -- an empty bucket must never masquerade as an answer). -->
+      <li v-if="!listLoaded" class="docket-empty">加载中…</li>
+      <li v-else-if="!conversations.length && !archived.length" class="docket-empty">
         还没有对话。新建一段，问问你的订单。
       </li>
       <ConversationRow

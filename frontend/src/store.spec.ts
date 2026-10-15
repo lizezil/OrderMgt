@@ -52,6 +52,20 @@ describe('会话 store', () => {
     expect(useSessionStore().archived.value.map((c) => c.id)).toEqual([2])
   })
 
+  it('listLoaded 随首份列表翻真；reset 连它和激活会话一起清', async () => {
+    const store = useSessionStore()
+    expect(store.listLoaded.value).toBe(false)
+
+    store.activeId.value = 42
+    listMock.mockResolvedValue([conversation(1, 'A')])
+    await store.refresh()
+    expect(store.listLoaded.value).toBe(true)
+
+    store.reset()
+    expect(store.listLoaded.value).toBe(false)
+    expect(store.activeId.value).toBe(null)
+  })
+
   it('首帧 snapshot 一次性初始化整个列表', async () => {
     const store = useSessionStore()
     store.connect()

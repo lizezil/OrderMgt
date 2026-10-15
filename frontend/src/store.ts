@@ -27,6 +27,22 @@ const archived = ref<Conversation[]>([])
 /** The waiting line per conversation id; only ids this client has seen appear here. */
 const queue = ref<Record<number, QueuedTurnView[]>>({})
 
+/**
+ * The conversation the assistant screen is looking at. It lives here, not on the screen, because
+ * the screen is destroyed by every tab switch (App.vue renders it under `v-if`): a component-local
+ * id would reset to "nothing open", and the remount would silently jump the customer to the
+ * newest conversation instead of back to the one they were reading.
+ */
+const activeId = ref<number | null>(null)
+
+/**
+ * Whether the rail's lists have been filled at least once. Without it the empty state flashes
+ * "还没有对话" in front of a customer who has a dozen conversations still in flight from the
+ * server -- the same trap OrdersView guards by loading first (an empty list must not be mistaken
+ * for "no data").
+ */
+const listLoaded = ref(false)
+
 let connected = false
 let stopped = false
 
@@ -38,6 +54,7 @@ function isArchived(conversation: Conversation): boolean {
 function replaceAll(all: Conversation[]): void {
   conversations.value = all.filter((conversation) => !isArchived(conversation))
   archived.value = all.filter(isArchived)
+  listLoaded.value = true
 }
 
 /** Replaces one conversation in place, or inserts it at the front when it is new to this screen. */
@@ -119,6 +136,10 @@ export function useSessionStore() {
   return {
     conversations,
     archived,
+    /** The conversation the assistant screen is on; survives the screen's remounts (see above). */
+    activeId,
+    /** Whether the first full list has landed; gates the rail's empty state. */
+    listLoaded,
     /** Replaces both lists from a full read, after a REST action or the stream's `snapshot`. */
     replaceAll,
     /** Files one conversation under the group its lifecycle now says it belongs to. */
@@ -141,13 +162,15 @@ export function useSessionStore() {
     noteQueued,
     reconcileQueue,
     forgetQueued,
-    /** Clears everything, including the connection; for tests. */
+    /** Clears everything, including the connection; for tests and for signing out. */
     reset: (): void => {
       stopped = true
       connected = false
       conversations.value = []
       archived.value = []
       queue.value = {}
+      activeId.value = null
+      listLoaded.value = false
     },
   }
 }

@@ -1,0 +1,30 @@
+import { defineConfig, devices } from '@playwright/test'
+
+/**
+ * A story-by-story walkthrough against the *running Docker container* (mysql,offline image).
+ *
+ * Unlike playwright.config.ts there is no webServer here: this suite drives whatever is already
+ * answering on APP_PORT (default 8081), because the point is to demo the shipped container itself.
+ * Every step saves a full-page screenshot named after the user story it evidences.
+ */
+const BASE_URL = `http://127.0.0.1:${process.env.APP_PORT ?? 8081}`
+
+export default defineConfig({
+  testDir: './story-walk',
+  fullyParallel: false,
+  workers: 1,
+  retries: 0,
+  reporter: [['list']],
+  timeout: 90_000,
+  expect: { timeout: 20_000 },
+  use: {
+    ...devices['Desktop Chrome'],
+    baseURL: BASE_URL,
+    viewport: { width: 1440, height: 960 },
+    deviceScaleFactor: 2,
+    trace: 'off',
+    screenshot: 'off',
+    video: 'off',
+  },
+  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+})

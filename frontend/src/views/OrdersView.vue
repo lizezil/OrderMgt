@@ -57,8 +57,8 @@ onMounted(load)
     <div class="panel-inner">
       <h1>订单</h1>
       <p class="sub">
-        这里只出现当前客户名下的订单。换一个客户号再回来，你会看到完全不同的账目——
-        查询一律按请求头里的客户收窄。
+        这里只出现当前客户名下的订单。登出后换一个客户登录再回来，你会看到完全不同的账目——
+        查询一律按登录会话的客户收窄。
       </p>
 
       <!-- First load: "loading" first, so an empty ledger is never mistaken for "no orders". -->

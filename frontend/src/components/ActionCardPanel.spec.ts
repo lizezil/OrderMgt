@@ -119,7 +119,7 @@ describe('授权就是那扇门', () => {
     expect(wrapper.get('.slip').classes()).toContain('done')
     expect(wrapper.get('.stamp').classes()).toContain('land')
     expect(wrapper.findAll('button')).toHaveLength(0)
-    expect(wrapper.text()).toContain('未再执行')
+    expect(wrapper.text()).toContain('不会再执行')
   })
 
   it('拒绝同样只走服务端，卡片落到已拒绝', async () => {
@@ -178,18 +178,18 @@ describe('授权就是那扇门', () => {
 
 describe('历史里回填的卡片', () => {
   const cases = [
-    { status: 'CONFIRMED', label: '已执行' },
-    { status: 'REJECTED', label: '已拒绝' },
-    { status: 'EXPIRED', label: '已过期' },
+    { status: 'CONFIRMED', label: '已执行', sign: '不会再执行' },
+    { status: 'REJECTED', label: '已拒绝', sign: '未执行' },
+    { status: 'EXPIRED', label: '已过期', sign: '未执行' },
   ] as const
 
-  it.each(cases)('$status 只读呈现为「$label」，不留任何按钮', ({ status, label }) => {
+  it.each(cases)('$status 只读呈现为「$label」，不留任何按钮', ({ status, label, sign }) => {
     const wrapper = mount(ActionCardPanel, { props: { card: card({ status }) } })
 
     expect(wrapper.get('.slip-state').text()).toBe(label)
     expect(wrapper.get('.stamp').text()).toBe(label)
     expect(wrapper.findAll('button')).toHaveLength(0)
-    expect(wrapper.text()).toContain('未再执行')
+    expect(wrapper.text()).toContain(sign)
     // Only a card resolved in this session gets the stamp animation.
     expect(wrapper.get('.stamp').classes()).not.toContain('land')
   })

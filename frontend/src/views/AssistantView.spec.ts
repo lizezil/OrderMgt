@@ -144,6 +144,38 @@ describe('打开助手', () => {
     expect(wrapper.get('article.customer').text()).toContain('你')
   })
 
+  it('store 里已有激活会话（切页回来）时，挂载回到那一条而不是最新的一条', async () => {
+    listConversationsMock.mockResolvedValue([
+      conversation(7, '最新的一段'),
+      conversation(9, '我正在看的'),
+    ])
+    // beforeEach 的 reset 已把 store 清空；这里模拟切页前正看着 9 的残留态。
+    useSessionStore().activeId.value = 9
+
+    const wrapper = await mountView()
+
+    expect(historyMock).toHaveBeenCalledWith(9)
+    expect(wrapper.get('.entry.active').text()).toContain('我正在看的')
+  })
+
+  it('会话列表还在路上时侧栏说「加载中」，不谎报「还没有对话」', async () => {
+    let settle: (value: Conversation[]) => void = () => {}
+    listConversationsMock.mockImplementation(
+      () => new Promise<Conversation[]>((resolve) => (settle = resolve)),
+    )
+
+    const wrapper = mount(AssistantView)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('加载中')
+    expect(wrapper.text()).not.toContain('还没有对话')
+
+    settle([])
+    await flushPromises()
+    expect(wrapper.text()).toContain('还没有对话')
+    expect(wrapper.text()).not.toContain('加载中')
+  })
+
   it('一段对话都没有时，直接给出可以照着说的第一句', async () => {
     listConversationsMock.mockResolvedValue([])
 
