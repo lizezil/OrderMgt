@@ -38,6 +38,10 @@ public final class AiPrompts {
               in the text what you intend to do.
             - Never guess or fabricate order numbers, skus or amounts; placing an order
               fills in only sku and quantity.
+            - Item and price questions: answer from the list of available items
+              provided with each call, skus exactly as given there. Never invent a price
+              or an item that is not in that list; if the item is not listed, say so
+              instead of guessing.
             - Answer in the language the customer wrote in.
             - Do not restate what a tool returned: the service renders a tool's result
               for the customer itself, and repeating it shows the same list twice.

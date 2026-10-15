@@ -7,11 +7,14 @@ import static org.assertj.core.api.Assertions.catchThrowableOfType;
 import com.example.ordermgt.assistant.application.ConversationRunQueue.Admission;
 import com.example.ordermgt.shared.api.ErrorCode;
 import com.example.ordermgt.shared.error.BusinessException;
+import com.example.ordermgt.shared.logging.MdcContext;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.RejectedExecutionException;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
 
 /**
@@ -32,6 +35,11 @@ class ConversationRunQueueTest {
     @BeforeEach
     void setUp() {
         queue = new ConversationRunQueue(dispatched::add, 5);
+    }
+
+    @AfterEach
+    void clearMdc() {
+        MDC.clear();
     }
 
     @Test
@@ -216,6 +224,28 @@ class ConversationRunQueueTest {
         assertThat(dispatched).hasSize(2);
     }
 
+    /**
+     * US-8.5：排队项上工用的是"提交它的人"的关联标识。派发它的是上一个回合的收尾线程——那个线程的 MDC
+     * 属于刚结束的回合；排队项若不自己带着快照，日志里就会张冠李戴，而这是这条链上唯一会错的地方。
+     */
+    @Test
+    void aQueuedTurnStartsWithTheSubmittersIdsNotTheFinishingThreads() {
+        queue.submitStreaming(CONVERSATION, new RecordingTurn());
+
+        MdcContext.put(MdcContext.TRACE_ID, "trace-waiter");
+        RecordingTurn waiting = new RecordingTurn();
+        queue.submitStreaming(CONVERSATION, waiting);
+
+        // 收尾线程（前一个回合的延续）身上是别的标识；它来派发排队项，不得污染它。
+        MdcContext.put(MdcContext.TRACE_ID, "trace-of-previous-turn");
+        queue.finished(CONVERSATION);
+        runDispatched();
+
+        assertThat(waiting.traceIdAtStart).isEqualTo("trace-waiter");
+        // 派发结束，线程还回原样：收尾逻辑后半段自己写的日志还得是自己的标识。
+        assertThat(MDC.get(MdcContext.TRACE_ID)).isEqualTo("trace-of-previous-turn");
+    }
+
     private void runDispatched() {
         List<Runnable> pending = new ArrayList<>(dispatched);
         dispatched.clear();
@@ -237,10 +267,12 @@ class ConversationRunQueueTest {
 
         private boolean started;
         private boolean dropped;
+        private String traceIdAtStart;
 
         @Override
         public void start() {
             started = true;
+            traceIdAtStart = MDC.get(MdcContext.TRACE_ID);
         }
 
         @Override

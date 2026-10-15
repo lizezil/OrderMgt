@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The console line, carrying the request's correlation ids (US-8.5): %X{traceId} and
+  %X{customerId} are put by the request filter, %X{conversationId} and %X{runId} by the turn that
+  is running; a thread with no request behind it (schedulers, startup) shows the slots empty. A
+  logback file rather than application.yml because the ids need a pattern, and application.yml
+  keeps overriding only the levels (logging.level.*).
+-->
+<configuration>
+
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] [trace=%X{traceId:-}] [cust=%X{customerId:-}] [conv=%X{conversationId:-}] [run=%X{runId:-}] %logger{40} - %msg%n</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+
+</configuration>

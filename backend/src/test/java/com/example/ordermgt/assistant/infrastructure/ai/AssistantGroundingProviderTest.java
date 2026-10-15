@@ -3,6 +3,7 @@ package com.example.ordermgt.assistant.infrastructure.ai;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.example.ordermgt.assistant.domain.PendingAction;
@@ -49,6 +50,19 @@ class AssistantGroundingProviderTest {
 
         // 目录为空时宁可什么都不说，也不能凭空列出一个商品。
         assertThat(facts).doesNotContain("unit price");
+    }
+
+    /**
+     * US-4.6：助手报的商品与单价和 {@code GET /api/catalog/items} 是同一个读——两边都走 {@code
+     * findAllActive()}，"上架集"只有这一处来源，报价与接口不可能是两个目录。
+     */
+    @Test
+    void theCatalogTheAssistantQuotesIsTheSameReadTheCatalogEndpointServes() {
+        CatalogRepository catalog = catalog(item(1L, "WIDGET-01", "Widget", "19.90"));
+
+        provider(catalog, noConfirmedAction()).facts(CUSTOMER, CONVERSATION);
+
+        verify(catalog).findAllActive();
     }
 
     /**

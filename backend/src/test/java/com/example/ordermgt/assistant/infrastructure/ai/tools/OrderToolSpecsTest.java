@@ -63,6 +63,21 @@ class OrderToolSpecsTest {
                                 .collect(Collectors.toMap(ToolSpec::name, Function.identity()));
     }
 
+    /**
+     * US-4.6：工具箱恰好是白名单五件——没有 {@code listCatalog} 是定夺而非缺口（ADR-0006）： 目录由 grounding
+     * 每次注入，工具数量本身就是模型每次都要读的说明书。
+     */
+    @Test
+    void theToolboxIsExactlyTheFiveWhitelistedToolsWithNoCatalogListing() {
+        assertThat(specs.keySet())
+                .containsExactlyInAnyOrder(
+                        "queryMyOrders",
+                        "getOrderByNumber",
+                        "createOrder",
+                        "updateOrderStatus",
+                        "cancelOrder");
+    }
+
     @Test
     void createOrderPassesOnlySkuAndQuantityForServerSidePricing() {
         when(orderService.createOrder(eq(CUSTOMER), anyList()))

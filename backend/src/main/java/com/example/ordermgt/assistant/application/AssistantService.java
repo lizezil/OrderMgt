@@ -25,6 +25,7 @@ import com.example.ordermgt.assistant.domain.ToolSpec;
 import com.example.ordermgt.assistant.infrastructure.ai.prompt.AiPrompts;
 import com.example.ordermgt.shared.api.ErrorCode;
 import com.example.ordermgt.shared.error.BusinessException;
+import com.example.ordermgt.shared.logging.MdcContext;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -126,59 +127,77 @@ public class AssistantService {
             TurnContext context,
             Consumer<Run> onRunOpen,
             Function<List<ChatMessage>, AssistantTurn> modelCall) {
-        Run run = runRepository.save(Run.start(context.conversation().getId()));
-        onRunOpen.accept(run);
-        AssistantTurn turn = null;
-        AssistantResult result = null;
+        // The turn-scoped half of the correlation ids: conversationId before the Run exists,
+        // runId once it does (US-8.5). They stay in the MDC for the turn's whole duration,
+        // so every log line the turn writes -- here or on a streaming worker that carried
+        // the request's ids in -- names customer, conversation and run together.
+        MdcContext.put(MdcContext.CONVERSATION_ID, context.conversation().getId());
         try {
-            turn = modelCall.apply(context.memory());
-            ToolArgumentsRejectedException rejection = null;
+            Run run = runRepository.save(Run.start(context.conversation().getId()));
+            MdcContext.put(MdcContext.RUN_ID, run.id());
+            onRunOpen.accept(run);
+            AssistantTurn turn = null;
+            AssistantResult result = null;
             try {
-                result = complete(context, turn, StrictArgs.REJECT);
-            } catch (ToolArgumentsRejectedException ex) {
-                // 只在这里接住，接着的处理留在 try 的正文里：兜底那一次自己也可能失手，
-                // 而它必须走下面同一条失败出口——Run 不能因为一次修复失败而留在 RUNNING。
-                rejection = ex;
-            }
-            if (rejection != null) {
-                // 顾客看不见被丢弃的那一次调用（模型一个字都没吐），所以它留下一行失败，重问的那次另记。
-                // 已经开口了就不重问：流式那边顾客已经看见半截话，第二段开场白比按错参数更糟。
-                if (turn.text().isBlank()) {
-                    recordFailure(context, turn, rejection);
-                    turn = modelCall.apply(observation(context.memory(), rejection));
+                turn = modelCall.apply(context.memory());
+                ToolArgumentsRejectedException rejection = null;
+                try {
+                    result = complete(context, turn, StrictArgs.REJECT);
+                } catch (ToolArgumentsRejectedException ex) {
+                    // 只在这里接住，接着的处理留在 try 的正文里：兜底那一次自己也可能失手，
+                    // 而它必须走下面同一条失败出口——Run 不能因为一次修复失败而留在 RUNNING。
+                    rejection = ex;
                 }
-                // 有界：只重问这一次。仍然非法就不再问，改用安全参数收尾并声明（ADR-0016）。
-                result = complete(context, turn, StrictArgs.REPAIR);
+                if (rejection != null) {
+                    // 顾客看不见被丢弃的那一次调用（模型一个字都没吐），所以它留下一行失败，重问的那次另记。
+                    // 已经开口了就不重问：流式那边顾客已经看见半截话，第二段开场白比按错参数更糟。
+                    if (turn.text().isBlank()) {
+                        recordFailure(context, turn, rejection);
+                        turn = modelCall.apply(observation(context.memory(), rejection));
+                    }
+                    // 有界：只重问这一次。仍然非法就不再问，改用安全参数收尾并声明（ADR-0016）。
+                    result = complete(context, turn, StrictArgs.REPAIR);
+                }
+            } catch (RunCancelledException ex) {
+                persistHalfTurn(
+                        context,
+                        ex.partial(),
+                        null,
+                        AiInvocationOutcome.CANCELLED,
+                        CANCELLED_REASON);
+                runRepository.save(
+                        run.finish(RunStatus.CANCELLED, CANCELLED_REASON, Instant.now()));
+                throw ex;
+            } catch (RunInterruptedException ex) {
+                // The customer did not ask for this, but the words already streamed were already
+                // seen:
+                // they land in the transcript, marked as cut off, so the reply is never a blank.
+                persistHalfTurn(
+                        context,
+                        ex.partial(),
+                        INTERRUPTED_SUFFIX,
+                        AiInvocationOutcome.ERROR,
+                        INTERRUPTED_REASON);
+                runRepository.save(
+                        run.finish(RunStatus.INTERRUPTED, INTERRUPTED_REASON, Instant.now()));
+                throw ex;
+            } catch (RuntimeException ex) {
+                // The model call may never have happened (null turn) or may have answered and been
+                // billed before the turn could not be completed -- recordFailure tells the two
+                // apart.
+                recordFailure(context, turn, ex);
+                runRepository.save(run.finish(RunStatus.FAILED, reasonOf(ex), Instant.now()));
+                throw ex;
             }
-        } catch (RunCancelledException ex) {
-            persistHalfTurn(
-                    context, ex.partial(), null, AiInvocationOutcome.CANCELLED, CANCELLED_REASON);
-            runRepository.save(run.finish(RunStatus.CANCELLED, CANCELLED_REASON, Instant.now()));
-            throw ex;
-        } catch (RunInterruptedException ex) {
-            // The customer did not ask for this, but the words already streamed were already seen:
-            // they land in the transcript, marked as cut off, so the reply is never a blank.
-            persistHalfTurn(
-                    context,
-                    ex.partial(),
-                    INTERRUPTED_SUFFIX,
-                    AiInvocationOutcome.ERROR,
-                    INTERRUPTED_REASON);
-            runRepository.save(
-                    run.finish(RunStatus.INTERRUPTED, INTERRUPTED_REASON, Instant.now()));
-            throw ex;
-        } catch (RuntimeException ex) {
-            // The model call may never have happened (null turn) or may have answered and been
-            // billed before the turn could not be completed -- recordFailure tells the two apart.
-            recordFailure(context, turn, ex);
-            runRepository.save(run.finish(RunStatus.FAILED, reasonOf(ex), Instant.now()));
-            throw ex;
+            // Closing the Run sits OUTSIDE the catch on purpose: a failure to write that row must
+            // not
+            // be mistaken for a failed turn, which would record an ERROR audit row for a reply that
+            // did land. If this throws, the Run is left RUNNING for the startup reconciliation.
+            runRepository.save(run.finish(RunStatus.COMPLETED, null, Instant.now()));
+            return result;
+        } finally {
+            MdcContext.remove(MdcContext.CONVERSATION_ID, MdcContext.RUN_ID);
         }
-        // Closing the Run sits OUTSIDE the catch on purpose: a failure to write that row must not
-        // be mistaken for a failed turn, which would record an ERROR audit row for a reply that
-        // did land. If this throws, the Run is left RUNNING for the startup reconciliation.
-        runRepository.save(run.finish(RunStatus.COMPLETED, null, Instant.now()));
-        return result;
     }
 
     /** Recorded on a Run the customer stopped, so the row explains itself. */

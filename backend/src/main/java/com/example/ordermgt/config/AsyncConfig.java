@@ -1,10 +1,9 @@
 package com.example.ordermgt.config;
 
-import java.util.concurrent.ArrayBlockingQueue;
+import com.example.ordermgt.shared.logging.MdcPropagatingExecutor;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -26,22 +25,15 @@ public class AsyncConfig {
      * max-concurrent} running + {@code queue-capacity} waiting, a {@link
      * java.util.concurrent.RejectedExecutionException} surfaces to the caller, which answers 503
      * rather than opening a stream that would only time out waiting for a thread.
+     *
+     * <p>A stream turn writes its logs on a worker thread, so the pool is {@link
+     * MdcPropagatingExecutor}: every task carries the submitting thread's correlation ids and
+     * restores the worker's state afterwards.
      */
     @Bean(name = "assistantStreamExecutor", destroyMethod = "shutdown")
     public Executor assistantStreamExecutor(
             @Value("${assistant.stream.max-concurrent:20}") int maxConcurrent,
             @Value("${assistant.stream.queue-capacity:100}") int queueCapacity) {
-        return new ThreadPoolExecutor(
-                maxConcurrent,
-                maxConcurrent,
-                0L,
-                TimeUnit.MILLISECONDS,
-                new ArrayBlockingQueue<>(queueCapacity),
-                runnable -> {
-                    Thread thread = new Thread(runnable, "assistant-stream");
-                    thread.setDaemon(true);
-                    return thread;
-                },
-                new ThreadPoolExecutor.AbortPolicy());
+        return new MdcPropagatingExecutor(maxConcurrent, queueCapacity, "assistant-stream");
     }
 }

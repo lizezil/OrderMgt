@@ -2,6 +2,7 @@ package com.example.ordermgt.assistant.application;
 
 import com.example.ordermgt.shared.api.ErrorCode;
 import com.example.ordermgt.shared.error.BusinessException;
+import com.example.ordermgt.shared.logging.MdcContext;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -90,7 +91,7 @@ public class ConversationRunQueue {
                 if (slot.waiting.size() >= depth) {
                     throw new BusinessException(ErrorCode.QUEUE_FULL);
                 }
-                Item item = new Item(nextItemId(), turn);
+                Item item = new Item(nextItemId(), turn, MdcContext.snapshot());
                 slot.waiting.addLast(item);
                 return new Admission.Queued(item.id(), slot.waiting.size());
             }
@@ -140,12 +141,14 @@ public class ConversationRunQueue {
      */
     public void finished(Long conversationId) {
         for (; ; ) {
-            Turn next = takeNext(conversationId);
+            Item next = takeNext(conversationId);
             if (next == null) {
                 return;
             }
             try {
-                executor.execute(next::start);
+                // Dispatched with the item's own ids, not this thread's: the hand-off runs on the
+                // finishing worker, whose MDC belongs to the turn that just ended.
+                executor.execute(MdcContext.carry(next.context(), next.turn()::start));
                 return;
             } catch (RuntimeException ex) {
                 // The pool refused the hand-off. Tell that item's client rather than pinning it at
@@ -154,7 +157,7 @@ public class ConversationRunQueue {
                         "could not start the next queued turn for conversation {}: {}",
                         conversationId,
                         ex.getMessage());
-                drop(next);
+                drop(next.turn());
             }
         }
     }
@@ -221,10 +224,10 @@ public class ConversationRunQueue {
     public record QueuedItem(String itemId, int position) {}
 
     /**
-     * Hands back the next waiting turn, leaving the slot held for it; null means the line is empty
+     * Hands back the next waiting item, leaving the slot held for it; null means the line is empty
      * and the conversation goes back to idle.
      */
-    private Turn takeNext(Long conversationId) {
+    private Item takeNext(Long conversationId) {
         synchronized (this) {
             Slot slot = conversations.get(conversationId);
             if (slot == null) {
@@ -235,7 +238,7 @@ public class ConversationRunQueue {
                 conversations.remove(conversationId);
                 return null;
             }
-            return next.turn();
+            return next;
         }
     }
 
@@ -245,11 +248,11 @@ public class ConversationRunQueue {
      */
     private void release(Long conversationId) {
         for (; ; ) {
-            Turn next = takeNext(conversationId);
+            Item next = takeNext(conversationId);
             if (next == null) {
                 return;
             }
-            drop(next);
+            drop(next.turn());
         }
     }
 
@@ -273,5 +276,11 @@ public class ConversationRunQueue {
         private final Deque<Item> waiting = new ArrayDeque<>();
     }
 
-    private record Item(String id, Turn turn) {}
+    /**
+     * One waiting turn plus the correlation ids of whoever submitted it, captured where it was
+     * submitted (the request thread, which the filter has already stamped). A queued turn starts
+     * later, on a pool worker and possibly dispatched by a different turn's finishing thread, so it
+     * cannot inherit a context at start time -- it must carry its own.
+     */
+    private record Item(String id, Turn turn, Map<String, String> context) {}
 }
