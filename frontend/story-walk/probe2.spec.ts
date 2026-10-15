@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test } from '@playwright/test'
 
 /** Is the open conversation preserved across a tab switch (the fix for the jump-to-newest bug)? */
 test('切页后主区：稳定态是否恢复会话', async ({ page }) => {
@@ -20,7 +20,8 @@ test('切页后主区：稳定态是否恢复会话', async ({ page }) => {
   const secondTitle = (await second.textContent())?.trim().slice(0, 24)
   await second.locator('button.entry').click()
   await expect(second.locator('button.entry.active')).toBeVisible({ timeout: 5_000 })
-  const activeBefore = await page.locator('button.entry.active')
+  const activeBefore = await page
+    .locator('button.entry.active')
     .first()
     .textContent()
     .then((t) => t?.trim().slice(0, 24))
@@ -32,14 +33,15 @@ test('切页后主区：稳定态是否恢复会话', async ({ page }) => {
   // 给重挂的加载留时间，再看稳定态。
   await page.waitForTimeout(2_000)
   const blankNow = await page.locator('p.blank').isVisible()
-  const activeAfter = await page.locator('button.entry.active')
+  const activeAfter = await page
+    .locator('button.entry.active')
     .first()
     .textContent()
     .then((t) => t?.trim().slice(0, 24))
   const lines = await page.locator('article.line').count()
   console.log(
     `[probe] 切页前高亮「${activeBefore}」 vs 切页后高亮「${activeAfter}」 ` +
-      `(blank=${blankNow}, 消息条数=${lines})`,
+      `(blank=${blankNow}, 消息条数=${lines}, 侧栏第二行=「${secondTitle}」, 主区首行=「${openedTitle}」)`,
   )
   // 回归断言：切页回来必须还停在原来那段会话上。
   expect(activeAfter).toBe(activeBefore)

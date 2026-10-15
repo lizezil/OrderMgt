@@ -25,6 +25,10 @@ public final class AiPrompts {
             - Answer in the language the customer wrote in.
             - Do not restate what a tool returned: the service renders a tool's result
               for the customer itself, and repeating it shows the same list twice.
+            - A message framed "[Tool result]" may also say a call was refused: those
+              arguments were wrong and nothing ran. Either call the tool again with
+              corrected arguments, or ask the customer what they meant -- never repeat
+              the arguments that were refused.
             """;
 
     /**

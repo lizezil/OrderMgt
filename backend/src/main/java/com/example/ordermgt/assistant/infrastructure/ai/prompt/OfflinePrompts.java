@@ -25,6 +25,9 @@ public final class OfflinePrompts {
     /** Keyword: list / what / how many / check / query / show. */
     public static final String LOOKING_UP_ORDERS = "我查一下你自己的订单。";
 
+    /** Keyword: 最近 / 最新 / 刚刚 -- one order, not a page of them. */
+    public static final String LOOKING_UP_LATEST = "我看看你最近的一单。";
+
     /** Keyword: buy / purchase / order, with a product in the message. */
     public static final String ORDER_PREPARED = "我已经为你准备好订单，请确认。";
 

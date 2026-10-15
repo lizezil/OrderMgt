@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
@@ -161,11 +162,12 @@ class AssistantServiceTest {
                 .satisfies(
                         tool -> {
                             assertThat(tool.name()).isEqualTo("queryMyOrders");
-                            assertThat(tool.resultJson()).isEqualTo("[]");
+                            assertThat(tool.resultJson())
+                                    .isEqualTo("{\"total\":0,\"returned\":0,\"orders\":[]}");
                         });
         // 顾客读到的是报告，不是负载：那一行 [工具名] {JSON} 从正文里消失了（ADR-0015）。
         assertThat(result.reply()).contains("Let me look up your own orders.", "你名下还没有订单。");
-        assertThat(result.reply()).doesNotContain("[queryMyOrders]", "[]");
+        assertThat(result.reply()).doesNotContain("[queryMyOrders]", "{\"total\"");
         verify(orderService).listByCustomer(CUSTOMER, 1, 20);
         verify(pendingActionRepository, never()).save(any());
     }
@@ -188,6 +190,89 @@ class AssistantServiceTest {
                                 AiUsage.EMPTY));
 
         assertThat(result.reply()).isEqualTo("你名下还没有订单。");
+    }
+
+    /**
+     * 模型给的只读参数服务端跑不成（ADR-0016），而且它一个字都没吐：把拒绝当观察回喂、重问一次。顾客从没看见第一次调用， 所以它留下一行失败，重问的那次另记一行——一次调用永远一行。
+     */
+    @Test
+    void illegalReadonlyArgumentsAreFedBackToTheModelAndReAskedOnce() {
+        givenANewConversation();
+        when(orderService.listByCustomer(CUSTOMER, 1, 1))
+                .thenReturn(PageResult.of(List.of(), 0, 1, 1));
+        when(aiAssistantPort.respond(eq(CUSTOMER), any(), anyList()))
+                .thenReturn(limitTurn("", "{\"limit\":5000}"), limitTurn("", "{\"limit\":1}"));
+        when(aiInvocationRepository.save(any()))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        AssistantResult result = service.chat(CUSTOMER, null, "查询最近一次下单");
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<ChatMessage>> memories = ArgumentCaptor.forClass(List.class);
+        verify(aiAssistantPort, times(2)).respond(eq(CUSTOMER), any(), memories.capture());
+        List<ChatMessage> first = memories.getAllValues().get(0);
+        List<ChatMessage> second = memories.getAllValues().get(1);
+        assertThat(second).hasSize(first.size() + 1);
+        ChatMessage observation = second.get(second.size() - 1);
+        // 观察说的是被拒的那一次：哪个工具、什么参数、服务器为什么跑不成。模型看不见自己刚才提议过什么。
+        assertThat(observation.role()).isEqualTo(Role.TOOL);
+        assertThat(observation.content())
+                .contains("queryMyOrders")
+                .contains("limit")
+                .contains("5000");
+        // 这条观察只活在这次重问里：顾客没说过它，历史里也不该有服务器的一句报错。
+        verify(conversationService, never()).appendCustomerMessage(any(), any(), contains("5000"));
+
+        assertThat(result.reply()).isEqualTo("你名下还没有订单。");
+        ArgumentCaptor<AiInvocation> audits = ArgumentCaptor.forClass(AiInvocation.class);
+        verify(aiInvocationRepository, times(2)).save(audits.capture());
+        assertThat(audits.getAllValues().get(0).outcome()).isEqualTo(AiInvocationOutcome.ERROR);
+        assertThat(audits.getAllValues().get(0).error()).contains("limit");
+        assertThat(audits.getAllValues().get(1).outcome()).isEqualTo(AiInvocationOutcome.OK);
+    }
+
+    /** 模型已经开口了就不重问：流式那边顾客已经看见半截话，再来一段开场白比按错参数更糟。这一轮改用安全参数收尾， 并在回复里声明——降级不能是静悄悄的。 */
+    @Test
+    void aModelThatAlreadySpokeIsRepairedInsteadOfReAsked() {
+        givenANewConversation();
+        when(orderService.listByCustomer(CUSTOMER, 1, 20))
+                .thenReturn(PageResult.of(List.of(), 0, 1, 20));
+        when(aiAssistantPort.respond(eq(CUSTOMER), any(), anyList()))
+                .thenReturn(limitTurn("我看看你最近的一单。", "{\"limit\":5000}"));
+        when(aiInvocationRepository.save(any()))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        AssistantResult result = service.chat(CUSTOMER, null, "查询最近一次下单");
+
+        verify(aiAssistantPort).respond(eq(CUSTOMER), any(), anyList());
+        assertThat(result.reply())
+                .startsWith(AssistantService.SAFE_DEFAULT_NOTE)
+                .contains("我看看你最近的一单。")
+                .contains("你名下还没有订单。");
+        // 一次调用一行审计：这一次的回复照样落地，所以它是 OK，而不是再补一条失败。
+        ArgumentCaptor<AiInvocation> audits = ArgumentCaptor.forClass(AiInvocation.class);
+        verify(aiInvocationRepository).save(audits.capture());
+        assertThat(audits.getValue().outcome()).isEqualTo(AiInvocationOutcome.OK);
+    }
+
+    /** 回喂之后仍然非法：不再问第三次。有界重问的意思是"最多一次"，不是"直到模型听话"。 */
+    @Test
+    void theReAskIsBoundedAndTheSecondRefusalIsRepairedNotRetried() {
+        givenANewConversation();
+        when(orderService.listByCustomer(CUSTOMER, 1, 20))
+                .thenReturn(PageResult.of(List.of(), 0, 1, 20));
+        when(aiAssistantPort.respond(eq(CUSTOMER), any(), anyList()))
+                .thenReturn(
+                        limitTurn("", "{\"limit\":5000}"), limitTurn("", "{\"limit\":\"three\"}"));
+        when(aiInvocationRepository.save(any()))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        AssistantResult result = service.chat(CUSTOMER, null, "查询最近一次下单");
+
+        verify(aiAssistantPort, times(2)).respond(eq(CUSTOMER), any(), anyList());
+        assertThat(result.reply())
+                .startsWith(AssistantService.SAFE_DEFAULT_NOTE)
+                .isEqualTo(AssistantService.SAFE_DEFAULT_NOTE + "\n\n你名下还没有订单。");
     }
 
     @Test
@@ -278,7 +363,7 @@ class AssistantServiceTest {
 
         service.executeTurn(
                 context(),
-                () -> new AssistantTurn("hello", List.of(), AiUsage.EMPTY, "qwen-max", 5));
+                memory -> new AssistantTurn("hello", List.of(), AiUsage.EMPTY, "qwen-max", 5));
 
         verify(runRepository, times(2)).save(runs.capture());
         assertThat(runs.getAllValues().get(0).status()).isEqualTo(RunStatus.RUNNING);
@@ -298,7 +383,7 @@ class AssistantServiceTest {
                         () ->
                                 service.executeTurn(
                                         context(),
-                                        () -> {
+                                        memory -> {
                                             throw boom;
                                         }))
                 .isSameAs(boom);
@@ -324,7 +409,7 @@ class AssistantServiceTest {
                                 service.executeTurn(
                                         context(),
                                         run -> {},
-                                        () -> {
+                                        memory -> {
                                             throw new RunCancelledException(partial);
                                         }))
                 .isInstanceOf(RunCancelledException.class);
@@ -353,7 +438,7 @@ class AssistantServiceTest {
                                 service.executeTurn(
                                         context(),
                                         run -> {},
-                                        () -> {
+                                        memory -> {
                                             throw new RunInterruptedException(
                                                     partial,
                                                     new IllegalStateException(
@@ -380,7 +465,7 @@ class AssistantServiceTest {
                                 service.executeTurn(
                                         context(),
                                         run -> {},
-                                        () -> {
+                                        memory -> {
                                             throw new RunCancelledException(null);
                                         }))
                 .isInstanceOf(RunCancelledException.class);
@@ -403,7 +488,7 @@ class AssistantServiceTest {
                         4242);
         ArgumentCaptor<Run> runs = ArgumentCaptor.forClass(Run.class);
 
-        assertThatThrownBy(() -> service.executeTurn(context(), () -> answered))
+        assertThatThrownBy(() -> service.executeTurn(context(), memory -> answered))
                 .isInstanceOf(BusinessException.class);
 
         verify(runRepository, times(2)).save(runs.capture());
@@ -421,7 +506,7 @@ class AssistantServiceTest {
                         () ->
                                 service.executeTurn(
                                         context(),
-                                        () -> {
+                                        memory -> {
                                             throw silent;
                                         }))
                 .isSameAs(silent);
@@ -441,7 +526,7 @@ class AssistantServiceTest {
                         () ->
                                 service.executeTurn(
                                         context(),
-                                        () ->
+                                        memory ->
                                                 new AssistantTurn(
                                                         "hello",
                                                         List.of(),
@@ -566,6 +651,23 @@ class AssistantServiceTest {
     private static AssistantService.TurnContext context() {
         return new AssistantService.TurnContext(
                 conversation(), List.of(new ChatMessage(null, "help me order")));
+    }
+
+    /** {@code chat()} 起步的那三步：新会话、顾客的话落库、取本轮记忆。 */
+    private void givenANewConversation() {
+        when(conversationService.start(CUSTOMER)).thenReturn(conversation());
+        when(conversationService.appendCustomerMessage(eq(CUSTOMER), eq(CONVERSATION), anyString()))
+                .thenReturn(Message.customer(CONVERSATION, "查询最近一次下单", Instant.now()));
+        when(conversationService.memory(CONVERSATION, MEMORY_WINDOW))
+                .thenReturn(List.of(new ChatMessage(Role.CUSTOMER, "查询最近一次下单")));
+    }
+
+    /** 一轮"只查最近几单"的提议：文字可空，参数由用例给——空文字正是实测过的那种失败。 */
+    private static AssistantTurn limitTurn(String text, String argumentsJson) {
+        return AssistantTurn.of(
+                text,
+                List.of(new ProposedToolCall("queryMyOrders", argumentsJson, false)),
+                AiUsage.EMPTY);
     }
 
     private static AssistantTurn createOrderTurn() {

@@ -193,7 +193,7 @@ describe('打开助手', () => {
         id: 1,
         role: 'ASSISTANT',
         content:
-          '你名下有 1 张订单：\n\n`ORD-1` · 已创建 · ¥19.90\n- `WIDGET-01` Widget × 1 = ¥19.90',
+          '你名下有 1 张订单，最近一张是 `ORD-1`：\n\n`ORD-1` · 2026-10-15 14:41 · 已创建 · ¥19.90\n- `WIDGET-01` Widget × 1 = ¥19.90',
         createdAt: '',
         action: null,
       } as Message,
@@ -202,7 +202,9 @@ describe('打开助手', () => {
     const wrapper = await mountView()
 
     expect(wrapper.text()).toContain('你名下有 1 张订单')
+    // 引导句点名的那一张与块首是同一个订单号：两处都是行内代码，等宽可复制。
     expect(wrapper.findAll('article.assistant .said code').map((code) => code.text())).toEqual([
+      'ORD-1',
       'ORD-1',
       'WIDGET-01',
     ])

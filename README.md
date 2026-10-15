@@ -172,16 +172,18 @@ make db-up                  # 测试跑在真实 MySQL 上，先把常驻容器�
 
 ```bash
 make test-frontend   # L5：纯前端，不需要 MySQL
-make test-e2e        # L6：自己去构建 SPA 并起应用（:8082），所以要先 make db-up
+make test-e2e        # L6：自己去构建 SPA 并起应用（:8082），所以要先 make db-up（现状见下方注：这一层当前是红的）
 ```
 
 L5 里含金量最高的是一份 `api.spec.ts`：流式回复的分帧（一帧跨两次 `read`、CRLF、多行 `data`）、`done` 事件的整轮语义、每个写请求都带 `X-XSRF-TOKEN`、`401` 一律回登录页——这些都是**服务端无法替客户端保证**的契约，也正是这次补齐用例时揪出下面两个真实缺陷的地方。
 
 L6 不信任 Vite dev server：`e2e/support/serve.mjs` 先把 SPA 构建进 `backend/src/main/resources/static`，再以 `mysql,offline` 两个 profile 起后端，于是浏览器访问的就是打包产物本身，与 API 同源、没有代理；助手是 `offline` 的桩适配器，所以每条流都确定、也不产生模型费用。E2E 连的是独立库 `ordermgt_e2e`，每个用例现取一个没人用过的客户号，因此可以反复跑而不必清库。
 
+> **现状，说清楚：L6 自 2026-10-14 的会话登录改造之后就没有跟进。** `e2e/support/viewer.ts` 仍往 localStorage 写 `ordermgt.customerId`、请求仍带 `X-Customer-Id`，而身份早已改成会话 cookie + PIN 登录（`.env` 里那两位客户），于是 14 条用例全部停在登录页之前——2026-10-15 实测 14/14 红，与本次改动无关。**活着的那一层是 `frontend/story-walk`**（`playwright.walkthrough.config.ts`）：按当前身份模型登录，对着**已经在跑**的应用驱动（`APP_PORT`，默认 :8081；容器或本地 `mysql,offline` 都行），一个故事留一张截图，US-1.9「最近一次下单」就在其中。修 L6（把 14 条迁到 cookie 登录）是待办，不在这次范围内。
+
 首次在另一台机器上跑 L6 要先装浏览器：`cd frontend && pnpm exec playwright install chromium`。（`@playwright/test` 钉在 1.49.1 —— 更新的版本已不再发布 macOS 12 可用的 Chromium。）
 
-前端其余检查：`cd frontend && pnpm typecheck`（`vue-tsc`，覆盖 `e2e/` 与三个配置文件）。`pnpm build` 会先跑 Prettier，再交给 Vite。
+前端其余检查：`cd frontend && pnpm typecheck`（`vue-tsc`，覆盖 `e2e/`、`story-walk/` 与四个配置文件）。`pnpm build` 会先跑 Prettier，再交给 Vite。
 
 ## 代码风格
 
@@ -234,11 +236,11 @@ docs/             项目文档
 
 - **超时**：1.1.8 没有 `spring.ai.*.timeout` 属性，所以同步调用通过 `RestClientCustomizer` 换上一个带超时的 `JdkClientHttpRequestFactory`（连接 5s / 读取 60s，取自 `AiCallPolicy`，见 `AiHttpClientConfig`）；流式调用在 `SpringAiAdapter` 里用 Reactor `.timeout(2min)` + `.blockLast(2min)` 双上界，与 `ConversationController` 的 SSE 超时同读 `AiCallPolicy.STREAM_TIMEOUT_MS`（类路径上没有反应式连接器，WebClient 走 JDK HttpClient，没有全局响应超时可设）。
 - **重试**：Spring AI 自带 `RetryTemplate`，默认 10 次 / 退避 `2s×5` 上限 3 分钟——一个卡死的上游最坏能被拖近 19 分钟。我们只用属性把默认收到 **3 次 / 1s / ×2 / 上限 8s**。流式不被框架重试，所以 `respondStreaming` 自建**同款**退避（`AiCallPolicy`）：**首字节之前**失败整条重放（3 次 / 1s / ×2 / 上限 8s），首字节之后不再重试——重放会把已吐出的字再吐一遍。两处都**没有** jitter、没有熔断；重复执行的风险由幂等键与卡片行锁兜住。
-- **审计**：每次模型调用都往 `ai_invocations` 落一行——成功走 `AssistantService.complete`，失败与超时在 `recordFailure`（同步的 `chat` 与流式的 `streamTurn` 都会调用），失败行带上 model、latency 与 `ERROR`/`TIMEOUT`。审计是旁路：写不进去只记一条 warn，绝不影响本轮回复。读取走 `GET /api/assistant/conversations/{id}/invocations`（归属校验同历史，他人会话 403）。
+- **审计**：每次模型调用都往 `ai_invocations` 落一行——成功走 `AssistantService.complete`，失败与超时在 `recordFailure`（同步的 `chat` 与流式的 `streamTurn` 都会调用），失败行带上 model、latency 与 `ERROR`/`TIMEOUT`。**一次调用永远一行**：参数被拒后有界重问（[ADR-0016](docs/adr/0016-refuse-illegal-arguments-and-re-ask-once.md)）时，被丢弃的那次记 `ERROR`、重问那次记它自己的结果，所以一轮顾客发送最多两行。审计是旁路：写不进去只记一条 warn，绝不影响本轮回复。读取走 `GET /api/assistant/conversations/{id}/invocations`（归属校验同历史，他人会话 403）。
 
 ## 回复长什么样：只读结果由服务端渲染成人话
 
-顾客的气泡里**没有原始 JSON**。只读工具（`queryMyOrders` / `getOrderByNumber`）在 schema 与 handler 旁边各带一个 `ToolReport`（负载 → markdown），`AssistantService` 把**模型自己的话在前、渲染块在后**拼成一条回复；负载本身不进 transcript，只随响应的 `executed[].resultJson` 出去，供审计与排障。渲染形态是「一行引导 + 每单一块」：`` `订单号` `` · 中文状态 · `¥`合计，下面每行一条明细——订单号与 sku 包进行内代码保持等宽可复制，标签与金额走正文。空结果说「你名下还没有订单。」而不是 `[]`；整整一页时末尾声明「（只列出最近 20 张）」（上限就是共享的 `Paging.DEFAULT_SIZE`），不把一页当成全部历史。
+顾客的气泡里**没有原始 JSON**。只读工具（`queryMyOrders` / `getOrderByNumber`）在 schema 与 handler 旁边各带一个 `ToolReport`（负载 → markdown），`AssistantService` 把**模型自己的话在前、渲染块在后**拼成一条回复；负载本身不进 transcript，只随响应的 `executed[].resultJson` 出去，供审计与排障。渲染形态是「一行引导 + 每单一块」：`` `订单号` `` · 下单时间 · 中文状态 · `¥`合计，下面每行一条明细——订单号与 sku 包进行内代码保持等宽可复制，标签与金额走正文。空结果说「你名下还没有订单。」而不是 `[]`；引导句**永远点名最近一张**（「你名下有 N 张订单，最近一张是 \`ORD-…\`：」），列不全时改成「你名下共 N 张订单，以下只列出最近 K 张」（缺省的 K 就是共享的 `Paging.DEFAULT_SIZE`，模型也可以用 `limit` 只要最近几张），不把一页当成全部历史。这条不是修辞：模型常常只调工具、一个字都不写（实测发生过），那时回复**完全**由这里组成，而「最近一次下单」的答案必须在服务端就说得出来。见 [ADR-0016](docs/adr/0016-refuse-illegal-arguments-and-re-ask-once.md)。
 
 这条不是装饰：**transcript 里的那份人话就是下一轮的记忆内容**（US-2.1 靠它），所以订单号与金额必须在渲染后仍然在场。变更工具的结果不进回复——它由确认卡呈现，因此 `ToolSpec` 的不变量是「只读 ⇒ 有 `ToolReport`、无 `ToolCard`；变更 ⇒ 有 `ToolCard`、无 `ToolReport`」。另一侧修的是指代：`Grounding` 现在除 catalog 外还注入「本会话最近一次已确认的订单号」（来源是 `pending_actions.result_ref`，按客户 + 会话过滤），于是「查看刚刚这个订单」有了确定答案。见 [ADR-0015](docs/adr/0015-render-readonly-results-server-side.md)。
 
@@ -287,11 +289,11 @@ SPRING_PROFILES_ACTIVE=mysql,offline ./mvnw -pl backend spring-boot:run
 - **退避是简版的**：阻塞重试靠 Spring AI 属性（3 次 / 1s / ×2 / 8s）；流式只在**首字节前**自建同款重放，**中途失败不重试**（会重复已吐给客户的字）。两处都没有 jitter、没有熔断/降级。
 - **真实网络超时→真实退避没有假上游测试**：超时归类（`TIMEOUT`/`ERROR`）与重试策略在单测里逐分支钉住（`SpringAiAdapterTest`，10 例），但要断言"真超时触发真退避"就得引入假上游，当前选择不引入，只靠真上游冒烟观察日志。
 - 离线适配器 `MockAiAdapter` 是**关键词驱动的桩**，只用于没有 Key 的演示，不理解真实语义。
-- **E2E 只跑 Chromium**（`@playwright/test` 1.49.1，更新的版本不再发布 macOS 12 可用的 Chromium），WebKit / Firefox 未覆盖；且它假定常驻 MySQL 可用、助手走 `offline` 桩——真实模型下的流式与超时行为没有 E2E。
+- **E2E 只跑 Chromium**（`@playwright/test` 1.49.1，更新的版本不再发布 macOS 12 可用的 Chromium），WebKit / Firefox 未覆盖；且它假定常驻 MySQL 可用、助手走 `offline` 桩——真实模型下的流式与超时行为没有 E2E。跑得起来的那个浏览器层是 `frontend/story-walk`；`frontend/e2e`（L6）自 2026-10-14 会话登录改造后未跟进，现状是 14/14 红，见上文 L6 的注。
 - **`make test-frontend` / `make test-e2e` 没有接进 CI**：本仓库目前没有 CI 配置，`make check` 只是留给 CI 的入口。
 - Docker Compose 只起**单实例应用**：确认态的并发去重靠数据库行锁，多实例同样成立，但没有做过压测。
 - **「至多一个 RUNNING Run」只在进程内保证**：`ConversationRunQueue` 与队列都是内存注册表，库层不强制唯一 RUNNING，多实例下各算各的；队列中的项也随重启丢弃。队列会通过 `/api/assistant/events` 的 `queue` 增量推给**所有**标签页，但只推内存态 `itemId` 与位置——排队消息的**文字只存在于发起它的那个标签页里**，另一个标签页能看见、也能删，但显示不出它写了什么。不含每客户并发配额。
 - **停止只掐得断流式那一路**：取消信号由流式模型调用逐 chunk 观测（`takeWhile`），所以 `POST .../stop` 对**流式**回合是真的取消上游；**阻塞**回合（`POST /{id}/messages`）是一次同步模型调用，服务端没有中途 abort 的钩子，对它调停止会被接受但取消不了那次调用（SPA 只发流式，所以实际不会遇到）。取消是"到下一个 chunk 为止"，不是瞬时。
 - **状态总线与运行态注册表都是进程内的**：`ConversationEventBus`（每客户 emitter 注册表）与 `RunRegistry` 不跨实例，多实例下同一客户的多个标签页连到不同实例就收不到对方的状态推送；`/events` 单条连接有个 1 小时上限，到点客户端重连并整体换快照（换来零服务端事件缓存）。
 - **重订阅是尽力而为**：`runStream` 只做"当前累积文本 + 之后增量"，不做断点续传（ADR-0009）；一条 Run 在重订阅的同一瞬间结束，客户端可能先收到 `closed` 再收到 `snapshot`，此时按"没东西可回放"处理。E2E 里离线桩的回合太快，**没有覆盖重订阅**——它由 L3（契约）与 L5（组件）钉住。
-- **服务端渲染的措辞是中文硬编码**：提示词已改为"用顾客使用的语言回答"，模型自己的话会跟着切换，`ToolReport` 渲染的那几行（「你名下有 N 张订单：」、`已创建`）不会。改动前落库的历史消息仍是旧格式 `[工具名] {JSON}`，前端的机器文本通道已删除，它们以普通正文呈现——没有做数据迁移。
+- **服务端渲染的措辞是中文硬编码**：提示词已改为"用顾客使用的语言回答"，模型自己的话会跟着切换，`ToolReport` 渲染的那几行（「你名下有 N 张订单，最近一张是 …」、`已创建`）不会。改动前落库的历史消息仍是旧格式 `[工具名] {JSON}`，前端的机器文本通道已删除，它们以普通正文呈现——没有做数据迁移。

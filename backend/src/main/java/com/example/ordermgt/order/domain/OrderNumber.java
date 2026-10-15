@@ -13,8 +13,15 @@ public record OrderNumber(String value) {
 
     private static final int SUFFIX_LENGTH = 6;
 
+    /**
+     * The clock region every customer-visible time is told in: the order number stamps it, and the
+     * assistant renders an order's placed-at with it too. Kept here so the two can never drift
+     * apart by eight hours.
+     */
+    public static final ZoneId ZONE = ZoneId.of("Asia/Shanghai");
+
     private static final DateTimeFormatter STAMP =
-            DateTimeFormatter.ofPattern("yyyyMMddHHmmss").withZone(ZoneId.of("Asia/Shanghai"));
+            DateTimeFormatter.ofPattern("yyyyMMddHHmmss").withZone(ZONE);
 
     public OrderNumber {
         if (value == null || value.isBlank()) {

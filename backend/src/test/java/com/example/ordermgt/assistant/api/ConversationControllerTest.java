@@ -20,6 +20,7 @@ import com.example.ordermgt.assistant.application.RunService;
 import com.example.ordermgt.assistant.domain.AiAssistantPort;
 import com.example.ordermgt.assistant.domain.AiUsage;
 import com.example.ordermgt.assistant.domain.AssistantTurn;
+import com.example.ordermgt.assistant.domain.ChatMessage;
 import com.example.ordermgt.assistant.domain.Conversation;
 import com.example.ordermgt.assistant.domain.ConversationStatus;
 import com.example.ordermgt.shared.api.ErrorCode;
@@ -30,7 +31,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
-import java.util.function.Supplier;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -126,8 +127,9 @@ class ConversationControllerTest {
         when(assistantService.executeTurn(eq(context), any(), any()))
                 .thenAnswer(
                         invocation -> {
-                            Supplier<AssistantTurn> modelCall = invocation.getArgument(2);
-                            modelCall.get(); // 断线只停投递，不停模型
+                            Function<List<ChatMessage>, AssistantTurn> modelCall =
+                                    invocation.getArgument(2);
+                            modelCall.apply(List.of()); // 断线只停投递，不停模型
                             return result;
                         });
         doThrow(new IOException("Broken pipe")).when(emitter).send(any(SseEventBuilder.class));
@@ -156,8 +158,9 @@ class ConversationControllerTest {
         when(assistantService.executeTurn(eq(context), any(), any()))
                 .thenAnswer(
                         invocation -> {
-                            Supplier<AssistantTurn> modelCall = invocation.getArgument(2);
-                            modelCall.get();
+                            Function<List<ChatMessage>, AssistantTurn> modelCall =
+                                    invocation.getArgument(2);
+                            modelCall.apply(List.of());
                             return result;
                         });
 

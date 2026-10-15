@@ -413,11 +413,11 @@ public class ConversationController {
                                 // The conversation is RUNNING now: tell every open status stream.
                                 events.stateChanged(customerId, conversationId);
                             },
-                            () ->
+                            memory ->
                                     aiAssistantPort.respondStreaming(
                                             customerId,
                                             context.conversation().getId(),
-                                            context.memory(),
+                                            memory,
                                             delta -> {
                                                 RunRegistry.Handle live = handle.get();
                                                 if (live != null) {

@@ -54,7 +54,7 @@ test.describe('按客户隔离', () => {
     const executed = (await chat.json()).data.executed as { name: string; resultJson: string }[]
 
     expect(executed.map((tool) => tool.name)).toContain('queryMyOrders')
-    expect(executed[0].resultJson).toBe('[]')
+    expect(executed[0].resultJson).toBe('{"total":0,"returned":0,"orders":[]}')
     expect(JSON.stringify(executed)).not.toContain(orderNo)
 
     // The owner's own read does see it, so the emptiness above is scoping and not an empty table.

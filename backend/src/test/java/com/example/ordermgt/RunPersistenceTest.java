@@ -144,11 +144,11 @@ class RunPersistenceTest {
 
         assistantService.executeTurn(
                 context,
-                () ->
+                memory ->
                         aiAssistantPort.respondStreaming(
                                 customer,
                                 context.conversation().getId(),
-                                context.memory(),
+                                memory,
                                 deltas::add,
                                 RunCancellation.NEVER));
 
@@ -171,11 +171,11 @@ class RunPersistenceTest {
                         () ->
                                 assistantService.executeTurn(
                                         context,
-                                        () ->
+                                        memory ->
                                                 aiAssistantPort.respond(
                                                         customer,
                                                         context.conversation().getId(),
-                                                        context.memory())))
+                                                        memory)))
                 .isInstanceOf(AiUpstreamException.class);
 
         List<RunPO> runs = runsOf(context.conversation().getId());
@@ -203,7 +203,7 @@ class RunPersistenceTest {
                                 assistantService.executeTurn(
                                         context,
                                         run -> {},
-                                        () -> {
+                                        memory -> {
                                             throw new RunCancelledException(partial);
                                         }))
                 .isInstanceOf(RunCancelledException.class);

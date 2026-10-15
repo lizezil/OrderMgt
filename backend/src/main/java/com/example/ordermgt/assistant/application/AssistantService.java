@@ -12,24 +12,29 @@ import com.example.ordermgt.assistant.domain.Message;
 import com.example.ordermgt.assistant.domain.PendingAction;
 import com.example.ordermgt.assistant.domain.PendingActionRepository;
 import com.example.ordermgt.assistant.domain.ProposedToolCall;
+import com.example.ordermgt.assistant.domain.Role;
 import com.example.ordermgt.assistant.domain.Run;
 import com.example.ordermgt.assistant.domain.RunCancelledException;
 import com.example.ordermgt.assistant.domain.RunInterruptedException;
 import com.example.ordermgt.assistant.domain.RunRepository;
 import com.example.ordermgt.assistant.domain.RunStatus;
+import com.example.ordermgt.assistant.domain.ToolArgumentsRejectedException;
 import com.example.ordermgt.assistant.domain.ToolRegistry;
 import com.example.ordermgt.assistant.domain.ToolResult;
 import com.example.ordermgt.assistant.domain.ToolSpec;
 import com.example.ordermgt.shared.api.ErrorCode;
 import com.example.ordermgt.shared.error.BusinessException;
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Consumer;
-import java.util.function.Supplier;
+import java.util.function.Function;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -43,6 +48,11 @@ import org.springframework.stereotype.Service;
  * else, - readonly tool calls are executed against the business services, - mutating tool calls are
  * NOT executed -- each becomes a PendingAction plus the card the customer has to confirm
  * (ADR-0001). This class has no way to run a mutating handler.
+ *
+ * <p>- arguments the server cannot run are handed back to the model as one more turn and re-asked
+ * exactly once; a second refusal runs with the arguments the schema requires and says so in the
+ * reply (ADR-0016). A refused call never leaves the customer with a blank, and never leaves them
+ * not knowing the answer they got was a fallback.
  *
  * <p>Deliberately NOT @Transactional: an AI call inside a transaction would hold a database
  * connection across a multi-second network call.
@@ -79,9 +89,9 @@ public class AssistantService {
         TurnContext context = prepare(customerId, conversationId, message);
         return executeTurn(
                 context,
-                () ->
+                memory ->
                         aiAssistantPort.respond(
-                                customerId, context.conversation().getId(), context.memory()));
+                                customerId, context.conversation().getId(), memory));
     }
 
     /**
@@ -94,7 +104,8 @@ public class AssistantService {
      * also why an interrupted Run reads as a question with no answer: the customer message was
      * committed there, before the call this row now guards.
      */
-    public AssistantResult executeTurn(TurnContext context, Supplier<AssistantTurn> modelCall) {
+    public AssistantResult executeTurn(
+            TurnContext context, Function<List<ChatMessage>, AssistantTurn> modelCall) {
         return executeTurn(context, run -> {}, modelCall);
     }
 
@@ -106,16 +117,38 @@ public class AssistantService {
      * <p>A stop is not a failure (ADR-0012): the half text becomes an ordinary ASSISTANT message,
      * the Run closes CANCELLED, the call is audited CANCELLED, and the exception travels on so the
      * transport can close its stream with a {@code cancelled} frame instead of an error.
+     *
+     * <p>{@code modelCall} is handed the memory to answer into, which is what lets this method
+     * re-ask once when the model gives the server readonly arguments it cannot run (ADR-0016).
      */
     public AssistantResult executeTurn(
-            TurnContext context, Consumer<Run> onRunOpen, Supplier<AssistantTurn> modelCall) {
+            TurnContext context,
+            Consumer<Run> onRunOpen,
+            Function<List<ChatMessage>, AssistantTurn> modelCall) {
         Run run = runRepository.save(Run.start(context.conversation().getId()));
         onRunOpen.accept(run);
         AssistantTurn turn = null;
-        AssistantResult result;
+        AssistantResult result = null;
         try {
-            turn = modelCall.get();
-            result = complete(context, turn);
+            turn = modelCall.apply(context.memory());
+            ToolArgumentsRejectedException rejection = null;
+            try {
+                result = complete(context, turn, StrictArgs.REJECT);
+            } catch (ToolArgumentsRejectedException ex) {
+                // 只在这里接住，接着的处理留在 try 的正文里：兜底那一次自己也可能失手，
+                // 而它必须走下面同一条失败出口——Run 不能因为一次修复失败而留在 RUNNING。
+                rejection = ex;
+            }
+            if (rejection != null) {
+                // 顾客看不见被丢弃的那一次调用（模型一个字都没吐），所以它留下一行失败，重问的那次另记。
+                // 已经开口了就不重问：流式那边顾客已经看见半截话，第二段开场白比按错参数更糟。
+                if (turn.text().isBlank()) {
+                    recordFailure(context, turn, rejection);
+                    turn = modelCall.apply(observation(context.memory(), rejection));
+                }
+                // 有界：只重问这一次。仍然非法就不再问，改用安全参数收尾并声明（ADR-0016）。
+                result = complete(context, turn, StrictArgs.REPAIR);
+            }
         } catch (RunCancelledException ex) {
             persistHalfTurn(
                     context, ex.partial(), null, AiInvocationOutcome.CANCELLED, CANCELLED_REASON);
@@ -156,6 +189,9 @@ public class AssistantService {
 
     /** Appended to the half reply so the transcript itself says the answer was cut off. */
     public static final String INTERRUPTED_SUFFIX = "\n\n[生成中断]";
+
+    /** 写在"按默认范围重跑过"的回复最前面的一句（ADR-0016）。降级不能是静悄悄的：顾客问最近一单、拿回最近 二十张，那仍然是一个能读的答案，但他得知道自己拿到的是哪一个。 */
+    public static final String SAFE_DEFAULT_NOTE = "[检索参数有误，已按默认范围回答]";
 
     /**
      * A half turn still owes the transcript its text and the audit its row (ADR-0012): CANCELLED
@@ -215,13 +251,33 @@ public class AssistantService {
     /**
      * The part that happens after: classify the tool calls, execute the readonly ones, turn the
      * mutating ones into confirmable cards, persist the turn, and log the model call.
+     *
+     * <p>Illegal readonly arguments are repaired here, so a turn always yields something the
+     * customer can read (ADR-0016) -- see {@link #complete(TurnContext, AssistantTurn,
+     * StrictArgs)}.
      */
     public AssistantResult complete(TurnContext context, AssistantTurn turn) {
+        return complete(context, turn, StrictArgs.REPAIR);
+    }
+
+    /** What to do when a readonly tool refuses the model's arguments. */
+    private enum StrictArgs {
+        /**
+         * Hand the refusal back up: {@code executeTurn} may still feed it to the model and re-ask.
+         */
+        REJECT,
+        /** Run again with only the arguments the schema requires, and declare the fallback. */
+        REPAIR
+    }
+
+    private AssistantResult complete(
+            TurnContext context, AssistantTurn turn, StrictArgs strictArgs) {
         Conversation conversation = context.conversation();
         Long customerId = conversation.getCustomerId();
 
         List<ExecutedTool> executed = new ArrayList<>();
         List<PendingAction> pendingActions = new ArrayList<>();
+        boolean repaired = false;
 
         for (ProposedToolCall call : turn.toolCalls()) {
             ToolSpec spec =
@@ -235,17 +291,38 @@ public class AssistantService {
                                                             + call.name()));
             if (spec.mutating()) {
                 pendingActions.add(propose(customerId, conversation.getId(), spec, call));
-            } else {
-                ToolResult result = spec.handler().execute(customerId, call.argumentsJson());
-                executed.add(
-                        new ExecutedTool(
-                                spec.name(),
-                                result.payloadJson(),
-                                spec.report().describe(result.payloadJson())));
+                continue;
             }
+            ToolResult result;
+            try {
+                result = spec.handler().execute(customerId, call.argumentsJson());
+            } catch (BusinessException ex) {
+                // 只读这一侧才有"回喂"可谈：变更那一条要等顾客确认，非法参数在确认时才被服务端挡下（ADR-0001）。
+                if (ex.errorCode() != ErrorCode.VALIDATION_FAILED) {
+                    throw ex;
+                }
+                if (strictArgs == StrictArgs.REJECT) {
+                    throw new ToolArgumentsRejectedException(
+                            spec.name(), call.argumentsJson(), ex.getMessage(), ex);
+                }
+                // 兜底：只按 schema 必需的那几个参数重跑。模型写错的那个（limit）正好是被丢掉的那个，
+                // 于是这一问落在服务端的默认范围上——顾客拿到能读的答案，而回复里写着这是哪一个。
+                result =
+                        spec.handler()
+                                .execute(customerId, safeArguments(spec, call.argumentsJson()));
+                repaired = true;
+            }
+            executed.add(
+                    new ExecutedTool(
+                            spec.name(),
+                            result.payloadJson(),
+                            spec.report().describe(result.payloadJson())));
         }
 
         String reply = renderReadonly(turn, executed);
+        if (repaired && !reply.isBlank()) {
+            reply = SAFE_DEFAULT_NOTE + "\n\n" + reply;
+        }
         if (!reply.isBlank()) {
             conversationService.appendAssistantMessage(conversation.getId(), reply);
         }
@@ -360,6 +437,65 @@ public class AssistantService {
             }
         }
         return String.join("\n\n", blocks);
+    }
+
+    /**
+     * 把一次被拒的调用接在这轮记忆之后，作为重问的观察（ADR-0016）。
+     *
+     * <p>它不是顾客说的话，也不是助手说的话，而是一次工具结果，所以走 {@link Role#TOOL}：适配层把它标成 {@code [Tool
+     * result]}，系统提示词里那条规则教模型怎么对待被拒的调用。
+     *
+     * <p>这条记忆只活在这次重问里，绝不落库——顾客没说过它，也不该在历史里读到服务器的一句报错。
+     */
+    private List<ChatMessage> observation(
+            List<ChatMessage> memory, ToolArgumentsRejectedException rejection) {
+        List<ChatMessage> withObservation = new ArrayList<>(memory);
+        withObservation.add(new ChatMessage(Role.TOOL, observationJson(rejection)));
+        return List.copyOf(withObservation);
+    }
+
+    /** 机器话写给机器看：哪个工具、那串参数、服务器自己的说法，外加一句"什么都没跑成"。 */
+    private String observationJson(ToolArgumentsRejectedException rejection) {
+        Map<String, Object> observation = new LinkedHashMap<>();
+        observation.put("tool", rejection.toolName());
+        observation.put("arguments", readJson(rejection.argumentsJson()));
+        observation.put("error", rejection.reason());
+        observation.put("executed", false);
+        try {
+            return objectMapper.writeValueAsString(observation);
+        } catch (JsonProcessingException ex) {
+            // 走到这里几乎不可能：值都是刚读回来的节点。真发生了也不能让重问失败，退回服务器那句话。
+            return String.valueOf(rejection.reason());
+        }
+    }
+
+    /**
+     * 只留下 schema 声明必需的参数（ADR-0016）。写错的通常正是多出来的那一个（{@code limit}），丢掉它
+     * 就回到服务端的默认范围；必需的键留着——缺了它们工具本来就跑不成，那时这一轮该报的是失败，不是降级。
+     */
+    private String safeArguments(ToolSpec spec, String argumentsJson) {
+        JsonNode arguments = readJson(argumentsJson);
+        Map<String, Object> safe = new LinkedHashMap<>();
+        for (JsonNode key : readJson(spec.inputSchemaJson()).path("required")) {
+            String name = key.asText();
+            if (arguments.has(name)) {
+                safe.put(name, arguments.get(name));
+            }
+        }
+        try {
+            return objectMapper.writeValueAsString(safe);
+        } catch (JsonProcessingException ex) {
+            return "{}";
+        }
+    }
+
+    /** 读一串 JSON；读不通就当作字符串原样带过去——模型写坏的参数正是要让它自己看见的那样。 */
+    private JsonNode readJson(String json) {
+        try {
+            return objectMapper.readTree(json);
+        } catch (JsonProcessingException ex) {
+            return objectMapper.getNodeFactory().textNode(json);
+        }
     }
 
     private void recordSuccess(Conversation conversation, AssistantTurn turn) {

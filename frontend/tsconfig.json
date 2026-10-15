@@ -22,9 +22,11 @@
     "src/**/*.d.ts",
     "src/**/*.vue",
     "e2e/**/*.ts",
+    "story-walk/**/*.ts",
     "vite.config.ts",
     "vitest.config.ts",
     "vitest.setup.ts",
-    "playwright.config.ts"
+    "playwright.config.ts",
+    "playwright.walkthrough.config.ts"
   ]
 }

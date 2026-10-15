@@ -249,7 +249,10 @@ class OrderAssistantBusinessFlowTest {
         AssistantResult bobAnswer = assistantService.chat(bob, null, "what orders do I have?");
         assertThat(bobAnswer.executed())
                 .singleElement()
-                .satisfies(tool -> assertThat(tool.resultJson()).isEqualTo("[]"));
+                .satisfies(
+                        tool ->
+                                assertThat(tool.resultJson())
+                                        .isEqualTo("{\"total\":0,\"returned\":0,\"orders\":[]}"));
 
         // 记忆属于会话，也属于客户：别人的会话既读不到也写不进。
         Long aliceConversation = aliceAnswer.conversationId();
@@ -596,6 +599,70 @@ class OrderAssistantBusinessFlowTest {
         assertThat(groundingProvider.facts(customer, conversationService.start(customer).getId()))
                 .doesNotContain(AiPrompts.LAST_CONFIRMED_ORDER_HEADER);
         assertThat(groundingProvider.facts(newCustomer(), conversationId)).doesNotContain(orderNo);
+    }
+
+    /**
+     * 顾客在一个全新会话里问「查询最近一次下单」（US-1.9）。上一段会话刚确认的那一单，对新会话的 grounding 来说 是不可见的——按会话收窄本来就是为「刚刚这个
+     * 订单」设计的（ADR-0015）。所以这一问唯一确定的答案来源 是订单表本身，而它必须在服务端被说出来。
+     *
+     * <p>同样复刻实测那一轮：模型只调工具、一个字没写。回复因此完全由服务端渲染， 顾客读到的是"最近一张是哪一单"，而不是一页无人点名的清单。
+     */
+    @Test
+    void aFreshConversationAskingForTheLatestOrderIsAnsweredWithTheLatestOrder() throws Exception {
+        long customer = newCustomer();
+        createOrder(customer, "{\"lines\":[{\"sku\":\"GIZMO-03\",\"quantity\":1}]}");
+        String latest =
+                createOrder(customer, "{\"lines\":[{\"sku\":\"WIDGET-01\",\"quantity\":2}]}");
+
+        ScriptedAiConfiguration.program(
+                memory ->
+                        AssistantTurn.of(
+                                "",
+                                List.of(new ProposedToolCall("queryMyOrders", "{}", false)),
+                                AiUsage.EMPTY));
+
+        AssistantResult answer = assistantService.chat(customer, null, "查询最近一次下单");
+
+        assertThat(answer.reply()).contains("最近一张是 `" + latest + "`").contains("¥39.80");
+        // 下单时间必须在场：否则顾客只能读订单号里嵌的那串数字才知道它有多近。
+        assertThat(answer.reply()).containsPattern("\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}");
+        // 点名了最近一张，其余订单也照常列出——顾客问的可能是列表，不能因为一句话就把历史藏起来。
+        assertThat(answer.reply()).contains("你名下有 2 张订单");
+    }
+
+    /**
+     * 模型给只读工具的参数，服务端跑不成（ADR-0016）：错误被当成观察回喂一次，模型改对了，顾客拿到的还是最近那一单。
+     *
+     * <p>回喂之所以可能，是因为工具结果不进历史（ADR-0015）——模型从来看不见自己查到了什么，但拒绝是它自己造成的， 那句话必须让它听见。
+     */
+    @Test
+    void aRefusedReadonlyArgumentIsFedBackAndTheModelCorrectsIt() throws Exception {
+        long customer = newCustomer();
+        String latest =
+                createOrder(customer, "{\"lines\":[{\"sku\":\"GADGET-02\",\"quantity\":2}]}");
+
+        // 第一次：limit 越界，而且模型一个字都没写——正是生产上那一轮的形状。
+        ScriptedAiConfiguration.program(
+                memory ->
+                        AssistantTurn.of(
+                                "",
+                                List.of(
+                                        new ProposedToolCall(
+                                                "queryMyOrders", "{\"limit\":5000}", false)),
+                                AiUsage.EMPTY));
+
+        AssistantResult answer = assistantService.chat(customer, null, "查询最近一次下单");
+
+        // 第二次走的是没有编排脚本时的关键词桩：它听得见"最近"，于是改成 limit=1。
+        assertThat(answer.reply()).contains("最近一张是 `" + latest + "`").contains("¥99.00");
+        assertThat(answer.reply()).doesNotContain(AssistantService.SAFE_DEFAULT_NOTE);
+        // 一次调用一行审计：被丢弃的那一次记 ERROR，改对的那一次记 OK。
+        assertThat(
+                        aiInvocationMapper.selectList(
+                                Wrappers.<AiInvocationPO>lambdaQuery()
+                                        .eq(AiInvocationPO::getCustomerId, customer)))
+                .extracting(AiInvocationPO::getOutcome)
+                .containsExactly("ERROR", "OK");
     }
 
     private static long newCustomer() {

@@ -11,7 +11,12 @@ import { expect, test, type Page } from '@playwright/test'
  * Stories whose acceptance lives in the API layer rather than
  * in pixels (US-5.2 replay, US-6.2 foreign token) are asserted via requests and logged.
  */
-const OUT_DIR = path.resolve(fileURLToPath(new URL('.', import.meta.url)), '..', '..', 'story-screenshots')
+const OUT_DIR = path.resolve(
+  fileURLToPath(new URL('.', import.meta.url)),
+  '..',
+  '..',
+  'story-screenshots',
+)
 fs.mkdirSync(OUT_DIR, { recursive: true })
 
 const CREATOR = { id: '1001', pin: '1111' }
@@ -125,6 +130,17 @@ test.describe('用户故事走查（Docker 容器，offline 桩）', () => {
     await expect(slip(page).locator('.slip-state')).toHaveText('已执行')
     await snap(page, 'US-1.7-取消订单的确认卡片.png')
 
+    // ---------- US-1.9 「最近一次下单」答的就是最近那一单（新会话，问不出别的会话的事实） ----------
+    await page.getByRole('button', { name: '＋ 新对话' }).click()
+    await ask(page, '查询最近一次下单')
+    const latest = (await assistantTurn(page).innerText()).replace(/\s+/g, ' ')
+    // 断言的是**保证**那一道闸：渲染器必须点名最近一张，且点名的就是刚才落的那一单。
+    // 「只列一单」是 `limit` 那道**能力**闸，模型可传可不传，所以不在这里断言（离线桩下由单测钉住）。
+    expect(latest, 'US-1.9: 引导句要点名最近一张').toContain(`最近一张是 ${newOrder}`)
+    const listed = latest.match(/ORD[0-9A-Z]+/g) ?? []
+    expect(listed[0], 'US-1.9: 清单第一行就是最近那一单').toBe(newOrder)
+    await snap(page, 'US-1.9-最近一次下单只点名那一单.png')
+
     // ---------- US-4.1 / US-4.2 订单列表与详情 ----------
     await tab(page, '订单')
     await expect(page.locator(`td.order-no:text("${newOrder}")`)).toBeVisible()
@@ -144,7 +160,8 @@ test.describe('用户故事走查（Docker 容器，offline 桩）', () => {
 
     // ---------- US-5.2 / US-6.2（API 层断言：重复确认走重放；他人令牌 403） ----------
     async function xsrf(p: Page): Promise<Record<string, string>> {
-      const cookie = p.context()
+      const cookie = p
+        .context()
         .cookies()
         .then((all) => all.find((c) => c.name === 'XSRF-TOKEN')?.value ?? '')
       return { 'X-XSRF-TOKEN': await cookie }
@@ -154,10 +171,12 @@ test.describe('用户故事走查（Docker 容器，offline 桩）', () => {
     const convos = convosBody.data.items ?? convosBody.data
     const myConvo = convos.find((c: { title?: string }) => (c.title ?? '').includes('我有哪些订单'))
     expect(myConvo, 'US-2.4: 标题由第一条客户消息派生').toBeTruthy()
-    const msgsRes = await page.request.get(
-      `/api/assistant/conversations/${myConvo.id}/messages`,
+    const msgsRes = await page.request.get(`/api/assistant/conversations/${myConvo.id}/messages`)
+    const cards = (
+      ((await msgsRes.json()).data ?? []) as {
+        action: { token: string; status: string; toolName: string } | null
+      }[]
     )
-    const cards = (((await msgsRes.json()).data ?? []) as { action: { token: string; status: string; toolName: string } | null }[])
       .map((m) => m.action)
       .filter((a): a is NonNullable<typeof a> => a !== null)
     const confirmedCard = cards.find((a) => a.status === 'CONFIRMED')

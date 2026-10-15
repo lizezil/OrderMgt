@@ -12,13 +12,18 @@ import com.example.ordermgt.order.application.LineCommand;
 import com.example.ordermgt.order.application.OrderService;
 import com.example.ordermgt.order.domain.Money;
 import com.example.ordermgt.order.domain.Order;
+import com.example.ordermgt.order.domain.OrderNumber;
 import com.example.ordermgt.order.domain.OrderStatus;
 import com.example.ordermgt.shared.api.ErrorCode;
+import com.example.ordermgt.shared.api.PageResult;
 import com.example.ordermgt.shared.api.Paging;
 import com.example.ordermgt.shared.error.BusinessException;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.Instant;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -37,14 +42,21 @@ import org.springframework.context.annotation.Configuration;
  * <p>A mutating spec also carries its {@link ToolCard}: title, one-line summary and labelled rows
  * all live here, beside the schema and the handler, so adding a tool is a single edit.
  *
- * <p>Note what the model may supply: skus and quantities. Never prices, never customer ids, never a
- * status other than the two the enum allows.
+ * <p>Note what the model may supply: skus, quantities and, for the readonly lookups, a {@code
+ * limit}. Never prices, never customer ids, never a status other than the two the enum allows.
  */
 @Configuration
 public class OrderToolDefinitions {
 
     /** What a money row reads when the server cannot state an amount for it. */
     private static final String UNKNOWN = "—";
+
+    /**
+     * 下单时间讲给顾客听的样子。用时区与订单号同一个 {@link OrderNumber#ZONE}：两处若各写一处， 「最近一单」的时间就会和它自己的
+     * 订单号差八小时，而顾客是能看见这两个的。
+     */
+    private static final DateTimeFormatter PLACED_AT =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm").withZone(OrderNumber.ZONE);
 
     /**
      * The whitelist over these definitions. Wired here so the domain class stays framework-free.
@@ -65,20 +77,27 @@ public class OrderToolDefinitions {
                         "queryMyOrders",
                         "List the current customer's own orders (excluding other customers).",
                         """
-                        {"type":"object","properties":{}}""",
+                        {"type":"object","properties":{"limit":{"type":"integer","description":"How many of the most recent orders to list, 1-%d. Use 1 when the customer asks for their latest single order. Defaults to %d.","minimum":1,"maximum":%d}}}"""
+                                .formatted(
+                                        Paging.DEFAULT_SIZE, Paging.DEFAULT_SIZE, Paging.MAX_SIZE),
                         ordersReport,
                         (customerId, args) -> {
+                            // total 必须跟着负载走：没有它，一页会被渲染成"你名下有 20 张订单"，
+                            // 而那是假话——顾客有 137 张。
+                            PageResult<Order> page =
+                                    orderService.listByCustomer(
+                                            customerId,
+                                            Paging.FIRST_PAGE,
+                                            readLimit(objectMapper, args));
                             List<Map<String, Object>> rows =
-                                    orderService
-                                            .listByCustomer(
-                                                    customerId,
-                                                    Paging.FIRST_PAGE,
-                                                    Paging.DEFAULT_SIZE)
-                                            .items()
-                                            .stream()
+                                    page.items().stream()
                                             .map(OrderToolDefinitions::summarise)
                                             .toList();
-                            return ToolResult.of(write(objectMapper, rows));
+                            Map<String, Object> envelope = new LinkedHashMap<>();
+                            envelope.put("total", page.total());
+                            envelope.put("returned", rows.size());
+                            envelope.put("orders", rows);
+                            return ToolResult.of(write(objectMapper, envelope));
                         }),
                 ToolSpec.readonly(
                         "getOrderByNumber",
@@ -275,6 +294,9 @@ public class OrderToolDefinitions {
     private static Map<String, Object> summarise(Order order) {
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("orderNo", order.getOrderNumber().value());
+        // 给机器的那一份是 ISO 瞬时；人话那份才换成时区写法。顾客问"最近一次"时，时间是答案的一部分，
+        // 而它此前只藏在订单号里那串数字中。
+        row.put("createdAt", order.getCreatedAt() == null ? null : order.getCreatedAt().toString());
         row.put("status", order.getStatus().name());
         row.put("totalAmount", order.getTotalAmount().amount());
         row.put(
@@ -296,21 +318,29 @@ public class OrderToolDefinitions {
     }
 
     /**
-     * 订单列表讲给顾客听的样子：一行引导句，然后每单一个块。
+     * 订单列表讲给顾客听的样子：一行引导，然后每单一个块。
      *
-     * <p>空结果说的是一句话，而不是把 {@code []} 摆出来；整整一页时也要声明只列了最近这些，否则 顾客会把一页当成全部历史。
+     * <p>空结果说的是一句话，而不是把 {@code []} 摆出来。引导句同时说清两件事——一共有多少、这里列了几张， 以及**最近一张是哪一单**。后者不是装饰：
+     * 顾客问「查询最近一次下单」时，模型往往只调用工具、一个字都不写， 回复就完全由这里组成；不点名，顾客收到的就是一页无人排序的清单。列表本就按下单时间倒序，所以第一张
+     * 一定是最近的那一张，服务端说得出这句话，不等模型想起来 {@code limit}。
      */
     private static String renderOrderList(ObjectMapper mapper, String payloadJson) {
-        JsonNode orders = payload(mapper, payloadJson);
+        JsonNode payload = payload(mapper, payloadJson);
+        JsonNode orders = payload.path("orders");
         if (!orders.isArray() || orders.isEmpty()) {
             return "你名下还没有订单。";
         }
-        StringBuilder sb = new StringBuilder("你名下有 ").append(orders.size()).append(" 张订单：");
+        long total = payload.path("total").asLong(orders.size());
+        StringBuilder sb = new StringBuilder();
+        sb.append(
+                        total > orders.size()
+                                ? "你名下共 " + total + " 张订单，以下只列出最近 " + orders.size() + " 张"
+                                : "你名下有 " + orders.size() + " 张订单")
+                .append("，最近一张是 `")
+                .append(orders.get(0).path("orderNo").asText(""))
+                .append("`：");
         for (JsonNode order : orders) {
             sb.append("\n\n").append(orderBlock(order));
-        }
-        if (orders.size() >= Paging.DEFAULT_SIZE) {
-            sb.append("\n\n（只列出最近 ").append(Paging.DEFAULT_SIZE).append(" 张）");
         }
         return sb.toString();
     }
@@ -320,15 +350,17 @@ public class OrderToolDefinitions {
         return orderBlock(payload(mapper, payloadJson));
     }
 
-    /** 一单一块：订单号 · 中文状态 · ¥合计，下面每行一条明细。订单号与 sku 包进行内代码，其余是正文 ——等宽只留给真正的机器数据。 */
+    /** 一单一块：订单号 · 下单时间 · 中文状态 · ¥合计，下面每行一条明细。订单号与 sku 包进行内代码，其余是正文 ——等宽只留给真正的机器数据。 */
     private static String orderBlock(JsonNode order) {
-        StringBuilder sb = new StringBuilder();
-        sb.append('`')
-                .append(order.path("orderNo").asText(""))
-                .append("` · ")
-                .append(statusLabel(order.path("status").asText("")))
-                .append(" · ")
-                .append(money(order.path("totalAmount")));
+        List<String> head = new ArrayList<>();
+        head.add('`' + order.path("orderNo").asText("") + '`');
+        String placedAt = placedAt(order.path("createdAt").asText(""));
+        if (!placedAt.isBlank()) {
+            head.add(placedAt);
+        }
+        head.add(statusLabel(order.path("status").asText("")));
+        head.add(money(order.path("totalAmount")));
+        StringBuilder sb = new StringBuilder(String.join(" · ", head));
         for (JsonNode line : order.path("lines")) {
             sb.append("\n- `")
                     .append(line.path("sku").asText(""))
@@ -340,6 +372,22 @@ public class OrderToolDefinitions {
                     .append(money(line.path("lineAmount")));
         }
         return sb.toString();
+    }
+
+    /**
+     * ISO 瞬时换成顾客的读法；读不通就原样透出，宁可让顾客看见一个奇怪的字符串，也不替他编一个时间。
+     *
+     * <p>缺失则是一段空的：块首那行少一节 {@code · 时间}，而不是出现 {@code · · }。
+     */
+    private static String placedAt(String raw) {
+        if (raw.isBlank()) {
+            return "";
+        }
+        try {
+            return PLACED_AT.format(Instant.parse(raw));
+        } catch (DateTimeParseException ex) {
+            return raw;
+        }
     }
 
     /** 状态的顾客语言；枚举之外的取值原样透出，而不是替它编一个说法。 */
@@ -391,6 +439,25 @@ public class OrderToolDefinitions {
             throw new BusinessException(
                     ErrorCode.VALIDATION_FAILED, "unsupported target status: " + raw);
         }
+    }
+
+    /**
+     * 模型可以无视 schema 的 enum，也可以无视 {@code minimum}/{@code maximum}：越界的 {@code limit}
+     * 报校验错误，而不是钳制。钳制是把顾客的错悄悄改成另一个答案——顾客问"最近一次"却拿回 20 张，而模型永远不知道 自己被改了；报错了，上层还能把这个错误回喂给它重问一次。
+     */
+    private static long readLimit(ObjectMapper mapper, String args) {
+        JsonNode limit = root(mapper, args).path("limit");
+        if (limit.isMissingNode() || limit.isNull()) {
+            return Paging.DEFAULT_SIZE;
+        }
+        if (!limit.isIntegralNumber()
+                || limit.longValue() < 1
+                || limit.longValue() > Paging.MAX_SIZE) {
+            throw new BusinessException(
+                    ErrorCode.VALIDATION_FAILED,
+                    "limit must be an integer between 1 and " + Paging.MAX_SIZE);
+        }
+        return limit.longValue();
     }
 
     private static String requireText(ObjectMapper mapper, String args, String field) {

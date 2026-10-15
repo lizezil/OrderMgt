@@ -110,6 +110,20 @@ public class MockAiAdapter implements AiAssistantPort {
             }
         }
 
+        // 「最近一次下单」要的是一单，不是一页。这一支必须排在通用的列表支前面：否则顾客点名要最近一张、
+        // 拿回的是最近二十张，而这一句正是顾客会打的那一句。
+        if (message.contains("最近")
+                || message.contains("最新")
+                || message.contains("刚刚")
+                || message.contains("latest")
+                || message.contains("most recent")
+                || message.contains("last order")) {
+            return AssistantTurn.of(
+                    OfflinePrompts.LOOKING_UP_LATEST,
+                    List.of(new ProposedToolCall("queryMyOrders", "{\"limit\":1}", false)),
+                    AiUsage.EMPTY);
+        }
+
         if (message.contains("list")
                 || message.contains("what")
                 || message.contains("how many")
