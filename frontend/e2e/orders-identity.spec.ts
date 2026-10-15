@@ -1,29 +1,43 @@
 import { expect, test, type APIRequestContext } from '@playwright/test'
-import { freshCustomer, openAs, openTab, switchViewer } from './support/viewer'
+import { freshCustomer, openAs, openTab, signInApi, switchViewer, xsrf } from './support/viewer'
 
 /**
- * "查询一律按请求头里的客户收窄." These tests place orders through the API -- who can see what is
+ * "查询一律按登录会话里的客户收窄." These tests place orders through the API -- who can see what is
  * the subject here, not how an order comes to exist -- and then look at the browser.
+ *
+ * Nobody can act as a customer without a session (ADRs 0006/0017), so each step signs the API
+ * context in as the customer it wants to speak for; the browser signs in through the form.
  */
 async function placeOrder(
   request: APIRequestContext,
-  customerId: string,
   sku: string,
   quantity: number,
 ): Promise<string> {
   const response = await request.post('/api/orders', {
-    headers: { 'X-Customer-Id': customerId },
+    headers: await xsrf(request),
     data: { lines: [{ sku, quantity }] },
   })
   expect(response.status()).toBe(201)
   return (await response.json()).data.orderNo as string
 }
 
+/** The tool calls a chat turn executed, as the API reports them. */
+async function toolsOf(request: APIRequestContext, message: string): Promise<string[]> {
+  const chat = await request.post('/api/assistant/chat', {
+    headers: await xsrf(request),
+    data: { message },
+  })
+  expect(chat.ok()).toBe(true)
+  const executed = (await chat.json()).data.executed as { name: string; resultJson: string }[]
+  return executed.map((tool) => tool.resultJson)
+}
+
 test.describe('按客户隔离', () => {
   test('订单页只有本人的账目：换个客户号就空，换回来又出现', async ({ page, request }) => {
     const owner = freshCustomer()
     const stranger = freshCustomer()
-    const orderNo = await placeOrder(request, owner, 'GADGET-02', 2)
+    await signInApi(request, owner)
+    const orderNo = await placeOrder(request, 'GADGET-02', 2)
 
     await openAs(page, owner)
     await openTab(page, '订单')
@@ -44,25 +58,21 @@ test.describe('按客户隔离', () => {
   test('助手替另一个客户查订单时，查不到本人的订单号', async ({ request }) => {
     const owner = freshCustomer()
     const stranger = freshCustomer()
-    const orderNo = await placeOrder(request, owner, 'GIZMO-03', 1)
+    await signInApi(request, owner)
+    const orderNo = await placeOrder(request, 'GIZMO-03', 1)
 
-    const chat = await request.post('/api/assistant/chat', {
-      headers: { 'X-Customer-Id': stranger },
-      data: { message: 'what orders do I have?' },
-    })
-    expect(chat.ok()).toBe(true)
-    const executed = (await chat.json()).data.executed as { name: string; resultJson: string }[]
-
-    expect(executed.map((tool) => tool.name)).toContain('queryMyOrders')
-    expect(executed[0].resultJson).toBe('{"total":0,"returned":0,"orders":[]}')
-    expect(JSON.stringify(executed)).not.toContain(orderNo)
+    // The stranger's own read: the tool runs, sees an empty table, and never leaks the order number.
+    await signInApi(request, stranger)
+    const strangerReads = await toolsOf(request, 'what orders do I have?')
+    expect(strangerReads).toHaveLength(1)
+    const strangerPayload = JSON.parse(strangerReads[0]!) as { total: number; orders: unknown[] }
+    expect(strangerPayload.total).toBe(0)
+    expect(strangerPayload.orders).toEqual([])
+    expect(strangerReads[0]).not.toContain(orderNo)
 
     // The owner's own read does see it, so the emptiness above is scoping and not an empty table.
-    const ownerChat = await request.post('/api/assistant/chat', {
-      headers: { 'X-Customer-Id': owner },
-      data: { message: 'what orders do I have?' },
-    })
-    const ownerTools = (await ownerChat.json()).data.executed as { resultJson: string }[]
-    expect(ownerTools[0].resultJson).toContain(orderNo)
+    await signInApi(request, owner)
+    const ownerReads = await toolsOf(request, 'what orders do I have?')
+    expect(ownerReads[0]).toContain(orderNo)
   })
 })

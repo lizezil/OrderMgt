@@ -12,7 +12,7 @@ test.describe('助手：提议、确认、落单', () => {
 
     await ask(page, 'what orders do I have?')
 
-    await expect(page.getByText('Let me look up your own orders.')).toBeVisible()
+    await expect(page.getByText('我查一下你自己的订单。')).toBeVisible()
     await expect(page.locator('figure.slip')).toHaveCount(0)
     await expect(page.getByRole('button', { name: '授权执行' })).toHaveCount(0)
     // One assistant turn, not two: the streamed placeholder is replaced by the persisted reply.
@@ -51,7 +51,7 @@ test.describe('助手：提议、确认、落单', () => {
     // Authorised cards stop being actionable: the UI must not offer a second confirmation.
     await expect(slip.locator('.slip-state')).toHaveText('已执行')
     await expect(slip.getByRole('button')).toHaveCount(0)
-    await expect(slip).toContainText('未再执行')
+    await expect(slip).toContainText('不会再执行')
 
     await openTab(page, '订单')
     const row = page.locator('table.ledger tbody tr')
@@ -84,7 +84,7 @@ test.describe('助手：提议、确认、落单', () => {
 
     const slip = page.locator('figure.slip')
     await expect(slip.locator('.slip-state')).toHaveText('已执行')
-    await expect(slip).toContainText('未再执行')
+    await expect(slip).toContainText('不会再执行')
     await expect(slip.getByRole('button')).toHaveCount(0)
   })
 
@@ -93,7 +93,7 @@ test.describe('助手：提议、确认、落单', () => {
 
     await ask(page, 'what orders do I have?')
 
-    await expect(page.getByText('Let me look up your own orders.')).toHaveCount(1)
+    await expect(page.getByText('我查一下你自己的订单。')).toHaveCount(1)
     await expect(page.locator('.meter')).toContainText('模型耗时')
     await expect(page.locator('.meter')).toContainText('记忆窗口 2 条')
   })
@@ -112,7 +112,7 @@ test.describe('助手：提议、确认、落单', () => {
   test('两条会话在切页往返后互不合并，各自的回复都还在', async ({ page }) => {
     await openAs(page, freshCustomer())
     await ask(page, 'what orders do I have?')
-    await expect(page.getByText('Let me look up your own orders.')).toBeVisible()
+    await expect(page.getByText('我查一下你自己的订单。')).toBeVisible()
 
     await page.getByRole('button', { name: '＋ 新对话' }).click()
     await ask(page, 'help me order 2 GADGET-02')
@@ -130,6 +130,6 @@ test.describe('助手：提议、确认、落单', () => {
     // 点开第一条：第一轮还在，回复也还在 —— 没有任何一条消息出现在两段会话里。
     await entries.filter({ hasText: 'what orders do I have?' }).click()
     await expect(page.locator('article.customer')).toHaveCount(1)
-    await expect(page.getByText('Let me look up your own orders.')).toBeVisible()
+    await expect(page.getByText('我查一下你自己的订单。')).toBeVisible()
   })
 })

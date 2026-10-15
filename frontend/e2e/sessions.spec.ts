@@ -9,7 +9,7 @@ test.describe('会话管理：归档与恢复', () => {
   test('归档收进折叠组、恢复放回主列表，且只有归档/恢复两个动作', async ({ page }) => {
     await openAs(page, freshCustomer())
     await ask(page, 'what orders do I have?')
-    await expect(page.getByText('Let me look up your own orders.')).toBeVisible()
+    await expect(page.getByText('我查一下你自己的订单。')).toBeVisible()
 
     const activeRows = page.locator('.docket > .row')
     await expect(activeRows).toHaveCount(1)

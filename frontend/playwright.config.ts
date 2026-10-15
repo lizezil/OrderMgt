@@ -6,7 +6,7 @@ import { defineConfig, devices } from '@playwright/test'
  * There is no Vite dev server and no proxy here. Playwright loads the *packaged* SPA from the app
  * itself (e2e/support/serve.mjs builds it into the backend's static resources and boots the jar's
  * classpath), so the page under test is the artifact the container ships, on the same origin as
- * the API -- which is exactly the arrangement the streaming reader and the customer header assume.
+ * the API -- which is exactly the arrangement the streaming reader and the session cookie assume.
  *
  * The assistant runs on the `offline` profile's keyword adapter, so every flow is deterministic
  * and no model call is billed. Only Chromium is exercised.
@@ -36,7 +36,10 @@ export default defineConfig({
   webServer: {
     command: 'node e2e/support/serve.mjs',
     url: `${BASE_URL}/actuator/health`,
-    reuseExistingServer: !process.env.CI,
+    // Never reuse: serve.mjs empties the schema and mints the customer pool the tests sign in as,
+    // so a server left over from an earlier run would answer with the wrong identities (and a
+    // schema full of last run's data). Every run boots its own.
+    reuseExistingServer: false,
     timeout: 300_000,
     stdout: 'pipe',
     stderr: 'pipe',

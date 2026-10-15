@@ -172,14 +172,14 @@ make db-up                  # 测试跑在真实 MySQL 上，先把常驻容器�
 
 ```bash
 make test-frontend   # L5：纯前端，不需要 MySQL
-make test-e2e        # L6：自己去构建 SPA 并起应用（:8082），所以要先 make db-up（现状见下方注：这一层当前是红的）
+make test-e2e        # L6：自己去构建 SPA 并起应用（:8082），所以要先 make db-up
 ```
 
 L5 里含金量最高的是一份 `api.spec.ts`：流式回复的分帧（一帧跨两次 `read`、CRLF、多行 `data`）、`done` 事件的整轮语义、每个写请求都带 `X-XSRF-TOKEN`、`401` 一律回登录页——这些都是**服务端无法替客户端保证**的契约，也正是这次补齐用例时揪出下面两个真实缺陷的地方。
 
-L6 不信任 Vite dev server：`e2e/support/serve.mjs` 先把 SPA 构建进 `backend/src/main/resources/static`，再以 `mysql,offline` 两个 profile 起后端，于是浏览器访问的就是打包产物本身，与 API 同源、没有代理；助手是 `offline` 的桩适配器，所以每条流都确定、也不产生模型费用。E2E 连的是独立库 `ordermgt_e2e`，每个用例现取一个没人用过的客户号，因此可以反复跑而不必清库。
+L6 不信任 Vite dev server：`e2e/support/serve.mjs` 先把 SPA 构建进 `backend/src/main/resources/static`，再以 `mysql,offline` 两个 profile 起后端，于是浏览器访问的就是打包产物本身，与 API 同源、没有代理；助手是 `offline` 的桩适配器，所以每条流都确定、也不产生模型费用。身份如今是部署期配置（没有用户表），用例不能自造客户号，于是 `serve.mjs` 启动前先清空独立库 `ordermgt_e2e`、并用 `ASSISTANT_AUTH_PINS` 一次性配出 40 个固定客户号（700001–700040，PIN `4242`）供用例各自登录；身份与隔离都由这一步换来，所以 `reuseExistingServer` 关着——每次跑都拿一个刚清空的进程。
 
-> **现状，说清楚：L6 自 2026-10-14 的会话登录改造之后就没有跟进。** `e2e/support/viewer.ts` 仍往 localStorage 写 `ordermgt.customerId`、请求仍带 `X-Customer-Id`，而身份早已改成会话 cookie + PIN 登录（`.env` 里那两位客户），于是 14 条用例全部停在登录页之前——2026-10-15 实测 14/14 红，与本次改动无关。**活着的那一层是 `frontend/story-walk`**（`playwright.walkthrough.config.ts`）：按当前身份模型登录，对着**已经在跑**的应用驱动（`APP_PORT`，默认 :8081；容器或本地 `mysql,offline` 都行），一个故事留一张截图，US-1.9「最近一次下单」就在其中。修 L6（把 14 条迁到 cookie 登录）是待办，不在这次范围内。
+> **现状，说清楚：L6 自 2026-10-14 的会话登录改造之后一度没有跟进。** `e2e/support/viewer.ts` 那时仍往 localStorage 写 `ordermgt.customerId`、请求仍带 `X-Customer-Id`，而身份早已改成会话 cookie + PIN 登录，于是 14 条用例全部停在登录页之前。**2026-10-15 已把这 14 条迁到会话登录、实测 14/14 绿**（改法见上一段）。另一个浏览器层 `frontend/story-walk`（`playwright.walkthrough.config.ts`）按当前身份模型登录，对着**已经在跑**的应用驱动（`APP_PORT`，默认 :8081；容器或本地 `mysql,offline` 都行），一个故事留一张截图，US-1.9「最近一次下单」就在其中。
 
 首次在另一台机器上跑 L6 要先装浏览器：`cd frontend && pnpm exec playwright install chromium`。（`@playwright/test` 钉在 1.49.1 —— 更新的版本已不再发布 macOS 12 可用的 Chromium。）
 
@@ -289,7 +289,7 @@ SPRING_PROFILES_ACTIVE=mysql,offline ./mvnw -pl backend spring-boot:run
 - **退避是简版的**：阻塞重试靠 Spring AI 属性（3 次 / 1s / ×2 / 8s）；流式只在**首字节前**自建同款重放，**中途失败不重试**（会重复已吐给客户的字）。两处都没有 jitter、没有熔断/降级。
 - **真实网络超时→真实退避没有假上游测试**：超时归类（`TIMEOUT`/`ERROR`）与重试策略在单测里逐分支钉住（`SpringAiAdapterTest`，10 例），但要断言"真超时触发真退避"就得引入假上游，当前选择不引入，只靠真上游冒烟观察日志。
 - 离线适配器 `MockAiAdapter` 是**关键词驱动的桩**，只用于没有 Key 的演示，不理解真实语义。
-- **E2E 只跑 Chromium**（`@playwright/test` 1.49.1，更新的版本不再发布 macOS 12 可用的 Chromium），WebKit / Firefox 未覆盖；且它假定常驻 MySQL 可用、助手走 `offline` 桩——真实模型下的流式与超时行为没有 E2E。跑得起来的那个浏览器层是 `frontend/story-walk`；`frontend/e2e`（L6）自 2026-10-14 会话登录改造后未跟进，现状是 14/14 红，见上文 L6 的注。
+- **E2E 只跑 Chromium**（`@playwright/test` 1.49.1，更新的版本不再发布 macOS 12 可用的 Chromium），WebKit / Firefox 未覆盖；且它假定常驻 MySQL 可用、助手走 `offline` 桩——真实模型下的流式与超时行为没有 E2E。浏览器层跑法有两套：`frontend/e2e`（L6）起自己的 `:8082`、清空专用库、用 `serve.mjs` 配出的固定客户池登录，2026-10-15 迁到会话登录后实测 14/14 绿；`frontend/story-walk` 对着常驻应用走查。
 - **`make test-frontend` / `make test-e2e` 没有接进 CI**：本仓库目前没有 CI 配置，`make check` 只是留给 CI 的入口。
 - Docker Compose 只起**单实例应用**：确认态的并发去重靠数据库行锁，多实例同样成立，但没有做过压测。
 - **「至多一个 RUNNING Run」只在进程内保证**：`ConversationRunQueue` 与队列都是内存注册表，库层不强制唯一 RUNNING，多实例下各算各的；队列中的项也随重启丢弃。队列会通过 `/api/assistant/events` 的 `queue` 增量推给**所有**标签页，但只推内存态 `itemId` 与位置——排队消息的**文字只存在于发起它的那个标签页里**，另一个标签页能看见、也能删，但显示不出它写了什么。不含每客户并发配额。

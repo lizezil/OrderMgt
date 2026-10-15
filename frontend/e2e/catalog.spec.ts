@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { freshCustomer, openAs, openTab } from './support/viewer'
+import { freshCustomer, openAs, openTab, signInApi } from './support/viewer'
 
 interface CatalogItem {
   sku: string
@@ -19,15 +19,14 @@ const SEEDED = [
 test.describe('商品目录', () => {
   test('页面上的每一行都等于服务端说的那一行，名称与单价一字不差', async ({ page, request }) => {
     const customer = freshCustomer()
-    await openAs(page, customer)
+    await signInApi(request, customer)
 
-    const response = await request.get('/api/catalog/items', {
-      headers: { 'X-Customer-Id': customer },
-    })
+    const response = await request.get('/api/catalog/items')
     expect(response.ok()).toBe(true)
     const items = (await response.json()).data as CatalogItem[]
     expect(items.map((item) => item.sku).sort()).toEqual(SEEDED.map((item) => item.sku).sort())
 
+    await openAs(page, customer)
     await openTab(page, '商品')
     await expect(page.locator('table.ledger tbody tr')).toHaveCount(items.length)
     for (const item of items) {
@@ -38,9 +37,9 @@ test.describe('商品目录', () => {
   })
 
   test('目录只对外暴露 sku、名称与单价，没有可以让模型回填价格的字段', async ({ request }) => {
-    const response = await request.get('/api/catalog/items', {
-      headers: { 'X-Customer-Id': freshCustomer() },
-    })
+    await signInApi(request, freshCustomer())
+
+    const response = await request.get('/api/catalog/items')
     expect(response.ok()).toBe(true)
     const items = (await response.json()).data as Record<string, unknown>[]
 
