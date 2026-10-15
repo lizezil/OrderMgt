@@ -5,11 +5,10 @@ import { expect, test, type Page } from '@playwright/test'
 
 /**
  * A guided walk through docs/用户故事.md, one screenshot per story, against the running Docker
- * container (image built from this repo, SPRING_PROFILES_ACTIVE=mysql,offline).
- *
- * The assistant is the offline keyword stub, so the scripted sentences below are exactly the
- * triggers MockAiAdapter listens for: 「订单」 looks up, 「下单 N SKU」 proposes createOrder,
- * 「取消 ORD…」 proposes cancelOrder. Stories whose acceptance lives in the API layer rather than
+ * container (image built from this repo). Verified under both profiles: with `mysql,offline` the
+ * assistant is the keyword stub, and with plain `mysql` (the real model gateway) the scripted
+ * sentences below still hold up -- they are plain Chinese requests, not stub-only incantations.
+ * Stories whose acceptance lives in the API layer rather than
  * in pixels (US-5.2 replay, US-6.2 foreign token) are asserted via requests and logged.
  */
 const OUT_DIR = path.resolve(fileURLToPath(new URL('.', import.meta.url)), '..', '..', 'story-screenshots')
